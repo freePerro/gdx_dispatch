@@ -269,6 +269,7 @@ gdx_dispatch/frontend/src/constants/*                        frontend-shell
 gdx_dispatch/frontend/src/plugins/*                          frontend-shell
 gdx_dispatch/frontend/src/views/_ViewTemplate.vue            frontend-shell
 gdx_dispatch/frontend/src/views/DashboardView.vue            frontend-shell
+gdx_dispatch/frontend/src/views/SessionUnlockView.vue        frontend-shell
 gdx_dispatch/frontend/src/views/DashboardView.story.vue      frontend-shell
 gdx_dispatch/frontend/src/views/ReleaseNotesView.vue         frontend-shell
 gdx_dispatch/frontend/src/components/AppLayout.vue           frontend-shell

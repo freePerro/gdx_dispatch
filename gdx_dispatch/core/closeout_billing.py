@@ -258,10 +258,10 @@ def _restates(db: Session, closeout, prior) -> bool:
     """Whether ``closeout`` restates ``prior`` (the row it supersedes).
 
     ``is_restatement`` answers for every row ``closeout_job`` has written
-    since migration 125. A row from before 125 reads NULL; for it the audit
+    since migration 127. A row from before 127 reads NULL; for it the audit
     trail answers the same question — the job was still completed at the
     re-closeout unless a ``job_uncompleted`` row falls between the two
-    closeouts. Reading NULL as "new work" would bill a pre-125 re-closeout's
+    closeouts. Reading NULL as "new work" would bill a pre-127 re-closeout's
     full hours on top of what ``prior`` already billed."""
     flag = getattr(closeout, "is_restatement", None)
     if flag is not None:
@@ -286,7 +286,7 @@ def _restates(db: Session, closeout, prior) -> bool:
 def _claim_man_hours(db: Session, closeout) -> Decimal:
     """What the claim that stamped ``closeout`` billed, read from the row
     (the claim's UPDATE does not refresh a loaded object). NULL — every claim
-    before migration 125 — billed the full final day."""
+    before migration 127 — billed the full final day."""
     billed = db.execute(
         select(JobCloseout.man_hours_billed).where(JobCloseout.id == closeout.id)
     ).scalar_one_or_none()

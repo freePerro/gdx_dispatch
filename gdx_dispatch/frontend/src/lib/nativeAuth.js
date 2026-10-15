@@ -4,6 +4,14 @@ import { AccessControl, NativeBiometric } from '@capgo/capacitor-native-biometri
 const PIN_KEY = 'gdx_mobile_quick_pin_hash'
 const PIN_ENABLED_KEY = 'gdx_mobile_quick_pin_enabled'
 const BIOMETRIC_ENABLED_KEY = 'gdx_mobile_biometric_enabled'
+// The lock flag lives in localStorage, where any script running in the page
+// can clear it. That is a decision, not an oversight (GDXA-1187): the quick
+// PIN is a CONVENIENCE gate against a casual glance at an unattended phone,
+// not a security boundary. The session itself is guarded by the refresh
+// cookie and the server; anything that needs a real boundary must not rest on
+// this flag. The router (router/index.js) and lib/sessionLockLifecycle.js set
+// it at cold start and on pause, and hold every non-public route on /unlock
+// until verifyQuickPin() or performBiometricUnlock() clears it.
 const LOCKED_KEY = 'gdx_mobile_session_locked'
 
 /**

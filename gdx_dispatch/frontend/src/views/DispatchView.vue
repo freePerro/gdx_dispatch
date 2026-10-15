@@ -1389,6 +1389,13 @@ function sumDurationHours(jobList) {
 // --- Computed ---
 
 function matchesDate(job, dateStr) {
+  // An undated job is intake and waits on whatever day is open — unless it
+  // is finished. A finished job never scheduled sits on the day it was
+  // completed, or on no day: matching every day drew each one in its tech's
+  // column and capacity on every date (2026-10-15, 16 such jobs on prod).
+  if (!job.scheduled_at && isTerminalJob(job)) {
+    return Boolean(job.completed_at) && zonedDateKey(job.completed_at) === dateStr;
+  }
   if (!job.scheduled_at) return dateStr === selectedDateStr.value;
   // Bucket by the OFFICE-local calendar day (tenant timezone), not the raw UTC
   // date. Slicing the UTC ISO string put an evening job into the NEXT day's

@@ -22,7 +22,9 @@ vi.mock('../../lib/serverConfig', async (importOriginal) => ({
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
 
 // eslint-disable-next-line import/first
-import { createAppRouter, PASSWORD_CHANGE_PATH } from '../index';
+import { createAppRouter, PASSWORD_CHANGE_PATH, SESSION_UNLOCK_PATH } from '../index';
+// eslint-disable-next-line import/first
+import { isSessionLocked, setQuickPin, verifyQuickPin } from '../../lib/nativeAuth';
 // eslint-disable-next-line import/first
 import { useAuthStore } from '../../stores/auth';
 
@@ -109,5 +111,87 @@ describe('native cold start: session restore', () => {
     await router.push('/dashboard').catch(() => {});
     expect(useAuthStore().isAuthenticated).toBe(true);
     expect(router.currentRoute.value.path).toBe('/dashboard');
+  });
+});
+
+// GDXA-1187: the restore used to sign a tech with a quick PIN straight in.
+// These drive the real guard with the real lock helpers, not mocks of them.
+describe('native cold start: the quick-PIN lock gate', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+    setActivePinia(createPinia());
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('a cold start with the PIN on lands on the unlock screen, not the page asked for', async () => {
+    await setQuickPin('1234');
+    serve({ id: 'u1', role: 'technician', must_change_password: false });
+    const router = createAppRouter();
+    await router.push('/mobile/jobs').catch(() => {});
+    expect(useAuthStore().isAuthenticated).toBe(true);
+    expect(isSessionLocked()).toBe(true);
+    expect(router.currentRoute.value.path).toBe(SESSION_UNLOCK_PATH);
+    expect(router.currentRoute.value.query.redirect).toBe('/mobile/jobs');
+  });
+
+  it('every non-public route stays on the unlock screen until the PIN is entered, then goes on', async () => {
+    await setQuickPin('1234');
+    serve({ id: 'u1', role: 'admin', must_change_password: false });
+    const router = createAppRouter();
+    await router.push('/dashboard').catch(() => {});
+    for (const path of ['/customers', '/settings', '/login', '/dashboard']) {
+      await router.push(path).catch(() => {});
+      expect(router.currentRoute.value.path, path).toBe(SESSION_UNLOCK_PATH);
+    }
+    expect(await verifyQuickPin('9999')).toBe(false);
+    await router.push('/dashboard').catch(() => {});
+    expect(router.currentRoute.value.path).toBe(SESSION_UNLOCK_PATH);
+
+    expect(await verifyQuickPin('1234')).toBe(true);
+    await router.replace({ ...router.currentRoute.value, force: true }).catch(() => {});
+    expect(router.currentRoute.value.path).toBe('/dashboard');
+  });
+
+  it('public routes stay reachable while locked', async () => {
+    await setQuickPin('1234');
+    serve({ id: 'u1', role: 'admin', must_change_password: false });
+    const router = createAppRouter();
+    await router.push('/dashboard').catch(() => {});
+    await router.push('/forgot-password').catch(() => {});
+    expect(router.currentRoute.value.path).toBe('/forgot-password');
+  });
+
+  it('the redirect after unlocking never leaves the app', async () => {
+    await setQuickPin('1234');
+    serve({ id: 'u1', role: 'admin', must_change_password: false });
+    const router = createAppRouter();
+    await router.push('/dashboard').catch(() => {});
+    await verifyQuickPin('1234');
+    await router.push({ path: SESSION_UNLOCK_PATH, query: { redirect: '//evil.example/x' } }).catch(() => {});
+    expect(router.currentRoute.value.path).toBe('/dashboard');
+  });
+
+  it('with no PIN set the restore goes where it asked, as before', async () => {
+    serve({ id: 'u1', role: 'admin', must_change_password: false });
+    const router = createAppRouter();
+    await router.push('/dashboard').catch(() => {});
+    expect(isSessionLocked()).toBe(false);
+    expect(router.currentRoute.value.path).toBe('/dashboard');
+  });
+
+  it('a restore that finds no session drops the lock, so the password sign-in is not held', async () => {
+    await setQuickPin('1234');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(401, { detail: 'no cookie' })));
+    const router = createAppRouter();
+    await router.push('/dashboard').catch(() => {});
+    expect(useAuthStore().isAuthenticated).toBe(false);
+    expect(router.currentRoute.value.path).toBe('/login');
+    expect(isSessionLocked()).toBe(false);
   });
 });
