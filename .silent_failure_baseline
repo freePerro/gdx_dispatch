@@ -59,7 +59,6 @@ gdx_dispatch/routers/browser_proxy.py|S1-except_logs_and_returns_empty|0f06d5962
 gdx_dispatch/routers/budgets.py|S1-except_logs_and_returns_empty|60d48f367629275a
 gdx_dispatch/routers/budgets.py|S1-except_logs_and_returns_empty|60d48f367629275a
 gdx_dispatch/routers/catalog.py|S1-except_logs_and_returns_empty|daa92387a99b3591
-gdx_dispatch/routers/dispatch_ws.py|S1-except_logs_and_returns_empty|97940f847cde8491
 gdx_dispatch/routers/door_catalog.py|S1-except_logs_and_returns_empty|d0278fb253ebe77a
 gdx_dispatch/routers/door_listings.py|S1-except_logs_and_returns_empty|98b85992322d1fd8
 gdx_dispatch/routers/gdpr.py|S1-except_logs_and_returns_empty|fde3da240cb3bc43
