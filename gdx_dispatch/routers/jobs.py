@@ -625,8 +625,11 @@ def list_jobs(
     # clients bucket by the TENANT-zone calendar day (zonedDateKey), which the
     # server can't reproduce without timezone math — the wide window
     # guarantees no tenant-zone match is ever excluded, and the client filter
-    # remains the precise cut. Undated jobs stay included (the boards surface
-    # them on today's column).
+    # remains the precise cut. An undated job is included while it is live
+    # (the boards surface it as intake); a finished one only when it was
+    # completed inside the window, which is the day the boards draw it on
+    # (2026-10-15: every undated completed job used to come back for every
+    # date, and the boards drew it in its tech's column on every day).
     def _parse_day(value: str, label: str) -> datetime:
         try:
             return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -710,7 +713,12 @@ def list_jobs(
             where.append("1 = 0")  # no customer has a malformed id
     if date_lo is not None and date_hi is not None:
         where.append(
-            "(j.scheduled_at IS NULL OR (j.scheduled_at >= :date_lo AND j.scheduled_at < :date_hi))"
+            "((j.scheduled_at >= :date_lo AND j.scheduled_at < :date_hi)"
+            " OR (j.scheduled_at IS NULL"
+            " AND COALESCE(CAST(j.lifecycle_stage AS text), '') NOT IN ('completed', 'cancelled'))"
+            " OR (j.scheduled_at IS NULL"
+            " AND CAST(j.lifecycle_stage AS text) = 'completed'"
+            " AND j.completed_at >= :date_lo AND j.completed_at < :date_hi))"
         )
         params["date_lo"] = date_lo
         params["date_hi"] = date_hi
