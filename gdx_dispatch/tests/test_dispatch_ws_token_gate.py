@@ -64,7 +64,7 @@ def board_db(monkeypatch):
 
 def _user(db, role: str, **fields) -> str:
     uid = uuid4()
-    db.add(User(id=uid, email=f"{uid.hex[:8]}@e.co", username=uid.hex[:8], role=role,
+    db.add(User(id=uid, email=f"{uid.hex[:8]}@example.com", username=uid.hex[:8], role=role,
                 company_id=TENANT, **fields))
     db.commit()
     return str(uid)

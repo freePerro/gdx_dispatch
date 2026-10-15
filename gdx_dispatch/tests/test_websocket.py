@@ -76,7 +76,7 @@ def board_db(monkeypatch):
     TenantBase.metadata.create_all(engine, checkfirst=True)
     factory = sessionmaker(bind=engine)
     with factory() as db:
-        db.add(User(id=UUID(DISPATCHER_ID), email="d@e.co", username="d", role="dispatcher", company_id=TENANT))
+        db.add(User(id=UUID(DISPATCHER_ID), email="d@example.com", username="d", role="dispatcher", company_id=TENANT))
         db.commit()
     monkeypatch.setattr(dispatch_ws, "SessionLocal", factory)
     monkeypatch.setattr(database, "app_engine", engine)
