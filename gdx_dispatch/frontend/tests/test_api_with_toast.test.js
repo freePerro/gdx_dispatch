@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { useAuthStore } from '../src/stores/auth';
 
-const pushMock = vi.fn();
+const pushMock = vi.fn(() => Promise.resolve());
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock }),
 }));
@@ -47,29 +47,26 @@ describe('useApiWithToast composable', () => {
     );
   });
 
-  it('401 error with Unauthorized message triggers session expired toast', async () => {
-    // Simulate a direct "Unauthorized" error (e.g. refresh also fails with 401)
-    // useApi retry calls refreshAccessToken which on failure throws "Token refresh failed"
-    // That doesn't contain "401" or "Unauthorized", so handleError treats it as generic.
-    // To trigger the 401 path, the error message must contain "401" or "Unauthorized".
+  it('a refused refresh ends the session and sends the person to log in, without a toast', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn()
         // First: 401 triggers refresh
         .mockResolvedValueOnce(jsonResponse(401, { detail: 'expired' }))
-        // Refresh: also 401 → auth.refreshAccessToken throws "Token refresh failed"
+        // Refresh: also 401 → the session is over
         .mockResolvedValueOnce(jsonResponse(401, { detail: 'expired' })),
     );
     const auth = useAuthStore();
     auth.accessToken = 'some-token';
 
     const api = useApiWithToast();
-    await expect(api.get('/api/jobs')).rejects.toThrow();
+    await expect(api.get('/api/jobs')).rejects.toMatchObject({ status: 401, message: 'Session expired' });
 
-    // The refresh failure throws a generic error, so handleError shows generic toast
-    expect(addMock).toHaveBeenCalled();
-    // Auth store clears token on refresh failure
     expect(auth.accessToken).toBeNull();
+    // The login page says why (reason=expired); a toast per failing call
+    // stacked up on the dispatch board (2026-10-15).
+    expect(pushMock).toHaveBeenCalledWith({ path: '/login', query: { reason: 'expired' } });
+    expect(addMock).not.toHaveBeenCalled();
   });
 
   it('500 error shows error toast', async () => {

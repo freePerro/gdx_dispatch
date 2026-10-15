@@ -362,8 +362,14 @@ export const useAuthStore = defineStore('auth', () => {
       });
 
       if (!response.ok) {
-        logout();
-        throw new Error('Token refresh failed');
+        // Only the server refusing the refresh (every refusal in
+        // routers/auth/core.py is a 401) ends the session. A gateway 5xx
+        // during a deploy, or a 429, says nothing about the session: keep it,
+        // and carry the status so the caller reports what actually happened.
+        if (response.status === 401 || response.status === 403) logout();
+        const err = new Error('Token refresh failed');
+        err.status = response.status;
+        throw err;
       }
 
       const data = await response.json();

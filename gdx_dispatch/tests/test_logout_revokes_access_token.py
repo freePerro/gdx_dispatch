@@ -134,7 +134,7 @@ def test_bearer_logout_then_the_same_token_is_refused_everywhere(client, audit_r
 
     assert client.post("/auth/logout", headers=_bearer(token)).status_code == 200
 
-    assert client.get("/role-gated", headers=_bearer(token)).status_code == 403
+    assert client.get("/role-gated", headers=_bearer(token)).status_code == 401
     assert client.get("/user-gated", headers=_bearer(token)).status_code == 401
     assert _ws_close_code(client, token) == 1008
 
@@ -156,7 +156,7 @@ def test_cookie_logout_revokes_the_cookie_token_and_the_refresh_token(client, di
     client.cookies.clear()
 
     # The copied cookie value, replayed as a bearer, is now refused.
-    assert client.get("/role-gated", headers=_bearer(access)).status_code == 403
+    assert client.get("/role-gated", headers=_bearer(access)).status_code == 401
     assert _ws_close_code(client, access) == 1008
     assert refresh_jti in auth_core.redis.sets["used_refresh_jtis"]
 
@@ -169,7 +169,7 @@ def test_logout_revokes_only_the_tokens_it_was_handed(client):
 
     assert client.post("/auth/logout", headers=_bearer(this_device)).status_code == 200
 
-    assert client.get("/role-gated", headers=_bearer(this_device)).status_code == 403
+    assert client.get("/role-gated", headers=_bearer(this_device)).status_code == 401
     assert client.get("/role-gated", headers=_bearer(other_device)).status_code == 200
 
 
@@ -224,7 +224,7 @@ def test_logout_with_redis_down_still_clears_cookies_and_audits(client, audit_ro
     assert resp.status_code == 200
     assert "refresh_token=" in resp.headers.get("set-cookie", "")
     assert audit_rows[-1]["action"] == "logout"
-    assert client.get("/role-gated", headers=_bearer(access)).status_code == 403
+    assert client.get("/role-gated", headers=_bearer(access)).status_code == 401
 
 
 def test_audit_names_the_owner_of_each_revoked_token(client, audit_rows):

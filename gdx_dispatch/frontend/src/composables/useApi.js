@@ -24,6 +24,7 @@ import { useAuthStore } from '../stores/auth';
 import { useToast } from 'primevue/usetoast';
 import { useRouter } from 'vue-router';
 import { queueAction } from './useOfflineSync';
+import { getLoginRedirectLocation } from '../lib/auth-urls';
 
 // The server's refusal for a session whose account must change its password
 // first (GDXA-1003). The server sends `{code, message}`; a bare `detail`
@@ -62,7 +63,19 @@ export function createApiClient() {
     const response = await fetch(url, requestOptions);
 
     if (response.status === 401 && retry) {
-      await auth.refreshAccessToken();
+      try {
+        await auth.refreshAccessToken();
+      } catch (e) {
+        // A refresh that failed without logging out (a network blip, a
+        // gateway 5xx mid-deploy) keeps the session: rethrow as-is. A refused refresh has logged out, so
+        // this request is a 401 like any other — the status sends the caller
+        // down the session-expired path rather than a bare "Token refresh failed".
+        if (auth.isAuthenticated) throw e;
+        const err = new Error('Session expired');
+        err.status = 401;
+        err.url = url;
+        throw err;
+      }
       return request(url, options, false);
     }
 
@@ -263,9 +276,17 @@ export function useApi() {
     const msg = err?.message || '';
 
     if (status === 401 || /Unauthorized/i.test(msg)) {
-      toast.add({ severity: 'warn', summary: 'Session expired', detail: 'Please log in again', life: 3000 });
-      if (auth) auth.logout();
-      if (router) router.push('/login');
+      // No toast: one per failing call stacked up on the board (2026-10-15),
+      // and the first call to meet a dead session is often a background poll
+      // that never comes here. The login page says why the person is there
+      // (`reason=expired`), once, whichever call noticed.
+      if (auth?.isAuthenticated) auth.logout();
+      const current = router?.currentRoute?.value;
+      if (router && current?.path !== '/login' && !current?.meta?.public) {
+        router.push(current?.fullPath
+          ? getLoginRedirectLocation(current.fullPath, 'expired')
+          : { path: '/login', query: { reason: 'expired' } }).catch(() => {});
+      }
     } else if (isPasswordChangeRequired(err)) {
       // No toast: the AppLayout banner says it once, and shell polls hitting
       // this 403 on /profile stacked a toast per call (2026-10-14 walk).
@@ -302,8 +323,8 @@ export function useApi() {
     } else if (/Failed to fetch|NetworkError/i.test(msg)) {
       toast.add({ severity: 'error', summary: 'Network error', detail: 'Check your connection', life: 4000 });
     } else {
-      // Generic fallback — covers throws from refreshAccessToken failures
-      // (status=0, msg="Token refresh failed") and any other unclassified error.
+      // Generic fallback for any unclassified error. A refused token refresh
+      // arrives as the 401 above, not here.
       toast.add({ severity: 'error', summary: 'Error', detail: msg || 'Unknown error', life: 4000 });
     }
   }

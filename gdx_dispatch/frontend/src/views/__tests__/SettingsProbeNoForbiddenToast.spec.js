@@ -13,11 +13,13 @@
  * useApi and asserting the option was passed would prove authorship, not that
  * no toast appears. The control tests prove this harness CAN see the toast:
  * an unsuppressed 403 still raises one, and a 5xx, 401 or 429 on a probe keeps
- * useApi's own handling.
+ * useApi's own handling (for a 401, since 2026-10-15, that is the trip to
+ * /login?reason=expired rather than a toast).
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { createPinia } from 'pinia';
+import { createMemoryHistory, createRouter } from 'vue-router';
 
 const toastAdd = vi.fn();
 
@@ -72,8 +74,9 @@ function fetchStub(url) {
   return Promise.resolve(reply(200, {}));
 }
 
-async function mountSettings() {
-  const wrapper = mount(SettingsView, { global: { stubs, plugins: [createPinia()] } });
+async function mountSettings(router) {
+  const plugins = router ? [createPinia(), router] : [createPinia()];
+  const wrapper = mount(SettingsView, { global: { stubs, plugins } });
   await flushPromises();
   return wrapper;
 }
@@ -122,12 +125,20 @@ describe('Settings — expected 403 on a status probe', () => {
 
   // Only the 403 is quieted: the probes alone (Retry, the QuickBooks OAuth
   // callback) must still run useApi's session-expired and rate-limit handling.
-  it('a 401 that survives a token refresh still says Session expired', async () => {
+  it('a 401 that survives a token refresh still goes to the session-expired login', async () => {
     overrides['/api/settings/integrations'] = [401, { detail: 'Unauthorized' }];
     overrides['/api/qb/status'] = [401, { detail: 'Unauthorized' }];
     overrides['/auth/refresh'] = [200, { access_token: 'fresh' }];
-    await mountSettings();
-    expect(summaries()).toContain('Session expired');
+    const blank = { template: '<div />' };
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/settings', component: blank }, { path: '/login', component: blank }],
+    });
+    await router.push('/settings');
+    await mountSettings(router);
+    expect(router.currentRoute.value.path).toBe('/login');
+    expect(router.currentRoute.value.query).toMatchObject({ redirect: '/settings', reason: 'expired' });
+    expect(summaries()).not.toContain('Permission denied');
   });
 
   it('a 429 on a probe still says Slow down', async () => {
