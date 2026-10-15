@@ -206,8 +206,10 @@ def enabled_module_keys(db: Session, company_id: str) -> set[str]:
         return set()
 
 
-def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
-    canonical_key = normalize_module_key(module_key)
+def _module_grant_state(canonical_key: str, request: Request, db: Session) -> bool:
+    """Is `canonical_key` granted to the request's tenant? Raises SQLAlchemyError
+    (logged, session rolled back) when the grant could not be read, so a gate
+    can tell "off" from "could not check" (GDXA-1197)."""
     tenant = getattr(request.state, "tenant", {}) or {}
     tenant_id = str(tenant.get("id", "")).strip()
     if not tenant_id:
@@ -225,9 +227,21 @@ def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
         # table held 0 rows on prod and only ever served tests).
         return _is_granted_in_company_table(db, tenant_id, canonical_key)
     except SQLAlchemyError:
-        import logging
         logging.getLogger("gdx_dispatch.modules").exception("module_check_failed key=%s tenant=%s", canonical_key, tenant_id)
-        db.rollback()
+        try:
+            db.rollback()
+        except SQLAlchemyError:
+            logging.getLogger("gdx_dispatch.modules").exception("module_check_rollback_failed")
+        raise
+
+
+def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
+    """Bool form for callers that branch on a module rather than gate a route:
+    a grant that could not be read counts as not enabled (fail closed)."""
+    try:
+        return _module_grant_state(normalize_module_key(module_key), request, db)
+    except SQLAlchemyError:
+        logging.getLogger("gdx_dispatch.modules").warning("module_check_fail_closed key=%s", module_key)
         return False
 
 
@@ -239,7 +253,14 @@ def require_module(module_key: str) -> Callable:
         tenant = getattr(request.state, "tenant", {}) or {}
         if not tenant.get("id"):
             raise HTTPException(status_code=400, detail="Missing tenant context")
-        if not is_module_enabled(canonical_key, request, db):
+        # A grant that could not be read is not a disabled module: answering
+        # 403 "not enabled" made a DB fault read as a definite off state to
+        # every client (GDXA-1197). 503 still refuses, and says "retry".
+        try:
+            enabled = _module_grant_state(canonical_key, request, db)
+        except SQLAlchemyError:
+            raise HTTPException(503, "Module check unavailable; try again shortly") from None
+        if not enabled:
             raise HTTPException(403, f"Module '{canonical_key}' is not enabled")
 
     return _dependency
