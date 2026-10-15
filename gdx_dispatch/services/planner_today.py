@@ -149,6 +149,10 @@ def task_out(t: PlannerTask, today: datetime | None = None) -> dict:
         "completed_at": _ts_out(t.completed_at),
         "today_date": _date_out(t.today_date),
         "on_today": _as_utc(t.today_date) == today,
+        # Instants, always with an offset: SQLite reads them back naive.
+        "remind_at": _ts_out(_as_utc(t.remind_at)),
+        "remind_user_id": t.remind_user_id,
+        "reminder_sent_at": _ts_out(_as_utc(t.reminder_sent_at)),
     }
 
 

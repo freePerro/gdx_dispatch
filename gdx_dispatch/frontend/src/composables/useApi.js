@@ -228,7 +228,7 @@ export function createApiClient() {
  * View-facing composable. Use this in `<script setup>`.
  *
  * Mutation methods accept an optional `options` arg:
- *   { successMessage?: string, suppressErrorToast?: boolean }
+ *   { successMessage?: string, suppressErrorToast?: boolean | (err) => boolean }
  *
  * Examples:
  *   const api = useApi();
@@ -255,7 +255,10 @@ export function useApi() {
   }
 
   function fireError(err, suppress) {
-    if (suppress || !toast) return;
+    // suppress: true silences every toast; a predicate silences only the
+    // errors it accepts (an expected 403), so the rest keep the handling
+    // below, the 401 logout included (GDXA-1143).
+    if (!toast || (typeof suppress === 'function' ? suppress(err) : suppress)) return;
     const status = err?.status || 0;
     const msg = err?.message || '';
 

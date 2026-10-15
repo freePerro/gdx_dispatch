@@ -28,6 +28,10 @@ from gdx_dispatch.routers.technicians import (
     patch_technician,
 )
 
+# What get_current_user returns for a signed-in user (GDXA-981: the handlers
+# audit under this id and refuse a user dict without one).
+_USER = {"user_id": "office-user-1", "tenant_id": "tenant-a", "role": "admin"}
+
 
 def _request(tenant_id: str = "tenant-a") -> Request:
     req = Request({"type": "http", "headers": []})
@@ -42,7 +46,7 @@ def _body(resp) -> dict | list:
 def _create_tech(db: Session, tenant_id: str = "tenant-a", **overrides) -> dict:
     payload = {"user_id": "user-100", "skills": ["spring", "cables"], "hourly_rate": 80.0}
     payload.update(overrides)
-    resp = create_technician(TechnicianCreate(**payload), _request(tenant_id), {}, db)
+    resp = create_technician(TechnicianCreate(**payload), _request(tenant_id), _USER, db)
     assert resp.status_code == 201
     return _body(resp)
 
@@ -78,11 +82,11 @@ def test_create_technician_honours_an_unticked_active_box(db):
     dispatchable anyway."""
     data = _create_tech(db, active=False)
     assert data["active"] is False
-    assert _body(get_technician(data["id"], _request(), {}, db))["active"] is False
+    assert _body(get_technician(data["id"], _request(), _USER, db))["active"] is False
 
 
 def test_create_technician_requires_user_id(db):
-    resp = create_technician(TechnicianCreate(skills=["spring"], hourly_rate=75.0), _request(), {}, db)
+    resp = create_technician(TechnicianCreate(skills=["spring"], hourly_rate=75.0), _request(), _USER, db)
     assert resp.status_code == 400
     assert _body(resp)["detail"] == "user_id is required"
 
@@ -90,7 +94,7 @@ def test_create_technician_requires_user_id(db):
 def test_list_technicians(db):
     a = _create_tech(db, user_id="user-a")
     b = _create_tech(db, user_id="user-b")
-    resp = list_technicians(_request(), False, {}, db)
+    resp = list_technicians(_request(), False, _USER, db)
     assert resp.status_code == 200
     rows = _body(resp)
     ids = [r["id"] for r in rows]
@@ -105,7 +109,7 @@ def test_list_technicians_is_tenant_scoped(db):
     # each tenant has a separate per-tenant database. We still assert both rows exist.
     ta = _create_tech(db, "tenant-a", user_id="tenant-a-user")
     tb = _create_tech(db, "tenant-b", user_id="tenant-b-user")
-    rows_a = _body(list_technicians(_request("tenant-a"), False, {}, db))
+    rows_a = _body(list_technicians(_request("tenant-a"), False, _USER, db))
     ids_a = [r["id"] for r in rows_a]
     assert ta["id"] in ids_a
     assert tb["id"] in ids_a
@@ -113,7 +117,7 @@ def test_list_technicians_is_tenant_scoped(db):
 
 def test_get_technician(db):
     created = _create_tech(db, user_id="user-detail")
-    resp = get_technician(created["id"], _request(), {}, db)
+    resp = get_technician(created["id"], _request(), _USER, db)
     assert resp.status_code == 200
     data = _body(resp)
     assert data["id"] == created["id"]
@@ -121,7 +125,7 @@ def test_get_technician(db):
 
 
 def test_get_technician_not_found(db):
-    resp = get_technician("not-a-real-id", _request(), {}, db)
+    resp = get_technician("not-a-real-id", _request(), _USER, db)
     assert resp.status_code == 404
     assert _body(resp)["detail"] == "technician not found"
 
@@ -132,7 +136,7 @@ def test_patch_technician(db):
         created["id"],
         TechnicianPatch(skills=["opener", "springs"], hourly_rate=70.5, active=False),
         _request(),
-        {},
+        _USER,
         db,
     )
     assert resp.status_code == 200
@@ -144,49 +148,49 @@ def test_patch_technician(db):
 
 
 def test_patch_technician_not_found(db):
-    resp = patch_technician("missing", TechnicianPatch(hourly_rate=99.0), _request(), {}, db)
+    resp = patch_technician("missing", TechnicianPatch(hourly_rate=99.0), _request(), _USER, db)
     assert resp.status_code == 404
     assert _body(resp)["detail"] == "technician not found"
 
 
 def test_delete_technician_soft_delete_and_hidden_from_list(db):
     created = _create_tech(db, user_id="user-delete")
-    resp = delete_technician(created["id"], _request(), {}, db)
+    resp = delete_technician(created["id"], _request(), _USER, db)
     assert resp.status_code == 200
     assert _body(resp) == {"deleted": True}
 
-    rows = _body(list_technicians(_request(), False, {}, db))
+    rows = _body(list_technicians(_request(), False, _USER, db))
     ids = [r["id"] for r in rows]
     assert created["id"] not in ids
 
-    get_resp = get_technician(created["id"], _request(), {}, db)
+    get_resp = get_technician(created["id"], _request(), _USER, db)
     assert get_resp.status_code == 404
 
 
 def test_get_skills_returns_list(db):
     created = _create_tech(db, skills=["rollers", "tracks"])
-    resp = list_technician_skills(created["id"], _request(), {}, db)
+    resp = list_technician_skills(created["id"], _request(), _USER, db)
     assert resp.status_code == 200
     assert _body(resp) == {"skills": ["rollers", "tracks"]}
 
 
 def test_add_skill(db):
     created = _create_tech(db, skills=["springs"])
-    resp = add_technician_skill(created["id"], TechnicianSkillCreate(skill="openers"), _request(), {}, db)
+    resp = add_technician_skill(created["id"], TechnicianSkillCreate(skill="openers"), _request(), _USER, db)
     assert resp.status_code == 200
     assert _body(resp)["skills"] == ["springs", "openers"]
 
 
 def test_add_skill_deduplicates(db):
     created = _create_tech(db, skills=["springs"])
-    resp = add_technician_skill(created["id"], TechnicianSkillCreate(skill="springs"), _request(), {}, db)
+    resp = add_technician_skill(created["id"], TechnicianSkillCreate(skill="springs"), _request(), _USER, db)
     assert resp.status_code == 200
     assert _body(resp)["skills"] == ["springs"]
 
 
 def test_add_skill_requires_skill_value(db):
     created = _create_tech(db, skills=["springs"])
-    resp = add_technician_skill(created["id"], TechnicianSkillCreate(skill="   "), _request(), {}, db)
+    resp = add_technician_skill(created["id"], TechnicianSkillCreate(skill="   "), _request(), _USER, db)
     assert resp.status_code == 400
     assert _body(resp)["detail"] == "skill is required"
 
@@ -199,12 +203,12 @@ def test_get_availability_returns_unavailability_windows(db):
         created["id"],
         UnavailabilityCreate(start_at=start, end_at=end, reason="training"),
         _request(),
-        {},
+        _USER,
         db,
     )
     assert create_resp.status_code == 201
 
-    resp = get_technician_availability(created["id"], _request(), {}, db)
+    resp = get_technician_availability(created["id"], _request(), _USER, db)
     assert resp.status_code == 200
     rows = _body(resp)
     assert len(rows) == 1
@@ -219,7 +223,7 @@ def test_post_unavailability_validates_range(db):
         created["id"],
         UnavailabilityCreate(start_at=start, end_at=end, reason="invalid"),
         _request(),
-        {},
+        _USER,
         db,
     )
     assert resp.status_code == 400
@@ -233,8 +237,23 @@ def test_post_unavailability_404_when_technician_missing(db):
         "missing",
         UnavailabilityCreate(start_at=start, end_at=end, reason="pto"),
         _request(),
-        {},
+        _USER,
         db,
     )
     assert resp.status_code == 404
     assert _body(resp)["detail"] == "technician not found"
+
+
+def test_a_write_without_a_user_id_is_refused_before_it_writes(db):
+    """GDXA-981: the audit row used to fall back to "system" when there was no
+    user. Now a write with no user id is a 401 and leaves no row behind."""
+    from fastapi import HTTPException
+
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import Technician
+
+    with pytest.raises(HTTPException) as exc:
+        create_technician(TechnicianCreate(user_id="user-anon"), _request(), {}, db)
+    assert exc.value.status_code == 401
+    assert db.query(Technician).count() == 0
+    assert db.query(AuditLog).count() == 0

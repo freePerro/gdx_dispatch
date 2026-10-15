@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Segment
+from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Segment, Tag, TagAssignment
 from gdx_dispatch.routers import segments as segments_router
 from gdx_dispatch.routers.segments import (
     SegmentCreateIn,
@@ -91,6 +91,9 @@ def tenant_db_session():
     )
     # lifetime_value nets credit memos (GDXA-595), so the rollup reads this.
     InvoiceAdjustment.__table__.create(setup_db.get_bind(), checkfirst=True)
+    # ...and carries each customer's tags for the tag rule (GDXA-1046).
+    Tag.__table__.create(setup_db.get_bind(), checkfirst=True)
+    TagAssignment.__table__.create(setup_db.get_bind(), checkfirst=True)
     # `segments` is built from the ORM, NOT hand-written SQL. A hand-written
     # table here declared `deleted_at TEXT` (nullable) while the model said
     # NOT NULL and the real database — built by create_all — agreed with the

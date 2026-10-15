@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import InvoiceAdjustment
+from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Tag, TagAssignment
 from gdx_dispatch.routers import segments as segments_router
 from gdx_dispatch.routers.marketing import ReferralCreateIn
 from gdx_dispatch.routers.segments import (
@@ -93,6 +93,9 @@ def db_sessionmaker():
     )
     # lifetime_value nets credit memos (GDXA-595), so the rollup reads this.
     InvoiceAdjustment.__table__.create(db.get_bind(), checkfirst=True)
+    # ...and carries each customer's tags for the tag rule (GDXA-1046).
+    Tag.__table__.create(db.get_bind(), checkfirst=True)
+    TagAssignment.__table__.create(db.get_bind(), checkfirst=True)
     db.execute(
         text(
             """

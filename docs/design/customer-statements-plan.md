@@ -1,7 +1,7 @@
 # Customer Statements — Plan
 
 **Status:** **PARTIALLY BUILT** — §5–§8 built in PR #741 (branch
-`feat/customer-statements`; not merged, no release). Not built: the post-deploy prod walk (§9) and the
+`feat/customer-statements`; merged 2026-09-16, first released in `v1.121.0`). Not built, or not verified: the post-deploy prod walk (§9) and the
 phone test of the emailed Pay links; bounce detection for statement emails (§11).
 **Date:** 2026-09-15. Decisions 1–7 ruled by Doug 2026-09-14/15. Researched
 against main @ `fbb83d3` (v1.120.0, alembic head `095`) and prod read-only
@@ -13,7 +13,7 @@ counted twice, which led to decision 7.
 was never committed (a private page plus a scratchpad file that no longer
 exists). Its 3-PR plan was cut to one PR the same day, when Doug asked whether
 it was over-complicated; the decisions below settle its open questions.
-`PHASE.md` still describes that superseded "3-PR plan, 7 decisions".
+`PHASE.md` described that superseded "3-PR plan, 7 decisions" until 2026-10-15.
 **Related:** `contact-opt-out-suppression-plan.md` (PLAN) — statements add a
 new email kind its taxonomy must classify (§6).
 

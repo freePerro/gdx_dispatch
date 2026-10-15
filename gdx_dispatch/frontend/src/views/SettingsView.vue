@@ -1773,6 +1773,21 @@ const qbSyncStepMessage = (status) => {
 const qbSyncAllErrors = computed(() => qbSyncSteps.flatMap((s) => s.errors || []));
 const qbSyncHasErrors = computed(() => qbSyncAllErrors.value.length > 0);
 const toast = useToast();
+
+// GDXA-1143: GET for a load-time status probe whose 403 is an expected answer
+// that the tile renders inline. /settings has no route permission, so a viewer
+// mounts this view, but /api/settings/integrations is admin/owner only
+// (routers/settings.py _require_admin) and /api/qb/status 403s whenever the
+// quickbooks module is off; useApi turned each into a "Permission denied"
+// toast on every visit. The 403 is quiet here and still rethrown, so the
+// caller's catch decides what the tile shows; any other failure still reaches
+// the user through useApi's own handling (401 logout, 429, 5xx). Only for
+// probes with an inline failure state: a loader that leaves defaults on a 403
+// would show them as the shop's real values. Passed inline as
+// api.get(url, PROBE_OPTS), not through a wrapper: frontend_contract_scan's C3
+// reads response fields only from a literal `await api.get("/api/...")`
+// (GDXA-1163).
+const PROBE_OPTS = { suppressErrorToast: (err) => err?.status === 403 };
 const theme = useThemeStore();
 // Every tab this view renders. A `?tab=` value outside this set is ignored
 // rather than applied: PrimeVue Tabs activates by exact value match, so an
@@ -2112,7 +2127,7 @@ function isQbModuleOff(err) {
 
 async function loadIntegrations() {
   try {
-    const result = await api.get("/api/settings/integrations");
+    const result = await api.get("/api/settings/integrations", PROBE_OPTS);
     if (result?.stripe) integrations.stripe = result.stripe;
     integrations.boolMap = result?.integrations || {};
     integrations.catalogSyncEnabled = Boolean(result?.integrations?.quickbooks_catalog_sync);
@@ -2130,7 +2145,7 @@ async function loadIntegrations() {
     integrations.settingsForbidden = err?.status === 403;
   }
   try {
-    const qbStatus = await api.get("/api/qb/status");
+    const qbStatus = await api.get("/api/qb/status", PROBE_OPTS);
     integrations.quickbooks = qbStatus?.connected
       ? {
           connected: true,

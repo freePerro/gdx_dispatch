@@ -387,7 +387,12 @@ def test_billing_status_excludes_what_does_not_bill_a_job():
     ) == "unbilled"
     assert derive_job_billing_status([_inv("draft", 0, total=0)]) == "unbilled"
     assert derive_job_billing_status([_inv("draft", 0, total=None)]) == "unbilled"
-    assert derive_job_billing_status([_inv("draft", 450, total=450)]) == "invoiced"
+    # A priced draft was never sent: it bills nothing either (GDXA-1182).
+    assert derive_job_billing_status([_inv("draft", 450, total=450)]) == "unbilled"
+    # ...unless money moved on it: a partial payment leaves an invoice a draft.
+    assert derive_job_billing_status(
+        [_inv("draft", 250, 200, total=450)]
+    ) == "partial_paid"
 
 
 def test_billing_status_multi_invoice_paid_only_when_all_settled():
@@ -434,9 +439,21 @@ def test_zero_sent_invoice_still_bills_and_reads_Paid():
     assert st.billing_status == "paid"
 
 
-def test_priced_draft_still_reads_Invoiced():
+def test_priced_draft_reads_Invoiced_but_bills_nothing():
+    # GDXA-1182: the display state keeps a priced draft on its money axis,
+    # but billing_status (served by the jobs API and the GDPR export) says
+    # "unbilled" for a closeout auto-draft the customer was never sent.
     st = _s(lifecycle_stage="completed", invoices=[_inv("draft", 450, total=450)])
-    assert st.stage == "invoiced" and st.billing_status == "invoiced"
+    assert st.stage == "invoiced" and st.billing_status == "unbilled"
+
+
+def test_priced_draft_beside_a_sent_invoice_follows_the_sent_one():
+    # The stage still counts the unpaid draft; billing_status does not.
+    st = _s(
+        lifecycle_stage="completed",
+        invoices=[_inv("draft", 450, total=450), _inv("paid", 0, 200, total=200)],
+    )
+    assert (st.stage, st.billing_status) == ("invoiced", "paid")
 
 
 def test_zero_draft_beside_an_unpaid_invoice_does_not_change_the_stage():
@@ -451,7 +468,6 @@ def test_display_stage_and_billing_status_agree_on_every_money_shape():
     shapes = [
         [_inv("draft", 0, total=0)],
         [_inv("draft", 0, total=None)],
-        [_inv("draft", 450, total=450)],
         [_inv("sent", 0, total=0)],
         [_inv("sent", 100)],
         [_inv("sent", 60, 40)],
@@ -459,8 +475,14 @@ def test_display_stage_and_billing_status_agree_on_every_money_shape():
         [_inv("paid", 0, 100)],
         [_inv("void", 100)],
         [_inv("paid", 0, 500, billing_type="deposit")],
+        [_inv("draft", 250, 200, total=450)],
     ]
     for invs in shapes:
         st = _s(lifecycle_stage="completed", invoices=invs)
         expected = {"ready_to_bill": "unbilled", "partially_paid": "partial_paid"}
         assert expected.get(st.stage, st.stage) == st.billing_status, invs
+    # The disagreement GDXA-1182 accepts: an unpaid priced draft reaches the
+    # stage but not billing_status (alongside a settled invoice, the pair is
+    # "invoiced"/"paid"; see the test above).
+    st = _s(lifecycle_stage="completed", invoices=[_inv("draft", 450, total=450)])
+    assert (st.stage, st.billing_status) == ("invoiced", "unbilled")

@@ -14,6 +14,20 @@
             class="search-input"
             @input="onSearchChange"
           />
+          <!-- Server-side: GET /api/customers?tag_id= (GDXA-1046). -->
+          <Select
+            v-model="tagFilter"
+            :options="tagOptions"
+            option-label="name"
+            option-value="id"
+            placeholder="Any tag"
+            show-clear
+            filter
+            aria-label="Filter by tag"
+            class="tag-filter"
+            data-testid="customers-tag-filter"
+            @change="fetchCustomers"
+          />
         </template>
         <template #end>
           <Button
@@ -62,8 +76,8 @@
         <template #empty>
           <EmptyState
             icon="pi pi-users"
-            :title="searchQuery ? 'No customers match your search' : 'No customers yet'"
-            :message="searchQuery ? 'Try a different name, email, or phone.' : 'Click &quot;+ New Customer&quot; to add one.'"
+            :title="tagFilter ? 'No customers have this tag' : searchQuery ? 'No customers match your search' : 'No customers yet'"
+            :message="tagFilter ? 'Clear the tag filter, or tag customers from Segments.' : searchQuery ? 'Try a different name, email, or phone.' : 'Click &quot;+ New Customer&quot; to add one.'"
           />
         </template>
         <Column field="name" header="Name" sortable>
@@ -110,6 +124,11 @@
         <Column field="customer_type" header="Type" sortable style="width: 130px">
           <template #body="{ data }">
             <Tag :value="displayCustomerType(data.customer_type)" :severity="displayCustomerType(data.customer_type) === 'Commercial' ? 'warn' : 'info'" />
+          </template>
+        </Column>
+        <Column header="Tags" style="min-width: 140px">
+          <template #body="{ data }">
+            <CustomerTagChips :tags="data.tags" :data-testid="`customer-tags-${data.id}`" />
           </template>
         </Column>
         <Column header="Actions" style="width: 100px; text-align: center">
@@ -188,10 +207,12 @@ import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
+import Select from "primevue/select";
 import Tag from "primevue/tag";
 import Toast from "primevue/toast";
 import Toolbar from "primevue/toolbar";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
+import CustomerTagChips from "../components/CustomerTagChips.vue";
 import EmptyState from "../components/EmptyState.vue";
 import { normalizeCustomerType } from "../constants/customerTypes";
 
@@ -220,6 +241,9 @@ useListPrefs(
 );
 const customers = ref([]);
 const totalCustomers = ref(null);
+// Not persisted with the search: a tag deleted since would 422 the next load.
+const tagFilter = ref(null);
+const tagOptions = ref([]);
 const isLoading = ref(false);
 const isDeleting = ref(false);
 const showFormDialog = ref(false);
@@ -247,13 +271,14 @@ const filteredCustomers = computed(() => {
 const { exportCsv } = useTableExport();
 function exportCustomers() {
   exportCsv(
-    filteredCustomers.value,
+    filteredCustomers.value.map((c) => ({ ...c, tag_names: (c.tags || []).map((t) => t.name).join("; ") })),
     [
       { field: "name", header: "Name" },
       { field: "phone", header: "Phone" },
       { field: "email", header: "Email" },
       { field: "address", header: "Address" },
       { field: "customer_type", header: "Type" },
+      { field: "tag_names", header: "Tags" },
     ],
     "customers",
   );
@@ -299,9 +324,11 @@ async function confirmDelete() {
 async function fetchCustomers() {
   isLoading.value = true;
   try {
+    const params = new URLSearchParams({ per_page: "1000" });
     const q = searchQuery.value.trim();
-    const url = q ? `/api/customers?q=${encodeURIComponent(q)}&per_page=1000` : "/api/customers?per_page=1000";
-    const result = await api.get(url);
+    if (q) params.set("q", q);
+    if (tagFilter.value) params.set("tag_id", tagFilter.value);
+    const result = await api.get(`/api/customers?${params}`);
     customers.value = Array.isArray(result) ? result : result?.items || result?.data || [];
     totalCustomers.value = result?.total ?? customers.value.length;
   } catch (error) {
@@ -318,8 +345,20 @@ function onSearchChange() {
   _searchTimer = setTimeout(() => fetchCustomers(), 300);
 }
 
+async function fetchTags() {
+  try {
+    const result = await api.get("/api/tags");
+    tagOptions.value = Array.isArray(result) ? result : [];
+  } catch {
+    // The list still works without the filter's options; useApiWithToast
+    // has already said why the tags did not load.
+    tagOptions.value = [];
+  }
+}
+
 onMounted(() => {
   fetchCustomers();
+  fetchTags();
   // Dashboard "+ New Customer" passes ?new=1 to auto-open the form.
   // Pre-fix the handler called router.replace immediately after
   // openCreateDialog. Empirically the dialog never rendered — likely a
@@ -348,6 +387,20 @@ defineExpose({ customers });
 
 .search-input {
   width: 300px;
+}
+
+.tag-filter {
+  width: 180px;
+  margin-left: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .search-input,
+  .tag-filter {
+    width: 100%;
+    margin-left: 0;
+    margin-top: 0.5rem;
+  }
 }
 
 .customers-table {
