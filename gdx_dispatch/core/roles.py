@@ -53,6 +53,32 @@ ROLE_ALIASES: Final[dict[str, str]] = {
 }
 
 
+# Roles a user row may be given through routers/users.py and the admin invite
+# (POST /api/admin/users/invite). Those two once kept separate lists: the users
+# router lacked "viewer" and the invite lacked "sales", so the Users and
+# Settings dialogs each offered a role their own endpoint 422ed (GDXA-1200).
+# NOT yet read by POST/PATCH /api/admin/users, which still store the role as
+# sent (no UI calls them; deferred, see GDXA-1200's report).
+# Every entry is a core.permissions.BUILTIN_ROLES key (a test pins it).
+# "accounting" is a builtin role no assignment path has ever offered; adding
+# it is a product decision, not a vocabulary fix.
+ASSIGNABLE_ROLES: Final[tuple[str, ...]] = (
+    OWNER, ADMIN, DISPATCHER, TECHNICIAN, SALES, VIEWER,
+)
+
+
+def assignable_role_input_pattern() -> str:
+    """Regex accepting every assignable role plus its legacy short spellings.
+
+    Callers normalize with :func:`normalize_role` after matching, so only the
+    canonical form is stored.
+    """
+    spellings = set(ASSIGNABLE_ROLES) | {
+        alias for alias, canon in ROLE_ALIASES.items() if canon in ASSIGNABLE_ROLES
+    }
+    return "^(" + "|".join(sorted(spellings)) + ")$"
+
+
 def normalize_role(raw: object) -> str:
     """Collapse any known spelling of a role to its canonical (long) form.
 
