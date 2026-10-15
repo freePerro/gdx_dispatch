@@ -61,6 +61,7 @@ async def dispatch_board_ws(websocket: WebSocket, token: str = "") -> None:
     try:
         payload = _decode_token(websocket, token)
     except HTTPException:
+        log.warning("dispatch_ws_handshake_closed_1011: token revocation check unavailable")
         await websocket.close(code=1011)
         return
     tenant_id = str(payload.get("tenant_id", "")).strip() if payload else ""
