@@ -88,6 +88,9 @@ COVERED_ROOTS = (
     # The agent files carry the copy-paste commands every agent runs, so they
     # need an owner who keeps them right (GDXA-484: 13 of 14 lacked --tmpfs).
     ".claude/agents/",
+    # The area rules load into every agent's context when it touches a file in
+    # that area, so they rot like any present-tense doc (GDXA-966).
+    ".claude/rules/",
 )
 
 # Repo-root files where every match must have an owner. The root cannot be a

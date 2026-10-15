@@ -9,6 +9,14 @@
       </p>
     </header>
 
+    <!-- Above the tabs so every report carries it (GDXA-1183). Remove it when
+         the Phase 2 bank-statement tie-out lands: gl-phase1-core-ledger §11 step 4. -->
+    <div class="skip-note provisional-note" role="note" data-testid="ledger-provisional-note">
+      <strong>Provisional: not yet tied out to bank statements.</strong>
+      These figures come straight from the general ledger, but nothing has yet
+      checked them against the bank. Treat them as a working view, not closed books.
+    </div>
+
     <Tabs v-model:value="activeTab" data-testid="ledger-tabs">
       <TabList>
         <Tab value="trial-balance" data-testid="ledger-tab-trial-balance">Trial Balance</Tab>
@@ -400,6 +408,14 @@ onMounted(loadTrialBalance);
   border-radius: 6px;
   font-size: 0.9rem;
 }
+
+:root[data-theme='dark'] .skip-note {
+  background: color-mix(in srgb, var(--p-amber-400, #fbbf24) 12%, transparent);
+  border-color: color-mix(in srgb, var(--p-amber-400, #fbbf24) 45%, transparent);
+  color: var(--p-amber-200, #fde68a);
+}
+
+.provisional-note { margin: 0 0 1rem; }
 
 .incomplete-list { margin: 0.35rem 0 0; padding-left: 1.25rem; }
 

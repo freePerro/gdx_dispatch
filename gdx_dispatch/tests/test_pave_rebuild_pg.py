@@ -25,6 +25,7 @@ that is exactly how #440 hid 33 tests for weeks.
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -170,14 +171,67 @@ COUNTED_TABLES = (
 # service is postgres:16, so this gate skips on a laptop and never in CI.
 MIN_SERVER_MAJOR = 16
 
+# Where Debian/Ubuntu's postgresql-client-<N> packages put each major's
+# binaries, side by side. The bare `pg_dump` on PATH is pg_wrapper, which picks
+# the NEWEST installed client when given `-h`, so it cannot be trusted to
+# match the server once a runner bundles a newer major (GDXA-1169).
+PG_CLIENT_ROOT = Path("/usr/lib/postgresql")
 
-def _pg_dump_major() -> int:
-    out = subprocess.run(["pg_dump", "--version"], capture_output=True, text=True).stdout
+
+def _client_bin_dir(server_major: int) -> Path | None:
+    """The bin dir holding a pg_dump/psql pair of `server_major`, if installed."""
+    bin_dir = PG_CLIENT_ROOT / str(server_major) / "bin"
+    if all(os.access(bin_dir / tool, os.X_OK) for tool in ("pg_dump", "psql")):
+        return bin_dir
+    return None
+
+
+def _client_path(server_major: int) -> str:
+    """PATH with the matching-major client dir first; plain PATH if there is none."""
+    path = os.environ.get("PATH", os.defpath)
+    bin_dir = _client_bin_dir(server_major)
+    return f"{bin_dir}{os.pathsep}{path}" if bin_dir else path
+
+
+def _pg_dump_major(path: str) -> int:
+    out = subprocess.run([shutil.which("pg_dump", path=path), "--version"],
+                         capture_output=True, text=True).stdout
     return int(re.search(r"(\d+)", out.split()[-1]).group(1))
 
 
+def _require_matching_client(server_major: int, why: str) -> None:
+    """Skip on a laptop, FAIL under CI, unless pg_dump and psql match the server."""
+    path = _client_path(server_major)
+    if shutil.which("pg_dump", path=path) is None or shutil.which("psql", path=path) is None:
+        _skip_unless_ci(f"pg_dump/psql not on PATH or under {PG_CLIENT_ROOT} — {why}")
+    client_major = _pg_dump_major(path)
+    if client_major != server_major:
+        # A newer client emits GUCs (transaction_timeout) that ON_ERROR_STOP=on
+        # refuses on an older server, and the failure reads as a pave bug
+        # rather than a harness one. The Dockerfile pins postgresql-client-16
+        # for the container; ci.yml's "PostgreSQL client" step installs the
+        # service's major on the runner, found here under PG_CLIENT_ROOT.
+        _skip_unless_ci(
+            f"HARNESS MISMATCH, NOT A PAVE DEFECT: pg_dump is {client_major} but the server is "
+            f"{server_major}, and pave's dump/reload pair needs matching majors, and there is "
+            f"no {PG_CLIENT_ROOT}/{server_major}/bin. Fix the harness, not the tool: align "
+            f"gdx_dispatch/docker/Dockerfile's postgresql-client pin, ci.yml's postgres service "
+            f"image, and ci.yml's PostgreSQL client step."
+        )
+
+
+@functools.cache
+def _server_major() -> int:
+    conn = _admin_conn()
+    try:
+        return conn.server_version // 10000
+    finally:
+        conn.close()
+
+
 def _child_env(url: str, **extra: str) -> dict[str, str]:
-    env = {**os.environ, "DATABASE_URL": url, "ALEMBIC_DATABASE_URL": url}
+    env = {**os.environ, "DATABASE_URL": url, "ALEMBIC_DATABASE_URL": url,
+           "PATH": _client_path(_server_major())}
     env.setdefault("JWT_SECRET", "test-secret-key-at-least-32-bytes-long-x")
     env.update(extra)
     return env
@@ -301,19 +355,13 @@ def migrated_pg_db():
     Deliberately not built by calling anything in `pave_tenant_db`: the rig
     has to stand up whether or not the code under test works.
     """
-    if shutil.which("pg_dump") is None or shutil.which("psql") is None:
-        _skip_unless_ci("pg_dump/psql not on PATH — pave shells out to both")
     try:
-        conn = _admin_conn()
+        server_major = _server_major()
     except psycopg2.OperationalError as exc:
         _skip_unless_ci(
             f"PostgreSQL not reachable at {PG_HOST}:{PG_PORT} "
             f"(set GDX_TEST_PG_* to run the pave rebuild guard): {exc}"
         )
-    try:
-        server_major = conn.server_version // 10000
-    finally:
-        conn.close()
     if server_major < MIN_SERVER_MAJOR:
         _skip_unless_ci(
             f"server at {PG_HOST}:{PG_PORT} is PostgreSQL {server_major}; this test runs the "
@@ -321,18 +369,7 @@ def migrated_pg_db():
             f"{MIN_SERVER_MAJOR}+). The repo's laptop container gdx-test-postgres is 15; "
             f"point GDX_TEST_PG_* at a 16 to run it."
         )
-    client_major = _pg_dump_major()
-    if client_major != server_major:
-        # Dockerfile pins postgresql-client-16 for exactly this: a newer client
-        # emits GUCs (transaction_timeout) that ON_ERROR_STOP=on refuses on an
-        # older server, and the failure reads as a pave bug rather than a
-        # harness one. ubuntu-latest ships 16.15 against CI's postgres:16.
-        _skip_unless_ci(
-            f"HARNESS MISMATCH, NOT A PAVE DEFECT: pg_dump is {client_major} but the server is "
-            f"{server_major}, and pave's dump/reload pair needs matching majors. Fix the "
-            f"harness, not the tool: align gdx_dispatch/docker/Dockerfile's postgresql-client "
-            f"pin, ci.yml's postgres service image, and the runner's bundled client."
-        )
+    _require_matching_client(server_major, "pave shells out to both")
 
     name = f"gdx_pave_{uuid.uuid4().hex[:12]}"
     url = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{name}"
@@ -778,7 +815,7 @@ def test_an_edited_extension_comment_is_refused(bare_pg_db):
         engine.dispose()
 
 
-def test_the_late_exit_restore_gives_the_app_its_database_back(bare_pg_db, tmp_path):
+def test_the_late_exit_restore_gives_the_app_its_database_back(bare_pg_db, tmp_path, monkeypatch):
     """What every exit after the DROP tells the operator to run, run as
     printed (`restore_steps`). The database is left as a late exit leaves it:
     the schema re-created by the paving role with no ACL, where pg_dump writes
@@ -790,8 +827,10 @@ def test_the_late_exit_restore_gives_the_app_its_database_back(bare_pg_db, tmp_p
 
     from gdx_dispatch.tools import pave_tenant_db
 
-    if shutil.which("pg_dump") is None or shutil.which("psql") is None:
-        _skip_unless_ci("pg_dump/psql not on PATH — the restore shells out to both")
+    _require_matching_client(_server_major(), "the restore shells out to both")
+    # dump_full runs in this process and the restore steps below inherit its
+    # environment, so both find the client through this process's PATH.
+    monkeypatch.setenv("PATH", _client_path(_server_major()))
     url = bare_pg_db
     reader = f"gdx_pave_reader_{uuid.uuid4().hex[:8]}"
     db_info = pave_tenant_db.parse_db_url(url)
@@ -1026,3 +1065,79 @@ def test_a_non_superuser_paver_is_refused_with_nothing_dropped(bare_pg_db, tmp_p
         assert _untouched(url)
     finally:
         _drop_paver(url, paver)
+
+
+# --- client resolution (GDXA-1169). No Postgres needed: the binaries are fakes
+# that print a version, so these run on every shard, laptop or CI.
+
+
+def _fake_client(bin_dir: Path, major: int, log: Path | None = None) -> Path:
+    """A pg_dump/psql pair that reports `major`, and logs each call when given a log."""
+    bin_dir.mkdir(parents=True)
+    for tool in ("pg_dump", "psql"):
+        script = bin_dir / tool
+        record = f'echo "{tool} {major} $*" >> "{log}"\n' if log else ""
+        script.write_text(f'#!/bin/sh\n{record}echo "{tool} (PostgreSQL) {major}.1"\n')
+        script.chmod(0o755)
+    return bin_dir
+
+
+def test_a_matching_major_client_dir_wins_over_a_newer_client_on_path(tmp_path, monkeypatch):
+    """The 26.04 runner: PATH's pg_dump is 18, the server is 16, and a
+    postgresql-client-16 sits under the client root. The gate must let the
+    test run, and every child — the rig and pave alike — must get the 16."""
+    mod = sys.modules[__name__]  # the copy pytest imported, whose globals these helpers read
+
+    newer = _fake_client(tmp_path / "usr_bin", 18)
+    matching = _fake_client(tmp_path / "root" / "16" / "bin", 16)
+    monkeypatch.setenv("PATH", str(newer))
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr(mod, "PG_CLIENT_ROOT", tmp_path / "root")
+    monkeypatch.setattr(mod, "_server_major", lambda: 16)
+
+    _require_matching_client(16, "test")  # neither skips nor fails
+
+    child_path = _child_env("postgresql://x/y")["PATH"]
+    assert child_path.split(os.pathsep)[0] == str(matching)
+    for tool in ("pg_dump", "psql"):
+        assert shutil.which(tool, path=child_path) == str(matching / tool)
+    assert _pg_dump_major(child_path) == 16
+
+
+def test_a_mismatch_with_no_matching_client_dir_still_fails_under_ci(tmp_path, monkeypatch):
+    """No /usr/lib/postgresql/16: the refusal stays. A pave run with the
+    wrong client fails on the reload and reads as a pave defect, so under CI
+    this has to be a FAIL naming the harness, and on a laptop a skip."""
+    mod = sys.modules[__name__]  # the copy pytest imported, whose globals these helpers read
+
+    _fake_client(tmp_path / "usr_bin", 18)
+    (tmp_path / "root" / "18" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("PATH", str(tmp_path / "usr_bin"))
+    monkeypatch.setattr(mod, "PG_CLIENT_ROOT", tmp_path / "root")
+
+    monkeypatch.setenv("CI", "true")
+    with pytest.raises(pytest.fail.Exception, match="HARNESS MISMATCH, NOT A PAVE DEFECT"):
+        _require_matching_client(16, "test")
+    monkeypatch.delenv("CI")
+    with pytest.raises(pytest.skip.Exception, match="HARNESS MISMATCH"):
+        _require_matching_client(16, "test")
+
+
+def test_pave_runs_the_client_on_its_callers_path(tmp_path, monkeypatch):
+    """The PATH prepend above is worth nothing if pave drops it: pave used to
+    run pg_dump/psql with an env of PGPASSWORD alone, so the bare name fell
+    back to /bin:/usr/bin and pg_wrapper's newest client, whatever the caller
+    put on PATH. A real invocation, not a mock of subprocess."""
+    from gdx_dispatch.tools import pave_tenant_db
+
+    log = tmp_path / "calls.log"
+    _fake_client(tmp_path / "pg16", 16, log)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'pg16'}{os.pathsep}{os.environ.get('PATH', '')}")
+    db_info = {"host": "h", "port": "5432", "user": "u", "password": "p", "dbname": "d"}
+
+    pave_tenant_db.dump_full(db_info, str(tmp_path / "full.sql"))
+    pave_tenant_db.reload_data(db_info, str(tmp_path / "full.sql"), strict=True)
+
+    calls = log.read_text().splitlines()
+    assert calls[0].startswith("pg_dump 16 -h h -p 5432 -U u"), calls
+    assert calls[1].startswith("psql 16 -h h -p 5432 -U u -d d"), calls

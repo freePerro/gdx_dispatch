@@ -7,11 +7,12 @@ import Tooltip from 'primevue/tooltip';
 import Aura from '@primeuix/themes/aura';
 import 'primeicons/primeicons.css';
 import App from './App.vue';
-import { createAppRouter } from './router';
+import { createAppRouter, SESSION_UNLOCK_PATH } from './router';
 import { startKeyboardInsetTracking } from './lib/keyboardInset';
 import { installErrorCapture } from './plugins/errorCapture';
 import { initServerConfig } from './lib/serverConfig';
 import { initNativeAppBridge } from './lib/nativeBridge';
+import { installSessionLockLifecycle } from './lib/sessionLockLifecycle';
 import { installOfficeAlertsBridge } from './lib/officeAlerts';
 import { installSwNavigation } from './lib/swNavigation';
 import { installDatePickerTyping } from './lib/datePickerTyping';
@@ -35,6 +36,8 @@ installErrorCapture(app);
 const pinia = createPinia();
 const router = createAppRouter();
 initNativeAppBridge(router);
+// Quick-PIN lock on background / unlock gate on resume (GDXA-1187).
+installSessionLockLifecycle(router, SESSION_UNLOCK_PATH);
 installOfficeAlertsBridge(router);
 
 app.use(pinia);

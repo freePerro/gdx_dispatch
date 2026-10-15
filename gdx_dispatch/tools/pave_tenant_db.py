@@ -266,11 +266,24 @@ def dump_data(db_info: dict, output_path: str,
     log.info("Data dump complete: %s", output_path)
 
 
+def _pg_env(db_info: dict) -> dict[str, str]:
+    """The environment every pg_dump/psql child runs with.
+
+    PATH rides along on purpose. Without it the bare `pg_dump`/`psql` name
+    resolves through os.defpath (`/bin:/usr/bin`), where Debian's pg_wrapper,
+    given `-h`, always picks the newest client installed. Whoever runs pave can
+    then never choose the client that matches the server's major, and a newer
+    pg_dump writes GUCs (transaction_timeout) that an older server refuses
+    under ON_ERROR_STOP (GDXA-1169).
+    """
+    return {"PGPASSWORD": db_info["password"], "PATH": os.environ.get("PATH", os.defpath)}
+
+
 def _pg_dump(db_info: dict, flags: list[str], output_path: str, failure: str) -> None:
     """Run pg_dump with `flags` into `output_path`; exit on failure (nothing is dropped yet)."""
     cmd = ["pg_dump", "-h", db_info["host"], "-p", db_info["port"], "-U", db_info["user"],
            *flags, db_info["dbname"], "-f", output_path]
-    r = subprocess.run(cmd, env={"PGPASSWORD": db_info["password"]},
+    r = subprocess.run(cmd, env=_pg_env(db_info),
                        capture_output=True, text=True)
     if r.returncode != 0:
         log.error("%s: %s", failure, r.stderr)
@@ -304,7 +317,7 @@ def capture_table_schemas(db_info: dict, tables: list[str]) -> dict[tuple[str, s
     if not tables:
         return captured
     log.info("  capturing DDL for %d table(s) create_all() will not rebuild", len(tables))
-    env = {"PGPASSWORD": db_info["password"]}
+    env = _pg_env(db_info)
     for table in tables:
         path = f"/tmp/gdxpave_schema_{db_info['dbname']}_{table}.sql"
         cmd = [
@@ -1284,7 +1297,7 @@ def replay_table_schemas(db_info: dict, engine, captured: dict[tuple[str, str], 
              step, len(remaining))
     for kind, key in remaining:
         log.info("  %s %s", kind, key)
-    env = {"PGPASSWORD": db_info["password"]}
+    env = _pg_env(db_info)
     while remaining:
         applied, errors = [], {}
         for item in remaining:
@@ -1446,7 +1459,7 @@ def reload_data(db_info: dict, dump_path: str, strict: bool = True, full_backup_
         "--set", f"ON_ERROR_STOP={'on' if strict else 'off'}",
         "-q",
     ]
-    env = {"PGPASSWORD": db_info["password"]}
+    env = _pg_env(db_info)
     log.info("Reloading data from %s (strict=%s) ...", dump_path, strict)
     r = subprocess.run(cmd, env=env, capture_output=True, text=True)
 

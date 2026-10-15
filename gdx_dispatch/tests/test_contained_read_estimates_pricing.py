@@ -702,6 +702,37 @@ def test_pg_change_order_tax_read_failure_keeps_the_caller_committable(pg_test_e
     assert _committed(pg_test_engine) == 1
 
 
+def test_pg_change_order_tax_stamp_failure_keeps_the_new_co(pg_test_engine):
+    """``_stamp_tax_rate`` (GDXA-795) — this one HAS a victim: the create
+    handler stamps after ``flush()`` and commits after, so an uncontained
+    failed rate read would abort the transaction holding the new CO."""
+    from gdx_dispatch.routers.change_orders import ChangeOrder, _stamp_tax_rate
+
+    _reconcile(pg_test_engine, ChangeOrder.__table__)
+    _make_tax_config(pg_test_engine)
+    Session = _sessions(pg_test_engine)
+    db = Session()
+    co = ChangeOrder(
+        id=uuid.uuid4(), co_number="CO-GDXA795", title="t",
+        # No job: the only read is the tax helper's, the one the drop breaks.
+        customer_id=uuid.uuid4(),
+    )
+    _break(pg_test_engine, "DROP TABLE tax_exemption", "DROP TABLE tax_config")
+    db.add(co)
+    db.flush()
+
+    _stamp_tax_rate(db, co)
+    assert co.tax_rate is None, "a new CO keeps its prior stamp, NULL: the legacy live resolve"
+
+    db.commit()
+    db.close()
+    with pg_test_engine.connect() as other:
+        stored = other.execute(
+            text("SELECT tax_rate FROM change_orders WHERE co_number = 'CO-GDXA795'")
+        ).one()
+    assert stored.tax_rate is None
+
+
 # ---------------------------------------------------------------------------
 # core/part_pricing.py — the capture path's price resolver
 # ---------------------------------------------------------------------------

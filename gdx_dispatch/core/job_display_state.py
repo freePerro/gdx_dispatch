@@ -145,7 +145,8 @@ def _money_axis_stage(live_invoices: list[dict]) -> str:
     Paid when every one is settled; otherwise overdue, partially paid, or
     invoiced, in that precedence. Shared by the display state and the
     billing status, which select their invoices by the same predicate, so
-    they reach the same stage.
+    they reach the same stage, except that the billing status also drops a
+    priced draft with nothing paid on it (GDXA-1182).
     """
     statuses = [str(i.get("status", "")).strip().lower() for i in live_invoices]
     if all(
@@ -168,9 +169,24 @@ def derive_job_billing_status(invoices: Iterable[dict] | None = None) -> str:
 
     "unbilled" unless the job has a billing-real invoice by the ONE canonical
     predicate (`billing_predicates.invoice_bills_job`: not void, not a
-    deposit, not a $0 draft); otherwise the money-axis stage of those
-    invoices. Unlike the display state this ignores the work axis, so a
-    cancelled job that was paid still reads "paid" here.
+    deposit, not a $0 draft) that is also past draft; otherwise the
+    money-axis stage of those invoices. Unlike the display state this
+    ignores the work axis, so a cancelled job that was paid still reads
+    "paid" here.
+
+    A draft of any total with no money paid on it never bills here
+    (GDXA-1182): a priced closeout auto-draft the customer was never sent
+    would otherwise read "invoiced", and the GDPR export serves this value
+    to the data subject. A draft that took a payment (the payments endpoint
+    accepts one on a draft, and a partial one leaves it a draft) has moved
+    money, so it keeps its money-axis stage. The SQL predicates
+    (`job_billed_exists`, `job_finalized_invoice_exists`) still count a
+    priced draft, so the duplicate-invoice guard and Ready-for-Billing are
+    unchanged — and the display state, which keeps the priced draft on its
+    money axis, reads "Invoiced" beside an "unbilled" billing status for
+    such a job (the maintainer accepted that trade-off in the GDXA-952
+    triage, 2026-10-15 UTC). Beside a settled invoice the same draft leaves
+    "Invoiced" beside "paid".
 
     Each invoice dict carries ``status``, ``balance_due``, ``amount_paid``,
     ``billing_type`` and ``total``; callers pass live (not soft-deleted)
@@ -182,7 +198,12 @@ def derive_job_billing_status(invoices: Iterable[dict] | None = None) -> str:
 
     billed = [
         i for i in (invoices or [])
-        if i and invoice_bills_job(
+        if i
+        and not (
+            str(i.get("status") or "").strip().lower() == "draft"
+            and _num(i.get("amount_paid")) <= 0
+        )
+        and invoice_bills_job(
             i.get("status"), i.get("total"), None, i.get("billing_type")
         )
     ]
@@ -247,7 +268,8 @@ def _derive_flow_state(
         if str(i.get("status", "")).strip().lower() not in _INVOICE_VOID
     ]
     # Only billing-real invoices drive Paid/Invoiced/Partially Paid/Overdue
-    # below, by the ONE canonical predicate derive_job_billing_status uses:
+    # below, by the ONE canonical predicate (derive_job_billing_status adds
+    # only an unpaid-draft filter on top, GDXA-1182):
     # deposits leave the money axis, and so does a $0 draft — its zero
     # balance would otherwise read as settled and show an unbilled job "Paid"
     # (GDXA-607). A $0 invoice past draft (warranty work) still bills.

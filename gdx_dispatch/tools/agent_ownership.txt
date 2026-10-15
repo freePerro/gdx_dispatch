@@ -64,6 +64,9 @@ gdx_dispatch/tests/test_scanner_real_repo_ratchet.py         platform-core
 # core/roles.py's normalizer and its parity with the frontend mirror
 # constants/roles.js (GDXA-1010). Not gated, like pg.py.
 gdx_dispatch/tests/test_roles_canonical.py                   platform-core
+# The real-Postgres pave guard and its pg_dump/psql client resolution, which
+# ci.yml's postgresql-client step feeds (GDXA-1169). Not gated, like pg.py.
+gdx_dispatch/tests/test_pave_rebuild_pg.py                   platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core
@@ -78,6 +81,10 @@ sgconfig.yml                                                 platform-core
 # The agent definitions themselves — the map's own owner list. Gated: the
 # directory is in COVERED_ROOTS, so an agent file with no rule here is red.
 .claude/agents/*                                             platform-core
+# The area rules (`.claude/rules/*.md`) that load when a matching file is
+# read — present-tense instructions every agent follows (GDXA-966). Gated:
+# the directory is in COVERED_ROOTS.
+.claude/rules/*                                              platform-core
 
 # Ratchet baselines and scanner/harness state at the repo root. Gated, via
 # COVERED_ROOT_GLOBS — `.tenant_plane_redundant_filter_baseline` is line-keyed,
@@ -222,6 +229,12 @@ gdx_dispatch/frontend/src/views/GameCatalogView.vue          platform-core
 gdx_dispatch/frontend/src/views/GamePlayerView.vue           platform-core
 gdx_dispatch/frontend/src/views/ResourcesView.vue            platform-core
 gdx_dispatch/frontend/src/components/games/*                 platform-core
+# The plan this map's header cites: platform-core keeps the map, so it keeps
+# the plan's status line honest too (GDXA-1172). docs/ is not a covered root,
+# so `--file` answers for it and deleting it reddens nothing but the dead-rule
+# check. A glob, not the path: design docs are records and nothing outside
+# them names one by path (test_saas_surfaces_retired); it matches the one file.
+docs/design/domain-agents-plan*                              platform-core
 
 ## ---------------------------------------------------------------------------
 ## frontend-shell — the SPA itself: layout, router, stores, shared
@@ -256,6 +269,7 @@ gdx_dispatch/frontend/src/constants/*                        frontend-shell
 gdx_dispatch/frontend/src/plugins/*                          frontend-shell
 gdx_dispatch/frontend/src/views/_ViewTemplate.vue            frontend-shell
 gdx_dispatch/frontend/src/views/DashboardView.vue            frontend-shell
+gdx_dispatch/frontend/src/views/SessionUnlockView.vue        frontend-shell
 gdx_dispatch/frontend/src/views/DashboardView.story.vue      frontend-shell
 gdx_dispatch/frontend/src/views/ReleaseNotesView.vue         frontend-shell
 gdx_dispatch/frontend/src/components/AppLayout.vue           frontend-shell
@@ -405,6 +419,7 @@ gdx_dispatch/modules/service_areas/*                         jobs-dispatch
 gdx_dispatch/modules/fleet/*                                 jobs-dispatch
 gdx_dispatch/modules/equipment/*                             jobs-dispatch
 gdx_dispatch/tasks/planner_digest.py                         jobs-dispatch
+gdx_dispatch/tasks/planner_reminders.py                      jobs-dispatch
 gdx_dispatch/tasks/tech_locations_prune.py                   jobs-dispatch
 gdx_dispatch/frontend/src/views/JobsView.vue                 jobs-dispatch
 gdx_dispatch/frontend/src/views/JobDetailView.vue            jobs-dispatch
@@ -533,6 +548,7 @@ gdx_dispatch/frontend/src/components/PortalResellDialog.vue  customers-crm
 gdx_dispatch/frontend/src/components/quoteRequestOptions.js customers-crm
 gdx_dispatch/frontend/src/views/SegmentsView.vue             customers-crm
 gdx_dispatch/frontend/src/views/TagsView.vue                 customers-crm
+gdx_dispatch/frontend/src/components/CustomerTagChips.vue   customers-crm
 gdx_dispatch/frontend/src/views/LoyaltyView.vue              customers-crm
 gdx_dispatch/frontend/src/views/ReferralsView.vue            customers-crm
 gdx_dispatch/frontend/src/views/ReviewsView.vue              customers-crm

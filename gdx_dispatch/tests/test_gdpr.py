@@ -398,3 +398,39 @@ def test_export_customer_job_billing_status_is_derived_from_invoices(tenant_db_s
         db=tenant_db_session,
     )
     assert [j["billing_status"] for j in out["data"]["jobs"]] == ["paid"]
+
+
+def test_export_customer_priced_draft_job_is_unbilled(tenant_db_session):
+    """GDXA-1182: a job whose only invoice is a priced, never-sent closeout
+    draft must not be exported to the data subject as "invoiced"."""
+    from gdx_dispatch.models.tenant_models import Invoice
+
+    cid = _seed_customer(tenant_db_session, name="Dana", email="dana@example.com")
+    job = Job(
+        title="Opener repair",
+        lifecycle_stage="completed",
+        billing_status="unbilled",
+        customer_id=uuid.UUID(cid),
+        company_id=TENANT_A,
+    )
+    tenant_db_session.add(job)
+    tenant_db_session.flush()
+    tenant_db_session.add(Invoice(
+        job_id=job.id,
+        customer_id=uuid.UUID(cid),
+        company_id=TENANT_A,
+        invoice_number="INV-GDPR-DRAFT",
+        public_token="tok-gdpr-draft",
+        status="draft",
+        total=450,
+        balance_due=450,
+    ))
+    tenant_db_session.commit()
+
+    out = export_customer(
+        customer_id=uuid.UUID(cid),
+        request=_mock_request(),
+        user=_mock_user(role="admin"),
+        db=tenant_db_session,
+    )
+    assert [j["billing_status"] for j in out["data"]["jobs"]] == ["unbilled"]

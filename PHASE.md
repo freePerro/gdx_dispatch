@@ -21,9 +21,14 @@ never let it drift.
 
 ## Current phase: HARDENING
 
-We are closing defects in what exists, not adding surface area. The app is
-mature enough that the frontier is quality, not features. That is a deliberate
-choice with an end condition — not a default we drifted into.
+The frontier is quality: closing defects in what exists comes first. That is
+a deliberate choice with an end condition — not a default we drifted into.
+
+**Building is allowed while we harden** (Doug, 2026-10-14). New features may be
+built during this phase as long as hardening keeps moving alongside them — the
+defect backlog is still worked, and a new feature does not stop that. This
+amended the original 2026-09-07 rule, which read "not adding surface area".
+The first build under it is the GDX Planner Android app.
 
 ### Exit condition (both must hold)
 
@@ -43,10 +48,17 @@ choice with an end condition — not a default we drifted into.
      verified as ancestors of the tag). Whether prod is *serving* it is a
      separate check and has not been made here.
 
-### Next phase, already queued
+### Next phase
 
-**FEATURE — customer statements.** The 3-PR plan is written; 7 decisions are
-owed by Doug before PR A. Nothing starts until the exit condition above is met.
+**Not declared** — Doug names it when the exit condition is met. Features do
+not wait for it: they are built on Doug's say-so while hardening continues
+(see above).
+
+Customer statements, which this section held back from 2026-09-07, did not
+wait either: Doug ruled its decisions on 2026-09-14/15, PR #741 merged on
+2026-09-16, and it first shipped in `v1.121.0` (prod and demo both serve
+`1.146.0`, checked 2026-10-15). Its own plan's status line lists what is
+still open.
 
 ### While hardening
 
@@ -62,8 +74,9 @@ owed by Doug before PR A. Nothing starts until the exit condition above is met.
   filed* list and Doug decides. Adopted 2026-09-10; "Why deferral costs
   something" below says how this meets CLAUDE.md step 4.
 - **One issue per session** (CLAUDE.md). Doug can widen it; Claude does not.
-- **No new feature work** without Doug saying so explicitly. A feature request
-  from Doug overrides this file; a feature idea from Claude does not.
+- **Features are built on Doug's say-so, hardening alongside** (amended
+  2026-10-14). A feature request from Doug starts a build; a feature idea from
+  Claude does not — it goes on the *found, not filed* list.
 - **UI and workflow fixes are hardening, not features** (Doug, 2026-10-03).
   When the people using the app cannot finish real work in the existing
   screens, closing that gap is in phase. The first example is multi-day jobs:
