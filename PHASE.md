@@ -48,10 +48,17 @@ The first build under it is the GDX Planner Android app.
      verified as ancestors of the tag). Whether prod is *serving* it is a
      separate check and has not been made here.
 
-### Next phase, already queued
+### Next phase
 
-**FEATURE — customer statements.** The 3-PR plan is written; 7 decisions are
-owed by Doug before PR A. Nothing starts until the exit condition above is met.
+**Not declared** — Doug names it when the exit condition is met. Features do
+not wait for it: they are built on Doug's say-so while hardening continues
+(see above).
+
+Customer statements, which this section held back from 2026-09-07, did not
+wait either: Doug ruled its decisions on 2026-09-14/15, PR #741 merged on
+2026-09-16, and it first shipped in `v1.121.0` (prod and demo both serve
+`1.146.0`, checked 2026-10-15). Its own plan's status line lists what is
+still open.
 
 ### While hardening
 
