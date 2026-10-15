@@ -94,7 +94,7 @@ def render_body(*, customer_name: str, tech_name: str, company: str, eta_minutes
 
 def _caller_has_uncommitted_work(db: Session) -> bool:
     """Pending ORM changes, or ORM changes flushed in the open transaction but
-    not committed. The flushed half reads SessionTransaction's own bookkeeping
+    not committed. The flushed half reads the session transaction's own bookkeeping
     (``_new``/``_dirty``/``_deleted``, what a rollback uses to expire objects)
     up the nesting chain. A Core-level write (``db.execute(update(...))``) left
     uncommitted is NOT visible here — that is on the caller's contract."""
