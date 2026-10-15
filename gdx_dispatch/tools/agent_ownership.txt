@@ -64,6 +64,9 @@ gdx_dispatch/tests/test_scanner_real_repo_ratchet.py         platform-core
 # core/roles.py's normalizer and its parity with the frontend mirror
 # constants/roles.js (GDXA-1010). Not gated, like pg.py.
 gdx_dispatch/tests/test_roles_canonical.py                   platform-core
+# The real-Postgres pave guard and its pg_dump/psql client resolution, which
+# ci.yml's postgresql-client step feeds (GDXA-1169). Not gated, like pg.py.
+gdx_dispatch/tests/test_pave_rebuild_pg.py                   platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core
