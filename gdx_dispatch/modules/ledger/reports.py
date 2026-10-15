@@ -528,10 +528,13 @@ def ar_control(session: Session, company_id: str) -> dict:
     balance moved between invoices with no entry behind it, a balance edited
     without a repost, AR posted by hand. It cannot catch a payment recorded on
     the wrong invoice whose posting followed it: row and ledger agree there.
+    ``tied`` also requires no era-settlement shortfall: money both sides read
+    as zero because it posted nowhere (``backfill.era_settlement_shortfalls``).
     Read-only; it posts nothing.
     """
     from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Payment
     from gdx_dispatch.modules.ledger import service as ledger_service
+    from gdx_dispatch.modules.ledger.backfill import era_settlement_shortfalls
     from gdx_dispatch.modules.ledger.models import ROLE_AR
 
     lines = session.execute(
@@ -607,6 +610,11 @@ def ar_control(session: Session, company_id: str) -> dict:
 
     drift.sort(key=lambda r: (-abs(r["drift_cents"]), r["invoice_number"] or ""))
     unattributed_cents = sum(unattributed.values())
+    # A late era payment larger than its opening anchor posts nothing for the
+    # excess, and balance_due floors at zero, so both sides above read 0 for
+    # it. That money is on no ledger line, so the book is not tied (GDXA-1223).
+    shortfalls = era_settlement_shortfalls(session, company_id)
+    shortfall_cents = sum(r["uncovered_cents"] for r in shortfalls)
     settings = ledger_service.get_gl_settings(session, company_id)
     return {
         "ledger_posting_enabled": bool(settings and settings.ledger_posting_enabled),
@@ -614,7 +622,14 @@ def ar_control(session: Session, company_id: str) -> dict:
         "control_cents": control,
         "subledger_cents": subledger,
         "difference_cents": control - subledger,
-        "tied": control == subledger and not drift and unattributed_cents == 0,
+        "tied": (
+            control == subledger
+            and not drift
+            and unattributed_cents == 0
+            and shortfall_cents == 0
+        ),
+        "era_settlement_shortfall_cents": shortfall_cents,
+        "era_settlement_shortfalls": shortfalls,
         "drift_invoice_count": len(drift),
         "drift": drift[:AR_DRIFT_ROW_LIMIT],
         "unattributed_cents": unattributed_cents,

@@ -79,6 +79,20 @@ def _print_report(report: dict) -> None:
             )
     else:
         print("  ✓ every open invoice's GL AR matches its operational balance")
+    # Both sides above read 0 for these, so the ✓ cannot see them (GDXA-1223).
+    shortfalls = report["era_settlement_shortfalls"]
+    if shortfalls:
+        uncovered = sum(r["uncovered_cents"] for r in shortfalls)
+        print(
+            f"\n  ⚠ ${_dollars(uncovered)} of late pre-cutover payments is on no ledger "
+            f"line ({len(shortfalls)} payment(s) exceed the opening anchor):"
+        )
+        for row in shortfalls:
+            print(
+                f"    {row['invoice_number']:<20} paid {row['payment_date']}  "
+                f"${_dollars(row['amount_cents'])}  allocated ${_dollars(row['allocated_cents'])}  "
+                f"uncovered ${_dollars(row['uncovered_cents'])}"
+            )
     # The legacy-amount_paid suspects block printed here was removed
     # 2026-08-22 with the column (migration 073). It had already stopped
     # discriminating: the 2026-07-31 repair rewrote `amount_paid` as a payment
