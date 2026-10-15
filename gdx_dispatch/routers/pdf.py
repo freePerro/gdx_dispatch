@@ -237,6 +237,98 @@ def _estimate_tiers_for_pdf(
     return None, [_option(tier) for tier in tiers]
 
 
+def _job_title(db: Session | None, job_id: Any) -> str:
+    """Title of a live job, or "" — best-effort, the PDF must always render."""
+    if db is None or job_id is None:
+        return ""
+    title = db.execute(
+        select(Job.title).where(Job.id == job_id, Job.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    return (title or "").strip()
+
+
+def _estimate_job_name(estimate: Any, db: Session | None) -> str:
+    """The linked job's title, else the estimate's "Job Name" field
+    (estimate.label) — the same order the estimate email's subject uses
+    (routers/estimates.py `label_or_job`), so the email and its attached PDF
+    can never name the job differently."""
+    title = _job_title(db, getattr(estimate, "job_id", None))
+    return title or (getattr(estimate, "label", None) or "").strip()
+
+
+def _invoice_job_name(invoice: Any, job: Job | None, db: Session | None) -> str:
+    """The invoice's job name: the linked job's title — the same string the
+    invoice email already uses for {{job_title}} — else the label of the
+    estimate it was converted from. QB-imported invoices have neither → ""."""
+    title = ((job.title if job is not None else "") or "").strip()
+    if title or db is None:
+        return title
+    for est_id in (getattr(invoice, "estimate_id", None), getattr(invoice, "source_estimate_id", None)):
+        if est_id is None:
+            continue
+        label = db.execute(
+            select(Estimate.label).where(Estimate.id == est_id, Estimate.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if (label or "").strip():
+            return label.strip()
+    return ""
+
+
+def _invoice_jobsite(job: Job | None, customer: Customer | None, db: Session | None) -> str:
+    """Where the work was done, when that is NOT the billing address.
+
+    The one jobsite rule (core/job_site.resolve_job_site) — the address the
+    tech drove to and the office sees on the job. Printed only when it differs
+    from the customer's address: estimate conversion binds a jobsite only when
+    it differs too, so a one-site customer's invoice stays unchanged."""
+    if job is None or db is None:
+        return ""
+    from gdx_dispatch.core.job_site import normalize_address, resolve_job_site  # noqa: PLC0415
+
+    site = resolve_job_site(db, job.id, job.location_id, job.customer_id)
+    full = site.full_address
+    if not full:
+        return ""
+    billing = normalize_address(customer.address if customer is not None else "")
+    if billing and billing in (normalize_address(site.address), normalize_address(full)):
+        return ""
+    return full
+
+
+# Customer words for the invoice's EFFECTIVE status (routers/invoices
+# `_effective_status`: "overdue" is derived from the due date at read time,
+# never stored) — the raw value ("sent", "open") is office vocabulary.
+# Anything not listed reads by its balance below.
+_INVOICE_STATUS_LABELS = {"paid": "Paid", "void": "Void", "draft": "Draft", "overdue": "Past due"}
+
+
+def _invoice_status_label(status: str | None, balance_due: float, settled: float) -> str:
+    key = (status or "").strip().lower()
+    if key in _INVOICE_STATUS_LABELS:
+        return _INVOICE_STATUS_LABELS[key]
+    if balance_due <= 0:
+        return "Paid" if settled > 0 else "No balance due"
+    return "Partially paid" if settled > 0 else "Unpaid"
+
+
+def _invoice_pay_link(invoice: Invoice, balance_due: float, db: Session | None) -> tuple[str, str]:
+    """(pay_url, card notice) — the same gates as the invoice email's link:
+    a balance owed, a token, a public base URL and Stripe configured
+    (core/payments.public_pay_url), plus the statuses the pay page itself
+    refuses (draft, void). Never mints a token: rendering is a read."""
+    if balance_due <= 0 or (getattr(invoice, "status", "") or "").lower() in ("draft", "void"):
+        return "", ""
+    from gdx_dispatch.core.payments import card_surcharge_notice, public_pay_url  # noqa: PLC0415
+
+    url = public_pay_url(getattr(invoice, "public_token", None)) or ""
+    if not url or db is None:
+        return url, ""
+    # Minn. Stat. § 325G.051: the fee is stated wherever the link is offered,
+    # as the email does — nobody clicks through to a fee they weren't told of.
+    # (Its settings reads fail open on their own; no guard needed here.)
+    return url, card_surcharge_notice(db, str(getattr(invoice, "company_id", "") or ""))
+
+
 def _estimate_payload(
     estimate: Estimate,
     customer: Customer | None,
@@ -278,6 +370,7 @@ def _estimate_payload(
     return {
         "estimate_number": estimate.estimate_number,
         "customer": _customer_payload(customer),
+        "job_name": _estimate_job_name(estimate, db),
         "jobsite_address": getattr(estimate, "jobsite_address", None) or "",
         "description": getattr(estimate, "description", None) or "",
         "valid_until": valid_until.date().isoformat() if valid_until else "",
@@ -472,9 +565,19 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None, db: Session | 
     # gap — the detail view has shown adjustments since PR #197, the PDF was
     # blind to them.
     paid_to_date, credits_applied = _invoice_settlement(invoice, db)
+    from gdx_dispatch.routers.invoices import _effective_status  # noqa: PLC0415
+
+    job = None
+    if db is not None and getattr(invoice, "job_id", None) is not None:
+        job = db.execute(
+            select(Job).where(Job.id == invoice.job_id, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+    pay_url, card_notice = _invoice_pay_link(invoice, balance_due, db)
     return {
         "invoice_number": invoice.invoice_number,
         "customer": _customer_payload(customer),
+        "job_name": _invoice_job_name(invoice, job, db),
+        "jobsite_address": _invoice_jobsite(job, customer, db),
         "invoice_date": invoice_date.isoformat() if invoice_date else "",
         "paid_to_date": paid_to_date,
         "credits_applied": credits_applied,
@@ -510,6 +613,11 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None, db: Session | 
         "total": total,
         "balance_due": balance_due,
         "status": invoice.status,
+        "status_label": _invoice_status_label(
+            _effective_status(invoice), balance_due, paid_to_date + credits_applied
+        ),
+        "pay_url": pay_url,
+        "card_notice": card_notice,
         "due_date": invoice.due_date.isoformat() if invoice.due_date else "",
         # invoice.notes is per-invoice text the operator typed — it used to be
         # shipped as "terms" and printed under a "Terms" heading (mislabel,
