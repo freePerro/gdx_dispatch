@@ -241,6 +241,7 @@ def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
     try:
         return _module_grant_state(normalize_module_key(module_key), request, db)
     except SQLAlchemyError:
+        logging.getLogger("gdx_dispatch.modules").warning("module_check_fail_closed key=%s", module_key)
         return False
 
 
