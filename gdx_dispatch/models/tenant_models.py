@@ -2243,6 +2243,13 @@ class PlannerTask(Base):
     # Today, D@00:00 UTC like due_date. On Today only while it equals today,
     # so the list empties itself each morning (the 2026-09-28 planner Today plan).
     today_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Reminder (migration 125, GDX Planner app): an instant, not a date.
+    # remind_user_id is whoever set it — "remind me" buzzes the person who
+    # asked, not the assignee. tasks/planner_reminders.py writes the bell row
+    # and stamps reminder_sent_at; moving remind_at clears it so it fires again.
+    remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    remind_user_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    reminder_sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PlannerDayNote(Base):

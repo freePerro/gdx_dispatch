@@ -106,7 +106,7 @@ def test_wizard_technician_payload_is_accepted(db):
     sample = {"user_id": user_id, "name": "Pat Tech", "email": "pat@example.com", "phone": "555-0100"}
     payload = {k: sample[k] for k in _posted_keys("/api/technicians")}
 
-    resp = create_technician(TechnicianCreate(**payload), req, {}, db)
+    resp = create_technician(TechnicianCreate(**payload), req, {"user_id": "owner-1"}, db)
 
     assert resp.status_code == 201, resp.body
     body = json.loads(resp.body.decode())

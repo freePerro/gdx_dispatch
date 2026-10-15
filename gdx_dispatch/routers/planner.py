@@ -82,20 +82,37 @@ def _differs(before, after) -> bool:
     return before != after
 
 
-def _parse_due_date(value) -> datetime | None:
-    """Client due dates are calendar dates ('YYYY-MM-DD') or ISO stamps.
-    Normalize to a tz-aware UTC datetime so every writer stores one
-    convention (naive input used to depend on the DB session timezone)."""
-    if not value or not isinstance(value, str):
-        return None
+def _parse_iso(value: str, *, naive_is_utc: bool = True) -> datetime | None:
+    """An ISO date or date-time, tz-aware; naive input is read as UTC (it used
+    to depend on the DB session timezone), or refused when ``naive_is_utc`` is
+    off. None when it does not parse."""
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        log.warning("unparseable due_date %r — ignoring", value)
+        log.warning("unparseable planner date %r — ignoring", value)
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    if dt.tzinfo:
+        return dt
+    return dt.replace(tzinfo=timezone.utc) if naive_is_utc else None
+
+
+def _parse_due_date(value) -> datetime | None:
+    """Client due dates are calendar dates ('YYYY-MM-DD') or ISO stamps.
+    Normalize to a tz-aware datetime so every writer stores one convention."""
+    if not value or not isinstance(value, str):
+        return None
+    return _parse_iso(value)
+
+
+def _parse_remind_at(value) -> datetime | None:
+    """A reminder is an instant: an ISO date-time, never a bare date (a bare
+    date would silently mean midnight UTC — the evening before, locally).
+    It must carry an offset: a phone's local "09:00" read as UTC would buzz
+    five hours early. None when it does not parse; callers 422."""
+    if not value or not isinstance(value, str) or len(value) <= 10:
+        return None
+    dt = _parse_iso(value, naive_is_utc=False)
+    return dt.astimezone(timezone.utc) if dt else None
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
@@ -116,6 +133,8 @@ class TaskIn(BaseModel):
     source: str | None = Field(default=None, max_length=20)
     # Today tab (2026-09-28): create the task already pinned to today.
     today: bool = False
+    # Reminder instant (an ISO date-time); it notifies the caller, not the assignee.
+    remind_at: str | None = None
 
     @field_validator("source")
     @classmethod
@@ -136,6 +155,7 @@ class TaskPatch(BaseModel):
     assigned_to: str | None = None
     job_id: str | None = None
     customer_id: str | None = None
+    remind_at: str | None = None
 
 
 _SORT_OPTIONS = {"needs_action", "newest", "oldest", "priority", "due_date"}
@@ -215,6 +235,9 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
         # A due date was sent but doesn't parse — reject loudly instead of
         # silently creating an undated task (audit 2026-08-03).
         raise HTTPException(status_code=422, detail="Invalid due_date")
+    remind_dt = _parse_remind_at(body.remind_at)
+    if body.remind_at and remind_dt is None:
+        raise HTTPException(status_code=422, detail="Invalid remind_at")
     # Server-guarantee the "captures never scroll away" invariant: a quick-capture
     # with no due date defaults to TODAY (business-local calendar date, stored
     # per the D@00:00 UTC convention), so the needs_action sort (which puts
@@ -263,6 +286,9 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
         source=(body.source or None),
         created_at=_now(),
         today_date=calendar_today_utc() if body.today else None,
+        remind_at=remind_dt,
+        # "Remind me": the reminder buzzes whoever set it, not the assignee.
+        remind_user_id=uid if remind_dt else None,
     )
     db.add(task)
     # The task and its audit row commit together (#700). The row used to be
@@ -271,7 +297,8 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
     # leaving a task nobody can attribute. Through _audit, so it carries the
     # tenant (the activity feed filters on it) and the request like the rest.
     _audit(db, request, user, action="create_task", entity_type="planner_task",
-           entity_id=str(task.id), details={"title": task.title, "today": bool(body.today)})
+           entity_id=str(task.id),
+           details={"title": task.title, "today": bool(body.today), "remind_at": _ts_out(remind_dt)})
     db.commit()
 
     return {"id": str(task.id), "title": task.title, "priority": task.priority, "assigned_to": task.assigned_to}
@@ -624,6 +651,28 @@ def update_task(task_id: str, body: TaskPatch, request: Request, user: dict = De
             changed[field] = {"from": _audit_value(before), "to": _audit_value(val)}
         setattr(task, field, val)
         updated.append(field)
+    if "remind_at" in body.model_fields_set:
+        # Clearable, like due_date. Setting or moving it re-arms the reminder
+        # (reminder_sent_at cleared) and makes the caller its recipient —
+        # "remind me" — so a reminder moved later fires again, for the person
+        # who moved it. Re-sending the same instant (an edit dialog saving the
+        # whole form) changes nothing: it neither takes the reminder over nor
+        # fires a sent one again. Clearing it clears all three.
+        new_remind = None
+        if body.remind_at:
+            new_remind = _parse_remind_at(body.remind_at)
+            if new_remind is None:
+                raise HTTPException(status_code=422, detail="Invalid remind_at")
+        before_remind = task.remind_at
+        new_owner = _uid(user) if new_remind is not None else None
+        if _differs(before_remind, new_remind):
+            changed["remind_at"] = {"from": _ts_out(before_remind), "to": _ts_out(new_remind)}
+            if task.remind_user_id != new_owner:
+                changed["remind_user_id"] = {"from": task.remind_user_id, "to": new_owner}
+            task.remind_at = new_remind
+            task.remind_user_id = new_owner
+            task.reminder_sent_at = None
+        updated.append("remind_at")
     if not updated:
         raise HTTPException(status_code=400, detail="Nothing to update")
     # completed_at moves only when the task BECOMES done. The edit dialog

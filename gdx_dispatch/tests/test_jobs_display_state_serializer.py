@@ -291,15 +291,21 @@ def test_billing_status_partial_payment_from_payments_table(db):
     assert _ds(db, job)["billing_status"] == "partial_paid"
 
 
-def test_billing_status_zero_dollar_draft_is_unbilled_priced_draft_is_not(db):
+def test_draft_of_any_total_is_unbilled_priced_draft_still_reads_invoiced(db):
     # Pins Invoice.total flowing through the enrichment query: without it a
-    # draft reads as $0 and every priced draft would say "unbilled".
+    # priced draft reads as $0 and its stage falls back to "ready_to_bill".
+    # billing_status says "unbilled" for both: a draft was never sent
+    # (GDXA-1182), so only the stage can see the total.
     zero, priced = _job("completed"), _job("completed")
     db.add_all([zero, priced])
     db.add(_invoice(zero.id, "draft", 0, 0, total=0))
     db.add(_invoice(priced.id, "draft", 450, 0, total=450))
-    assert _ds(db, zero)["billing_status"] == "unbilled"
-    assert _ds(db, priced)["billing_status"] == "invoiced"
+    assert (_ds(db, zero)["stage"], _ds(db, zero)["billing_status"]) == (
+        "ready_to_bill", "unbilled",
+    )
+    assert (_ds(db, priced)["stage"], _ds(db, priced)["billing_status"]) == (
+        "invoiced", "unbilled",
+    )
 
 
 def test_billing_status_cancelled_job_keeps_its_money_axis(db):

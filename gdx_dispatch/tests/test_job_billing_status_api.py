@@ -127,10 +127,20 @@ CASES = [
     ("partial_paid", {"status": "sent", "total": 500, "balance_due": 300, "paid": 200}),
     ("invoiced", {"status": "sent", "total": 250, "balance_due": 250}),
     ("unbilled", None),
+    # GDXA-1182: a priced closeout auto-draft, never sent, bills nothing.
+    ("unbilled", {"status": "draft", "total": 450, "balance_due": 450}),
+    # ...but a partial payment on a draft has moved money.
+    ("partial_paid", {"status": "draft", "total": 450, "balance_due": 250, "paid": 200}),
 ]
 
 
-@pytest.mark.parametrize(("expected", "invoice"), CASES, ids=[c[0] for c in CASES])
+@pytest.mark.parametrize(
+    ("expected", "invoice"), CASES,
+    ids=[
+        "paid", "partial_paid", "invoiced", "unbilled",
+        "unbilled_priced_draft", "partial_paid_draft",
+    ],
+)
 def test_list_and_detail_serve_derived_billing_status(harness, expected, invoice) -> None:
     client, Session = harness
     jid = _seed_job(Session, invoice=invoice)

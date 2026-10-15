@@ -11,6 +11,10 @@ it is no login anywhere else.
 - ``POST /api/notifications/device-alerts/revoke`` — the device token revokes
   itself; works after the app session expired.
 - ``GET /api/notifications/device-alerts/feed`` — long-poll of unread bell rows.
+  ``scope=planner`` (the GDX Planner app) narrows it to the user's own
+  ``planner_*`` rows; the default office scope leaves those out, so a planner
+  reminder buzzes a phone once, from GDX Planner, not again from GDX Dispatch
+  (2026-10-14).
 
 Every feed request re-checks the token, its age, the user (active, not
 deleted) and ``nav.office`` against the database, so deactivation and role
@@ -25,12 +29,12 @@ import hashlib
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, not_, or_, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import audit_or_rollback
@@ -59,6 +63,8 @@ MAX_ITEMS = 20
 # rows just shown and they would fill every later response, so a full page
 # hands back a keyset cursor instead: after exactly the last row sent.
 PAGE_PREFIX = "p:"
+PLANNER_PREFIX = "planner_"
+Scope = Literal["office", "planner"]
 LAST_SEEN_EVERY = timedelta(minutes=1)
 
 
@@ -218,7 +224,20 @@ def _gate(db: Session, request: Request, token: str) -> str:
     return row.user_id
 
 
-def _filters(tenant_id: str, user_id: str, after: Any) -> list[Any]:
+def _scope_filters(user_id: str, scope: Scope) -> list[Any]:
+    """Which rows a scope sees. ``planner``: only rows addressed to this user
+    with a ``planner_`` category — no office broadcasts. ``office``: the
+    user's rows and the broadcasts, minus ``planner_`` rows."""
+    is_planner = Notification.category.startswith(PLANNER_PREFIX, autoescape=True)
+    if scope == "planner":
+        return [Notification.user_id == user_id, is_planner]
+    return [
+        or_(Notification.user_id == user_id, Notification.user_id.is_(None)),
+        or_(Notification.category.is_(None), not_(is_planner)),
+    ]
+
+
+def _filters(tenant_id: str, user_id: str, after: Any, scope: Scope = "office") -> list[Any]:
     """``after`` is an ISO time (rows newer than it) or a ``(created_at, id)``
     keyset from a full page (rows strictly after that row)."""
     if isinstance(after, tuple):
@@ -231,25 +250,27 @@ def _filters(tenant_id: str, user_id: str, after: Any) -> list[Any]:
         newer = Notification.created_at > after
     return [
         Notification.tenant_id == tenant_id,
-        or_(Notification.user_id == user_id, Notification.user_id.is_(None)),
+        *_scope_filters(user_id, scope),
         Notification.is_read == 0,
         Notification.deleted_at.is_(None),
         newer,
     ]
 
 
-def _has_newer(factory: Callable[[], Session], tenant_id: str, user_id: str, after: Any) -> bool:
+def _has_newer(
+    factory: Callable[[], Session], tenant_id: str, user_id: str, after: Any, scope: Scope = "office"
+) -> bool:
     with factory() as db:
         return (
             db.execute(
-                select(Notification.id).where(*_filters(tenant_id, user_id, after)).limit(1)
+                select(Notification.id).where(*_filters(tenant_id, user_id, after, scope)).limit(1)
             ).first()
             is not None
         )
 
 
 def _window(
-    factory: Callable[[], Session], tenant_id: str, user_id: str, after: Any
+    factory: Callable[[], Session], tenant_id: str, user_id: str, after: Any, scope: Scope = "office"
 ) -> tuple[str, list[DeviceAlertItem]]:
     now_iso = datetime.now(UTC).isoformat()
     if not isinstance(after, tuple):
@@ -257,7 +278,7 @@ def _window(
     with factory() as db:
         rows = db.execute(
             select(Notification)
-            .where(*_filters(tenant_id, user_id, after))
+            .where(*_filters(tenant_id, user_id, after, scope))
             .order_by(Notification.created_at.asc(), Notification.id.asc())
             .limit(MAX_ITEMS)
         ).scalars().all()
@@ -292,6 +313,7 @@ async def device_alerts_feed(
     request: Request,
     after: str | None = Query(default=None, max_length=128),
     wait: int = Query(default=0, ge=0, le=MAX_WAIT_SECONDS),
+    scope: Scope = Query(default="office"),
     token: str = Header(default="", alias=TOKEN_HEADER),
     factory: Callable[[], Session] = Depends(feed_session_factory),
 ) -> DeviceAlertsFeedResponse:
@@ -322,9 +344,9 @@ async def device_alerts_feed(
     newer_than = cursor if isinstance(cursor, tuple) else cursor.isoformat()
 
     deadline = asyncio.get_running_loop().time() + wait
-    while not await asyncio.to_thread(_has_newer, factory, tenant_id, user_id, newer_than):
+    while not await asyncio.to_thread(_has_newer, factory, tenant_id, user_id, newer_than, scope):
         if asyncio.get_running_loop().time() >= deadline or await request.is_disconnected():
             break
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
-    next_cursor, items = await asyncio.to_thread(_window, factory, tenant_id, user_id, cursor)
+    next_cursor, items = await asyncio.to_thread(_window, factory, tenant_id, user_id, cursor, scope)
     return DeviceAlertsFeedResponse(cursor=next_cursor, items=items)
