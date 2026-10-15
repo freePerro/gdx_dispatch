@@ -504,6 +504,9 @@ def balance_sheet(session: Session, company_id: str, *, as_of: date) -> dict:
 
 # The payload names at most this many drifted invoices; the count is exact.
 AR_DRIFT_ROW_LIMIT = 200
+# Likewise for era-settlement shortfalls; the count and the cents total are
+# over every one (GDXA-1244).
+AR_SHORTFALL_ROW_LIMIT = 200
 
 
 def ar_control(session: Session, company_id: str) -> dict:
@@ -605,6 +608,9 @@ def ar_control(session: Session, company_id: str) -> dict:
     # it. That money is on no ledger line, so the book is not tied (GDXA-1223).
     shortfalls = era_settlement_shortfalls(session, company_id)
     shortfall_cents = sum(r["uncovered_cents"] for r in shortfalls)
+    shortfalls.sort(
+        key=lambda r: (-r["uncovered_cents"], r["invoice_number"] or "", r["payment_id"])
+    )
     settings = ledger_service.get_gl_settings(session, company_id)
     return {
         "ledger_posting_enabled": bool(settings and settings.ledger_posting_enabled),
@@ -619,7 +625,8 @@ def ar_control(session: Session, company_id: str) -> dict:
             and shortfall_cents == 0
         ),
         "era_settlement_shortfall_cents": shortfall_cents,
-        "era_settlement_shortfalls": shortfalls,
+        "era_settlement_shortfall_count": len(shortfalls),
+        "era_settlement_shortfalls": shortfalls[:AR_SHORTFALL_ROW_LIMIT],
         "drift_invoice_count": len(drift),
         "drift": drift[:AR_DRIFT_ROW_LIMIT],
         "unattributed_cents": unattributed_cents,
