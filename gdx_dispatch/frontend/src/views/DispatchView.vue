@@ -498,7 +498,7 @@
                 :selected-date="selectedDate"
                 :px-per-hour="compactBoard ? 30 : 48"
                 @open-drawer="openJobDrawer"
-                @job-drag-start="(job, e) => onDragStart(job, e)"
+                @job-drag-start="(job, e) => onDragStart(job, e, tech.id)"
                 @job-drag-end="draggingJobId = null"
                 @place="onTimelinePlace"
                 @place-tray="onTimelinePlaceTray"
@@ -695,7 +695,7 @@
                   :data-testid="`week-job-${cell.date}-${job.card_key || job.id}`"
                   :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
                   v-tooltip.bottom="weekChipTooltip(job)"
-                  @dragstart="onDragStart(job, $event)"
+                  @dragstart="onDragStart(job, $event, row.unassigned ? null : row.id)"
                   @dragend="draggingJobId = null"
                   @click="openJobDrawer(job)"
                 >
@@ -815,6 +815,37 @@
             data-testid="week-slot-confirm"
             @click="resolveSlotPrompt(slotPromptTime)"
           />
+        </template>
+      </Dialog>
+
+      <!-- A crew job dropped on a tech outside its crew: swap one member or
+           add the tech. Nothing changes the crew without this answer. -->
+      <Dialog
+        v-model:visible="crewPromptOpen"
+        :header="crewPromptHeader"
+        :modal="true"
+        :closable="true"
+        :style="{ width: '440px' }"
+        data-testid="crew-change-prompt"
+        @hide="resolveCrewPrompt(null)"
+      >
+        <p style="margin-top:0;">
+          <strong>{{ crewPromptJobLabel }}</strong> has a crew: {{ crewPromptCrewLabel }}.
+        </p>
+        <div class="crew-change-options">
+          <Button
+            v-for="opt in crewPromptOptions"
+            :key="opt.key"
+            :label="opt.label"
+            :icon="opt.key === 'add' ? 'pi pi-user-plus' : 'pi pi-arrow-right-arrow-left'"
+            severity="secondary"
+            outlined
+            :data-testid="`crew-change-${opt.key}`"
+            @click="resolveCrewPrompt(opt)"
+          />
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" text data-testid="crew-change-cancel" @click="resolveCrewPrompt(null)" />
         </template>
       </Dialog>
 
@@ -1995,8 +2026,11 @@ async function geocodeMissing() {
 
 // The visit card being dragged: a drop moves that visit, never its job row.
 const draggingCard = ref(null);
+// The tech row or column the card was picked up from, when it came from one:
+// a crew job dropped on a tech outside the crew offers to swap this tech first.
+let draggingFromTechId = null;
 
-function onDragStart(job, event) {
+function onDragStart(job, event, fromTechId = null) {
   // A day that has started or closed stays where it was worked.
   if (job?.visit_id && !job.visit_movable) {
     event?.preventDefault?.();
@@ -2004,6 +2038,7 @@ function onDragStart(job, event) {
   }
   draggingCard.value = job?.visit_id ? job : null;
   draggingJobId.value = job.id;
+  draggingFromTechId = fromTechId ? String(fromTechId) : null;
   if (event?.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', String(job.id));
@@ -2208,6 +2243,7 @@ async function onWeekCellDrop(event, techId, dayStr) {
   if (!jobId) return;
   draggingJobId.value = null;
   const card = takeDraggedVisit(jobId);
+  const from = takeDragOrigin();
   const source = card
     || jobs.value.find((j) => String(j.id) === String(jobId))
     || partialJobs.value.find((j) => String(j.id) === String(jobId))
@@ -2261,7 +2297,107 @@ async function onWeekCellDrop(event, techId, dayStr) {
     });
     return;
   }
+  if (await placeCrewJob(jobId, techId, iso, from, source)) return;
   await assignJob(jobId, techId, iso);
+}
+
+// --- Crew-safe placement (Doug, 2026-10-15) ---
+// One assigned_tech_id replaces the whole crew on the server, so a job with a
+// crew of two or more never goes through assignJob. Dropped on a crew member
+// it moves the time only; dropped on anyone else it asks whether to swap one
+// member for that tech or add them, and Cancel moves nothing.
+function findBoardJob(jobId) {
+  const id = String(jobId);
+  return jobs.value.find((j) => String(j.id) === id)
+    || scheduledUnassigned.value.find((j) => String(j.id) === id)
+    || unassignedJobs.value.find((j) => String(j.id) === id)
+    || null;
+}
+
+// The crew, lead first.
+function crewOf(job) {
+  const crew = (job?.assigned_tech_ids || []).map(String).filter(Boolean);
+  if (job?.technician_id && !crew.includes(String(job.technician_id))) crew.push(String(job.technician_id));
+  const lead = String(job?.lead_tech_id || job?.technician_id || '');
+  return crew.includes(lead) ? [lead, ...crew.filter((t) => t !== lead)] : crew;
+}
+
+function takeDragOrigin() {
+  const from = draggingFromTechId;
+  draggingFromTechId = null;
+  return from;
+}
+
+const crewPromptOpen = ref(false);
+const crewPromptHeader = ref('');
+const crewPromptJobLabel = ref('');
+const crewPromptCrewLabel = ref('');
+const crewPromptOptions = ref([]);
+let crewPromptResolve = null;
+
+// Resolves { tech_ids, lead } for the chosen crew, or null on Cancel.
+function askCrewChange(job, techId, fromTechId) {
+  const crew = crewOf(job);
+  const lead = crew[0];
+  const newId = String(techId);
+  const newName = techName(newId);
+  const members = fromTechId && crew.includes(String(fromTechId))
+    ? [String(fromTechId), ...crew.filter((t) => t !== String(fromTechId))]
+    : crew;
+  const options = members.map((m) => ({
+    key: `swap-${m}`,
+    label: `Swap ${techName(m)} for ${newName}`,
+    tech_ids: crew.map((t) => (t === m ? newId : t)),
+    lead: m === lead ? newId : lead,
+  }));
+  options.push({ key: 'add', label: `Add ${newName} to the crew`, tech_ids: [...crew, newId], lead });
+  crewPromptHeader.value = `${newName} isn't on this crew`;
+  crewPromptJobLabel.value = displayCustomer(job) || 'This job';
+  crewPromptCrewLabel.value = crew.map((t) => techName(t)).join(', ');
+  crewPromptOptions.value = options;
+  crewPromptOpen.value = true;
+  // A question still open is answered Cancel, so its drop never hangs.
+  if (crewPromptResolve) crewPromptResolve(null);
+  return new Promise((resolve) => { crewPromptResolve = resolve; });
+}
+
+function resolveCrewPrompt(choice) {
+  const resolve = crewPromptResolve;
+  crewPromptResolve = null;
+  crewPromptOpen.value = false;
+  if (resolve) resolve(choice);
+}
+
+// True when the drop was a crew job and is handled here (moved, re-crewed
+// or cancelled); false sends the caller on to assignJob.
+async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = null) {
+  if (!techId) return false;
+  const job = knownJob || findBoardJob(jobId);
+  const crew = crewOf(job);
+  if (crew.length < 2) return false;
+  const moved = scheduledAt
+    && new Date(scheduledAt).getTime() !== new Date(job.scheduled_at || 0).getTime();
+  if (crew.includes(String(techId))) {
+    if (!moved) return true;
+    await withBoardWrite(async () => {
+      try {
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: scheduledAt });
+      } catch { /* api composable already toasts */ }
+      await fetchJobs();
+    });
+    return true;
+  }
+  const choice = await askCrewChange(job, techId, fromTechId);
+  if (!choice) return true; // cancelled: nothing moves
+  const patch = { assigned_tech_ids: choice.tech_ids, lead_tech_id: choice.lead };
+  if (moved) patch.scheduled_at = scheduledAt;
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${jobId}`, patch);
+    } catch { /* api composable already toasts */ }
+    await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
+  });
+  return true;
 }
 
 async function handleDrop(techId, event) {
@@ -2272,10 +2408,12 @@ async function handleDrop(techId, event) {
   if (!dropJobId) return;
   draggingJobId.value = null;
   const card = takeDraggedVisit(dropJobId);
+  const from = takeDragOrigin();
   if (card) {
     await moveVisitCard(card, techId, card.scheduled_at);
     return;
   }
+  if (await placeCrewJob(dropJobId, techId, null, from)) return;
   await assignJob(dropJobId, techId);
 }
 
@@ -2430,6 +2568,7 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
 async function onTimelinePlace({ jobId, techId, startISO }) {
   if (!jobId || !techId || !startISO) return;
   const card = takeDraggedVisit(jobId);
+  const from = takeDragOrigin();
   if (card) {
     await moveVisitCard(card, techId, startISO);
     return;
@@ -2438,6 +2577,9 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     await placePartialJob(jobId, techId, startISO);
     return;
   }
+  // A crew job moved along a helper's column was checked against the lead
+  // only, fell through to assignJob and lost its crew (Doug, 2026-10-15).
+  if (await placeCrewJob(jobId, techId, startISO, from)) return;
   // Same-tech reschedule with existing duration → patch scheduled_at
   // only, no duration prompt (we know the height already, and the block
   // is just moving on the same tech's timeline).
@@ -2465,6 +2607,7 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
 async function onTimelinePlaceTray({ jobId, techId }) {
   if (!jobId || !techId) return;
   const card = takeDraggedVisit(jobId);
+  const from = takeDragOrigin();
   if (card) {
     // The tray is the day with no time: shop midnight of the board day.
     await sendVisitMove(card, techId, selectedDateStr.value, '00:00');
@@ -2478,12 +2621,17 @@ async function onTimelinePlaceTray({ jobId, techId }) {
     await placePartialJob(jobId, techId, d.toISOString(), boardDay);
     return;
   }
+  if (await placeCrewJob(jobId, techId, d.toISOString(), from)) return;
   await assignJob(jobId, techId, d.toISOString());
 }
 
 function confirmAssign() {
   if (assignDialogJob.value && assignDialogTechId.value) {
-    assignJob(assignDialogJob.value.id, assignDialogTechId.value);
+    const jobId = assignDialogJob.value.id;
+    const techId = assignDialogTechId.value;
+    placeCrewJob(jobId, techId, null, null).then((handled) => {
+      if (!handled) assignJob(jobId, techId);
+    });
   }
   assignDialogVisible.value = false;
   assignDialogJob.value = null;
@@ -2982,6 +3130,14 @@ defineExpose({
 </script>
 
 <style scoped>
+.crew-change-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.crew-change-options :deep(.p-button) {
+  justify-content: flex-start;
+}
 .week-slot-list {
   list-style: none;
   margin: 0;
