@@ -109,6 +109,30 @@ jobs:
           pip install --no-deps -r gdx_dispatch/requirements.lock
           pip check
 
+      - name: PostgreSQL client matching the service
+        # test_pave_rebuild_pg.py dumps and reloads with pg_dump/psql, and a
+        # client newer than the server writes GUCs (transaction_timeout) that
+        # the server refuses under ON_ERROR_STOP. The bare pg_dump on PATH is
+        # pg_wrapper, which picks the NEWEST installed client, so the test
+        # looks in /usr/lib/postgresql/<server major>/bin first (GDXA-1169).
+        # ubuntu-24.04 ships PostgreSQL 16, so today this only prints the
+        # versions; a runner image without a 16 gets it from the PGDG apt repo
+        # (checked on ubuntu:26.04, 2026-10-14). Keep PG_MAJOR in lockstep with
+        # services.postgres.image above. The runner is deliberately not pinned:
+        # that would freeze every shard's image to work around one test's tool.
+        env:
+          PG_MAJOR: "16"
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          if [ ! -x "/usr/lib/postgresql/$PG_MAJOR/bin/pg_dump" ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends postgresql-common
+            sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+            sudo apt-get install -y -q --no-install-recommends "postgresql-client-$PG_MAJOR"
+          fi
+          "/usr/lib/postgresql/$PG_MAJOR/bin/pg_dump" --version
+          "/usr/lib/postgresql/$PG_MAJOR/bin/psql" --version
+
       - name: Run tests (pytest-split shard ${{ matrix.group }}/7)
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
