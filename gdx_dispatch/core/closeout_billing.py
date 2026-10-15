@@ -31,14 +31,14 @@ import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
-from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobCloseout, JobPartNeeded
+from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, InvoiceLine, Job, JobCloseout, JobPartNeeded
 from gdx_dispatch.modules.proposals.models import Estimate
 
 log = logging.getLogger(__name__)
@@ -234,6 +234,16 @@ def closeout_hours_billed_before(db: Session, closeout) -> Decimal:
     invoiced, or its invoice voided) billed nothing, so voiding one invoice in
     the run gives back exactly what it billed. 0 for a closeout that restates
     nothing."""
+    return sum(
+        (_claim_man_hours(db, prior) for prior in _restated_run(db, closeout)
+         if closeout_hours_holder(db, prior) is not None),
+        Decimal(0),
+    )
+
+
+def _restated_run(db: Session, closeout) -> list:
+    """The closeouts ``closeout`` restates, newest first: back through
+    ``supersedes_id`` while each row restates the one before it."""
     run: list = []
     seen: set = set()
     cur = closeout
@@ -248,10 +258,140 @@ def closeout_hours_billed_before(db: Session, closeout) -> Decimal:
         seen.add(cur.supersedes_id)
         run.append(prior)
         cur = prior
-    return sum(
-        (_claim_man_hours(db, prior) for prior in run if closeout_hours_holder(db, prior) is not None),
-        Decimal(0),
+    return run
+
+
+def restatement_credit_targets(db: Session, closeout) -> list[dict]:
+    """Where to credit the hours a restatement lowered below what is already
+    invoiced (GDXA-1184), newest invoice first. Empty when nothing is
+    over-billed, or when it has all been credited already.
+
+    Crediting stays manual (Doug, 2026-10-15): this only says which earlier
+    invoices hold the excess and what a credit for it would be, so the office
+    can open the credit-memo dialog pre-filled. Nothing is written here.
+
+    * The excess is what the run billed less the restated man-hours, but the
+      job keeps its first hour: a service job bills at least 1 h
+      (``billing_lanes.job_labor_lines``), counted over every labor hour the
+      job's live invoices bill, so a 3 h bill restated to 0.5 h credits 2 h,
+      while the same restatement on a job with 4 h billed on another day
+      credits 2.5 h.
+    * Each invoice takes at most what its claims billed, and never more labor
+      than the invoice itself still bills (an office edit that cut the line
+      already took those hours off), priced at the hourly rate on that
+      invoice's own labor line (the lowest one, so an edited line never
+      over-credits), or the shop's rate when it has none.
+    * Every credit memo or refund already on the invoice is taken off, whatever
+      it was issued for, so the offer never comes back once the invoice has
+      been credited; a credit for something else only makes the offer smaller.
+    * ``amount`` is capped at the invoice's balance due, because a credit memo
+      cannot exceed it; ``creditable`` is False when the invoice has no open
+      balance or is not issued, and the excess then needs a refund."""
+    if closeout is None:
+        return []
+    # holder invoice id -> man-hours its claims billed, newest first. Only an
+    # issued invoice has billed anything: a draft holding claims is fixed by
+    # editing it, and it is left out here exactly as it is left out of the
+    # first-hour count below, so both sides of ``elsewhere`` agree.
+    held: dict = {}
+    for prior in _restated_run(db, closeout):
+        holder = closeout_hours_holder(db, prior)
+        if holder is not None and db.get(Invoice, holder).status in _ISSUED:
+            held[holder] = held.get(holder, Decimal(0)) + _claim_man_hours(db, prior)
+    if not held:
+        return []
+    held = {inv_id: min(hours, _invoice_labor_hours(db, inv_id)) for inv_id, hours in held.items()}
+    billed = sum(held.values(), Decimal(0))
+    elsewhere = max(Decimal(0), _job_labor_hours_billed(db, closeout.job_id) - billed)
+    floor = max(Decimal(0), Decimal(1) - elsewhere)
+    excess = billed - max(closeout_man_hours(closeout), floor)
+    targets: list[dict] = []
+    for inv_id, hours in held.items():
+        if excess <= 0:
+            break
+        take = min(excess, hours)
+        if take <= 0:
+            continue
+        excess -= take
+        inv = db.get(Invoice, inv_id)
+        rate = _billed_hourly_rate(db, inv)
+        owed = max(Decimal(0), _money(take * rate) - _credited_on(db, inv.id))
+        if owed <= 0:
+            continue
+        balance = _money(inv.balance_due or 0)
+        creditable = inv.status in ("sent", "overdue") and balance > 0
+        targets.append({
+            "invoice_id": str(inv.id),
+            "invoice_number": inv.invoice_number,
+            "status": inv.status,
+            "closeout_id": str(closeout.id),
+            "man_hours": float(take),
+            "hourly_rate": float(rate),
+            "credit_value": float(owed),
+            "balance_due": float(balance),
+            "amount": float(min(owed, balance)) if creditable else 0.0,
+            "creditable": creditable,
+        })
+    return targets
+
+
+_ISSUED = ("sent", "overdue", "paid")
+
+
+def _labor_hours_where(*where):
+    return select(func.sum(InvoiceLine.quantity)).where(
+        InvoiceLine.deleted_at.is_(None), InvoiceLine.category == "Labor", *where
     )
+
+
+def _invoice_labor_hours(db: Session, invoice_id) -> Decimal:
+    """Labor quantity ``invoice_id`` bills now, first-hour line included."""
+    total = db.execute(_labor_hours_where(InvoiceLine.invoice_id == invoice_id)).scalar_one_or_none()
+    return Decimal(str(total or 0))
+
+
+def _job_labor_hours_billed(db: Session, job_id) -> Decimal:
+    """Labor quantity on every issued invoice of the job. A draft is not
+    billed yet, and can still be deleted: counted, it would let the first
+    hour be credited (GDXA-1184 audit 4)."""
+    total = db.execute(
+        _labor_hours_where(
+            Invoice.job_id == job_id,
+            Invoice.id.in_(_live_invoice_ids()),
+            Invoice.status.in_(_ISSUED),
+        )
+        .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+    ).scalar_one_or_none()
+    return Decimal(str(total or 0))
+
+
+def _billed_hourly_rate(db: Session, inv) -> Decimal:
+    """The hourly rate ``inv`` billed labor at: the lowest unit price on its
+    live labor lines other than the first-hour line, else the shop's rate."""
+    from gdx_dispatch.core.billing_lanes import FIRST_HOUR_DESCRIPTION, service_rates  # noqa: PLC0415
+
+    rate = db.execute(
+        select(func.min(InvoiceLine.unit_price)).where(
+            InvoiceLine.invoice_id == inv.id,
+            InvoiceLine.deleted_at.is_(None),
+            InvoiceLine.category == "Labor",
+            InvoiceLine.description != FIRST_HOUR_DESCRIPTION,
+            InvoiceLine.quantity > 0,
+            InvoiceLine.unit_price > 0,
+        )
+    ).scalar_one_or_none()
+    return _money(rate) if rate is not None else service_rates(db)[1]
+
+
+def _credited_on(db: Session, invoice_id) -> Decimal:
+    """Every credit memo and refund already on ``invoice_id``, for any reason."""
+    total = db.execute(
+        select(func.sum(InvoiceAdjustment.amount)).where(
+            InvoiceAdjustment.invoice_id == invoice_id,
+            InvoiceAdjustment.kind.in_(("credit_memo", "refund")),
+        )
+    ).scalar_one_or_none()
+    return _money(total or 0)
 
 
 def _restates(db: Session, closeout, prior) -> bool:

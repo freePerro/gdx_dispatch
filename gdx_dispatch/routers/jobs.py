@@ -3172,10 +3172,14 @@ def closeout_job(
         from gdx_dispatch.core.closeout_billing import (
             closeout_hours_billed_before,
             closeout_man_hours,
+            restatement_credit_targets,
         )
 
         billed_before = closeout_hours_billed_before(db, closeout) if restating else Decimal(0)
         billed_above_attested = max(Decimal(0), billed_before - closeout_man_hours(closeout))
+        # GDXA-1184: which earlier invoices hold that excess, for the office
+        # to credit by hand. Nothing is credited here.
+        credit_targets = restatement_credit_targets(db, closeout) if billed_above_attested > 0 else []
         if billed_above_attested > 0:
             log.warning(
                 "closeout_restated_below_billed",
@@ -3253,6 +3257,7 @@ def closeout_job(
                     "is_restatement": restating,
                     "man_hours_billed_before": str(billed_before),
                     "man_hours_billed_above_attested": str(billed_above_attested),
+                    "credit_targets": credit_targets,
                 },
                 ip_address=request.client.host if request.client else None,
                 request=request,
@@ -3286,6 +3291,7 @@ def closeout_job(
             "is_restatement": restating,
             "man_hours_billed_before": float(billed_before),
             "man_hours_billed_above_attested": float(billed_above_attested),
+            "credit_targets": credit_targets,
         }, 201)
     except IntegrityError as exc:
         # Two people closing out the same job within the same moment: B's
@@ -3577,6 +3583,7 @@ def closeout_billing_suggestion(
         closeout_hours_billed_before,
         closeout_man_hours,
         closeout_man_hours_left_unbilled,
+        restatement_credit_targets,
     )
 
     billed_before = closeout_hours_billed_before(db, closeout)
@@ -3594,6 +3601,9 @@ def closeout_billing_suggestion(
             "man_hours_billed_before": float(billed_before),
             "man_hours_billed_above_attested": float(billed_above_attested),
             "man_hours_left_unbilled": float(closeout_man_hours_left_unbilled(db, closeout)),
+            # GDXA-1184: the earlier invoices to credit, with a pre-filled
+            # amount the office confirms in the credit-memo dialog.
+            "credit_targets": restatement_credit_targets(db, closeout) if billed_above_attested > 0 else [],
         },
         "job_notes": job_notes,
         "labor_lines": labor_lines,

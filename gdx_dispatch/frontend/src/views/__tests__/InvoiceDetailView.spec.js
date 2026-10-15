@@ -1899,3 +1899,113 @@ describe('InvoiceDetailView — GDXA-449: a stale edit screen is refused, not sa
     expect(warns[0][0].severity).toBe('warn');
   });
 });
+
+describe('InvoiceDetailView — credit-memo pre-fill from a restated closeout (GDXA-1184)', () => {
+  const REASON = 'Closeout restated: 1 man-hours billed above the attested hours';
+
+  it('opens the dialog pre-filled, strips the query, and posts nothing until Issue Credit', async () => {
+    routeMock.query = { credit_memo: '50', credit_reason: REASON, credit_closeout: 'co-2' };
+    mockApi(buildInvoicePayload({ status: 'sent', effective_status: 'sent' }));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(routerReplace).toHaveBeenCalledWith({ query: {} });
+    const dialog = wrapper.find('[data-testid="credit-memo-dialog"]');
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.find('[data-testid="credit-memo-amount"]').element.value).toBe('50');
+    expect(dialog.find('[data-testid="credit-memo-reason"]').element.value).toBe(REASON);
+    expect(apiPost).not.toHaveBeenCalled();
+
+    apiPost.mockResolvedValue({ balance_due: 30.25 });
+    await wrapper.find('[data-testid="save-credit-memo"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).toHaveBeenCalledWith('/api/invoices/inv-1/credit-memo', { amount: 50, reason: REASON, closeout_id: 'co-2' }, { suppressErrorToast: true });
+  });
+
+  it('a cancelled pre-fill leaves the plain Credit Memo button empty and untagged', async () => {
+    routeMock.query = { credit_memo: '50', credit_reason: REASON, credit_closeout: 'co-2' };
+    mockApi(buildInvoicePayload({ status: 'sent', effective_status: 'sent' }));
+    const wrapper = mountView();
+    await flushPromises();
+    const cancel = wrapper.find('[data-testid="credit-memo-dialog"]').findAll('button').find((b) => b.text() === 'Cancel');
+    await cancel.trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="credit-memo-dialog"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="credit-memo-btn"]').trigger('click');
+    await flushPromises();
+    const dialog = wrapper.find('[data-testid="credit-memo-dialog"]');
+    expect(dialog.find('[data-testid="credit-memo-reason"]').element.value).toBe('');
+    await dialog.find('[data-testid="credit-memo-amount"]').setValue('20');
+    await dialog.find('[data-testid="credit-memo-reason"]').setValue('goodwill');
+    apiPost.mockResolvedValue({ balance_due: 60.25 });
+    await wrapper.find('[data-testid="save-credit-memo"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).toHaveBeenCalledTimes(1);
+    expect(apiPost.mock.calls[0][1]).not.toHaveProperty('closeout_id');
+    expect(apiPost.mock.calls[0][1].reason).toBe('goodwill');
+  });
+
+  function mockWithTargets(overrides, targets) {
+    const payload = buildInvoicePayload({ job_id: 'job-1', ...overrides });
+    mockApi(payload);
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url) => (url === '/api/jobs/job-1/closeout-billing-suggestion'
+      ? Promise.resolve({ closeout: { credit_targets: targets } }) : base(url)));
+  }
+  const TARGET = {
+    invoice_id: 'inv-1', invoice_number: 'INV-0001', status: 'sent', closeout_id: 'co-2', man_hours: 1, hourly_rate: 100,
+    credit_value: 100, balance_due: 80.25, amount: 80.25, creditable: true,
+  };
+
+  it('the earlier invoice itself offers the credit, and issues it only on click', async () => {
+    mockWithTargets({ status: 'sent', effective_status: 'sent' }, [TARGET]);
+    const wrapper = mountView();
+    await flushPromises();
+    const banner = wrapper.find('[data-testid="restatement-credit-banner"]');
+    expect(banner.text()).toContain('1 man-hours this invoice billed');
+    expect(apiPost).not.toHaveBeenCalled();
+    await banner.find('[data-testid="restatement-credit-open"]').trigger('click');
+    await flushPromises();
+    const dialog = wrapper.find('[data-testid="credit-memo-dialog"]');
+    expect(dialog.find('[data-testid="credit-memo-reason"]').element.value).toBe(REASON);
+    apiPost.mockResolvedValue({ balance_due: 0 });
+    await wrapper.find('[data-testid="save-credit-memo"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).toHaveBeenCalledWith('/api/invoices/inv-1/credit-memo', { amount: 80.25, reason: REASON, closeout_id: 'co-2' }, { suppressErrorToast: true });
+  });
+
+  it('names no credit on an invoice the restatement does not touch, and says refund on a paid one', async () => {
+    mockWithTargets({ status: 'sent', effective_status: 'sent' }, [{ ...TARGET, invoice_id: 'inv-9' }]);
+    const other = mountView();
+    await flushPromises();
+    expect(other.find('[data-testid="restatement-credit-banner"]').exists()).toBe(false);
+
+    mockWithTargets({ status: 'paid', effective_status: 'paid', payments: [{ id: 'p1', amount: 80.25 }] },
+      [{ ...TARGET, status: 'paid', balance_due: 0, amount: 0, creditable: false }]);
+    const paid = mountView();
+    await flushPromises();
+    const banner = paid.find('[data-testid="restatement-credit-banner"]');
+    expect(banner.text()).toContain('refund the customer instead');
+    expect(banner.find('[data-testid="restatement-credit-open"]').exists()).toBe(false);
+  });
+
+  it('caps the pre-filled amount at the balance due', async () => {
+    routeMock.query = { credit_memo: '500', credit_reason: REASON };
+    mockApi(buildInvoicePayload({ status: 'sent', effective_status: 'sent' }));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="credit-memo-amount"]').element.value).toBe('80.25');
+  });
+
+  it.each([
+    ['a paid invoice', { status: 'paid', effective_status: 'paid', payments: [{ id: 'p1', amount: 80.25 }] }],
+    ['a draft', {}],
+  ])('on %s it opens no dialog and says why', async (_name, overrides) => {
+    routeMock.query = { credit_memo: '50', credit_reason: REASON };
+    mockApi(buildInvoicePayload(overrides));
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="credit-memo-dialog"]').exists()).toBe(false);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: 'Nothing to credit here' }));
+  });
+});

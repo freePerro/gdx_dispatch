@@ -347,7 +347,9 @@ def _decode_bearer_claims(request: Request) -> dict:
       without this check a refresh token stood in for an access token on any
       route gated only here, defeating the 15-minute access TTL (GDXA-1147).
     - the ``jti`` must not be on the revocation denylist (SS-7 Slice H parity),
-      so a token revoked by logout, offboarding or admin revoke stops here too.
+      so a token revoked by logout or ``/auth/admin/revoke`` stops here too.
+      Offboarding, demotion and password reset (``revoke_user_sessions``)
+      revoke only the refresh family, not this token (GDXA-1215).
 
     A token PyJWT rejects (bad signature, expired, malformed, unexpected
     ``aud``) returns {}: that is an answer, not an error. An error escaping
