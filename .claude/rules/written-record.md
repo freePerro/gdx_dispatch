@@ -17,17 +17,27 @@ system as it is right now, and starts rotting the day it is written.
 it predicts where the defects are. The 2026-09-01 doc audit found ten live
 defects and **all ten came from present-tense docs**: guides, runbooks, an ADR
 whose status was left behind by its own build commit, and two root trackers.
-**Zero came from a completed design doc.** No doc in this repo has ever
-overclaimed; the record only ever undersells what exists.
+**Zero came from a completed design doc.** That audit found no doc
+overclaiming; every defect it found undersold what exists.
 
 - **Every doc carries a status line in its header block — plans, guides,
-  runbooks and ADRs alike.** Line 3, or just below it when a `**Date:**` block
-  comes first. Vocabulary: `PLAN` · `PARTIALLY BUILT` · `MERGED #N` ·
-  `RELEASED vX.Y.Z` · `HISTORICAL`. It names what is *not* built when the
-  answer is "some of it". A doc with no status line is incomplete. Measured
-  2026-09-12 over tracked files: `docs/design/` is 70 of 70 and
-  `gdx_dispatch/docs/` is 41 of 41. Every doc complies today; the rule is what
-  keeps it that way.
+  runbooks and ADRs alike.** The rule is a `Status:` marker in the header
+  block — on its own line, inline on the `**Date:**` line, or in a
+  blockquote — usually line 3, lower when a title or `**Date:**` block comes
+  first. Its first word names the state. Common values: `PLAN` · `PROPOSED` ·
+  `PARTIALLY BUILT` · `BUILT` · `MERGED #N` · `RELEASED vX.Y.Z` ·
+  `SUPERSEDED` · `HISTORICAL` for plans; `CURRENT` · `PARTIAL` · `STALE` ·
+  `INVALIDATED` · `RECORD` · `HISTORICAL` for guides and runbooks; `Proposed`
+  · `Accepted` · `Implemented` for ADRs. The list describes the corpus, it
+  does not close it: about twenty docs use a one-off phrase (`SWEEP COMPLETE`,
+  `DEBT REGISTER`, `RESEARCH`, …), and nothing checks the words — a future
+  scanner should test for the marker, not the vocabulary. It names what is
+  *not* built when the answer is "some of it". A doc with no status line is
+  incomplete. Measured 2026-10-14 over tracked files: `docs/design/` is 88 of
+  88 (41 of them in `archive/`) and `gdx_dispatch/docs/` is 41 of 41; 120 put
+  the marker on its own line, 8 inline on the `**Date:**` line, 1 in a
+  blockquote, and 106 of 129 on line 3. Every doc complies today; the rule is
+  what keeps it that way.
 - **The status line ships with the code.** A PR that implements part of a plan
   updates that plan's status in the same PR. ADR-016 was edited *inside its own
   build commit* and still read "nothing built yet" while the feature sat in the
