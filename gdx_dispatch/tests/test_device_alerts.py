@@ -96,10 +96,12 @@ class _Env:
             s.commit()
         return nid
 
-    def feed(self, token: str, after: str | None = None, wait: int = 0):
+    def feed(self, token: str, after: str | None = None, wait: int = 0, scope: str | None = None):
         params = {"wait": wait}
         if after:
             params["after"] = after
+        if scope:
+            params["scope"] = scope
         return self.client.get("/api/notifications/device-alerts/feed", params=params,
                                headers={HEADER: token})
 
@@ -195,6 +197,42 @@ def test_feed_returns_new_bell_rows_for_me_and_broadcast_only(env):
     body = env.feed(token, after=cursor).json()
     assert {i["id"] for i in body["items"]} == {mine, broadcast}
     assert body["cursor"] > cursor
+
+
+def test_planner_scope_sees_only_my_planner_rows(env):
+    # GDX Planner polls with scope=planner: its own reminders, no office
+    # broadcasts, nobody else's reminders.
+    uid = env.add_user("dispatcher")
+    other = env.add_user("dispatcher")
+    token = env.mint(uid)
+    cursor = env.feed(token, scope="planner").json()["cursor"]
+    mine = env.bell(user_id=uid, title="Reminder: mine", category="planner_reminder")
+    env.bell(user_id=other, title="Reminder: theirs", category="planner_reminder")
+    env.bell(title="All", category="planner_reminder")  # a broadcast is never a reminder
+    env.bell(user_id=uid, title="Mine, office", category="sms")
+    env.bell(title="Broadcast", category="lead")
+    env.bell(user_id=uid, title="Look-alike", category="plannerXreminder")  # "_" is literal
+    body = env.feed(token, after=cursor, scope="planner").json()
+    assert [i["id"] for i in body["items"]] == [mine]
+
+
+def test_office_scope_leaves_planner_rows_to_gdx_planner(env):
+    # The default feed drops planner_ rows so a reminder buzzes once, from
+    # GDX Planner, not again from GDX Dispatch's office alerts.
+    uid = env.add_user("dispatcher")
+    token = env.mint(uid)
+    cursor = env.feed(token).json()["cursor"]
+    env.bell(user_id=uid, title="Reminder", category="planner_reminder")
+    office = env.bell(user_id=uid, title="Text", category="sms")
+    look_alike = env.bell(user_id=uid, title="Look-alike", category="plannerXreminder")
+    body = env.feed(token, after=cursor).json()
+    assert {i["id"] for i in body["items"]} == {office, look_alike}
+
+
+def test_unknown_scope_is_422(env):
+    uid = env.add_user("dispatcher")
+    token = env.mint(uid)
+    assert env.feed(token, scope="everything").status_code == 422
 
 
 def test_feed_overlap_resends_late_rows(env):

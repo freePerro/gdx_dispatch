@@ -226,6 +226,50 @@ fi
 if [ "${TMPFS_TMP:-1}" = "1" ] && [[ "$PYTEST" == *"docker run"* ]] && [[ "$PYTEST" != *"--tmpfs"* ]]; then
   PYTEST="${PYTEST/docker run/docker run --tmpfs /tmp:rw,exec,size=32g}"
 fi
+# ── docker PYTEST: a real Postgres, as CI has ───────────────────────────────
+# CI gives every shard a postgres:16 service and sets DATABASE_URL plus the
+# five GDX_TEST_PG_* vars. The docker shards here had neither, so the Postgres
+# arm of the suite (fixtures/pg.py, the GL money guards, every migration test's
+# round trip, the closeout claim race, pave_rebuild_pg) SKIPPED locally and ran
+# for the first time in CI: about 5 of the 78 failed PR runs in the week to
+# 2026-10-15 were exactly those tests, on branches the matrix had passed.
+# Point the shards at the local `gdx-test-postgres` container (the target
+# fixtures/pg.py already names), with the same variables CI sets, and one
+# database per shard as CI has one service per shard, so a migration test's
+# fixed schema name cannot meet another shard's or another run's.
+# DATABASE_URL, not TEST_DATABASE_URL: CI sets only DATABASE_URL, and the two
+# gdx_ai_* role tests that read TEST_DATABASE_URL alone want a dedicated role
+# CI never creates, so there they skip — here too.
+# TEST_PG=0 opts out; TEST_PG_CONTAINER names another container.
+PG_DBS=()
+if [ "$MODE" = "matrix" ] && [ "${TEST_PG:-1}" = "1" ] && [[ "$PYTEST" == *"docker run"* ]] \
+   && [[ "$PYTEST" != *"GDX_TEST_PG_"* ]] && [ "${1:-}" != "--reuse-check" ]; then
+  pg_ctr="${TEST_PG_CONTAINER:-gdx-test-postgres}"
+  pg_port="$(docker port "$pg_ctr" 5432/tcp 2>/dev/null | sed -n 's/^0\.0\.0\.0:\([0-9]*\)$/\1/p' | head -1)"
+  pg_host=host.docker.internal
+  pg_sql() { docker exec "$pg_ctr" psql -U gdx -d gdx -qc "$1" >/dev/null 2>&1; }
+  pg_ok=0
+  if [ -n "$pg_port" ]; then
+    pg_ok=1
+    for g in $(seq 1 "${N:-7}"); do
+      if pg_sql "CREATE DATABASE gdx_matrix_$$_$g"; then PG_DBS+=("gdx_matrix_$$_$g"); else pg_ok=0; fi
+    done
+  fi
+  if [ "$pg_ok" = "1" ]; then
+    trap 'for d in "${PG_DBS[@]}"; do pg_sql "DROP DATABASE IF EXISTS $d WITH (FORCE)"; done' EXIT
+    pg_env="--add-host=$pg_host:host-gateway -e GDX_TEST_PG_HOST=$pg_host"
+    pg_env+=" -e GDX_TEST_PG_PORT=$pg_port -e GDX_TEST_PG_USER=gdx -e GDX_TEST_PG_PASSWORD=gdx -e GDX_TEST_PG_ADMIN_DB=gdx"
+    # __PG_DB__ becomes each shard's own database in the shard loop below.
+    pg_env+=" -e DATABASE_URL=postgresql://gdx:gdx@${pg_host}:$pg_port/__PG_DB__"
+    PYTEST="${PYTEST/docker run/docker run $pg_env}"
+    echo "postgres: $pg_ctr :$pg_port, databases gdx_matrix_$$_1..${N:-7} (dropped at exit)"
+  else
+    for d in "${PG_DBS[@]}"; do pg_sql "DROP DATABASE IF EXISTS $d WITH (FORCE)"; done
+    PG_DBS=()
+    echo "⚠ NO POSTGRES: container $pg_ctr is not up with a host port, so every Postgres test"
+    echo "  SKIPS here and runs for the first time in CI. Start it: docker start $pg_ctr"
+  fi
+fi
 
 # --version alone isn't enough — a host pytest without the app's deps fails
 # every shard with usage errors. Probe the actual imports the suite needs.
@@ -449,7 +493,7 @@ write_result() {
 
 pids=()
 for g in $(seq 1 "$N"); do
-  $PYTEST "${COMMON_OPTS[@]}" --splits "$N" --group "$g" "$@" \
+  ${PYTEST//__PG_DB__/gdx_matrix_$$_$g} "${COMMON_OPTS[@]}" --splits "$N" --group "$g" "$@" \
       > "$LOG_DIR/group_${g}.log" 2>&1 &
   pids+=("$!")
 done

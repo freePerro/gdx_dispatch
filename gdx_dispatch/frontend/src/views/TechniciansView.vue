@@ -5,22 +5,22 @@
           <h2 class="page-title">Technicians</h2>
         </template>
         <template #end>
-          <Button label="+ New Technician" icon="pi pi-plus" @click="openCreate" data-testid="new-tech-btn" />
+          <Button v-if="canWrite" label="+ New Technician" icon="pi pi-plus" @click="openCreate" data-testid="new-tech-btn" />
         </template>
       </Toolbar>
 
       <div v-if="loading" class="spinner-wrap"><ProgressSpinner /></div>
 
       <DataTable
-        class="clickable-rows"
+        :class="{ 'clickable-rows': canWrite }"
       responsiveLayout="scroll" v-if="!loading" :value="filtered" paginator :rows="20" striped-rows
-        @row-click="openEdit($event.data)" >
+        @row-click="canWrite && openEdit($event.data)" >
         <template #empty>
           <div class="empty-state">
             <i class="pi pi-user" style="font-size:3rem; color:#64748b;"></i>
             <h3>No Technicians Yet</h3>
             <p>Add technicians to assign jobs and track performance.</p>
-            <Button label="+ Add First Technician" @click="openCreate" />
+            <Button v-if="canWrite" label="+ Add First Technician" @click="openCreate" />
           </div>
         </template>
         <Column field="name" header="Name" sortable>
@@ -54,7 +54,7 @@
             <Tag :value="data.active ? 'Active' : 'Inactive'" :severity="data.active ? 'success' : 'secondary'" />
           </template>
         </Column>
-        <Column header="Actions" style="width:100px">
+        <Column v-if="canWrite" header="Actions" style="width:100px">
           <template #body="{ data }">
             <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openEdit(data)" />
             <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="confirmDelete(data)" />
@@ -124,7 +124,12 @@ import Tag from "primevue/tag";
 import Toolbar from "primevue/toolbar";
 import PhoneInput from "../components/PhoneInput.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { usePermission } from '../composables/usePermission';
 const { confirmAsync } = useDestructiveConfirm();
+// GDXA-981: every technician write takes users.write on the server (the row
+// carries the pay rate); without it the list is read-only, not a 403 on Save.
+const { hasPermission } = usePermission();
+const canWrite = computed(() => hasPermission('users.write'));
 
 const api = useApiWithToast();
 

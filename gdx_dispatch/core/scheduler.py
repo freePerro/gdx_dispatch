@@ -38,6 +38,15 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*"),
             "options": {"queue": "priority:high"},
         },
+        "send-due-planner-reminders-every-minute": {
+            # A planner task's remind_at → one bell row for whoever set it,
+            # which GDX Planner's phone-alerts service turns into an Android
+            # notification. priority:high like the scheduled-SMS drain: a
+            # reminder for 9:00 must not queue behind a slow resync. No-ops instantly when nothing is due.
+            "task": "gdx_dispatch.tasks.planner_reminders.send_due_planner_reminders",
+            "schedule": crontab(minute="*"),
+            "options": {"queue": "priority:high"},
+        },
         "planner-digest-daily": {
             # First staff-facing scheduled reminder. Emails a summary of open
             # planner tasks so call-notes taken on a busy day don't scroll away.
