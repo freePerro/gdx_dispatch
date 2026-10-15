@@ -393,6 +393,48 @@ describe('InvoiceCreateView — labor lines', () => {
     expect(wrapper.find('[data-testid="closeout-context-left-unbilled"]').text()).toContain('2 attested man-hours are on no live');
   });
 
+  it('a restatement below what is invoiced links to the credit on the earlier invoice (GDXA-1184)', async () => {
+    const target = {
+      invoice_id: 'inv-1', invoice_number: 'INV-0001', status: 'sent', closeout_id: 'co-2', man_hours: 1, hourly_rate: 100,
+      credit_value: 100, balance_due: 325, amount: 100, creditable: true,
+    };
+    const paid = { ...target, invoice_id: 'inv-2', invoice_number: 'INV-0002', status: 'paid', balance_due: 0, amount: 0, creditable: false };
+    routeSuggestion({
+      has_closeout: true,
+      closeout: { hours_worked: 2, techs_on_site: 1, man_hours_billed_before: 4, man_hours_billed_above_attested: 2,
+                  man_hours_left_unbilled: 0, credit_targets: [target, paid] },
+      labor_lines: [],
+    });
+    const { wrapper } = await mountIt();
+    const rows = wrapper.findAll('[data-testid="closeout-credit-target"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].text()).toContain('INV-0001: 1 man-hours');
+    expect(wrapper.find('[data-testid="closeout-context-billed-above"]').text()).toContain('credit the customer on the earlier invoice');
+    expect(rows[1].text()).toContain('no open balance to credit; refund the customer instead');
+    await rows[0].find('[data-testid="closeout-credit-target-open"]').trigger('click');
+    expect(routerPush).toHaveBeenLastCalledWith({
+      path: '/invoices/inv-1',
+      query: { credit_memo: '100', credit_reason: 'Closeout restated: 1 man-hours billed above the attested hours', credit_closeout: 'co-2' },
+    });
+    await rows[1].find('[data-testid="closeout-credit-target-open"]').trigger('click');
+    expect(routerPush).toHaveBeenLastCalledWith({ path: '/invoices/inv-2', query: {} });
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it('over-billed hours with nothing left to credit never tell the office to credit (GDXA-1184)', async () => {
+    routeSuggestion({
+      has_closeout: true,
+      closeout: { hours_worked: 0.5, techs_on_site: 1, man_hours_billed_before: 1, man_hours_billed_above_attested: 0.5,
+                  man_hours_left_unbilled: 0, credit_targets: [] },
+      labor_lines: [],
+    });
+    const { wrapper } = await mountIt();
+    const notice = wrapper.find('[data-testid="closeout-context-billed-above"]').text();
+    expect(notice).toContain('Nothing is left to credit');
+    expect(notice).not.toContain('credit the customer');
+    expect(wrapper.find('[data-testid="closeout-credit-target"]').exists()).toBe(false);
+  });
+
   it('a closeout with nothing billed before shows neither restatement notice', async () => {
     routeSuggestion({
       has_closeout: true,

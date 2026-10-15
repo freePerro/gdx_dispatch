@@ -26,15 +26,26 @@ from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
 from gdx_dispatch.core.audit import AuditLog
+from gdx_dispatch.core.billing_lanes import FIRST_HOUR_DESCRIPTION
 from gdx_dispatch.core.closeout_billing import closeout_hours_billed_before
 from gdx_dispatch.core.closeouts import get_current_closeout
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL
 from gdx_dispatch.models.pricing_engine import PricingSettings
-from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job, JobCloseout, TimeEntry
+from gdx_dispatch.models.tenant_models import (
+    Customer,
+    Invoice,
+    InvoiceAdjustment,
+    InvoiceLine,
+    Job,
+    JobCloseout,
+    TimeEntry,
+)
 from gdx_dispatch.routers.invoices import (
+    CreditMemoIn,
     InvoiceCreateIn,
     InvoiceLineCreateIn,
     create_invoice,
+    issue_credit_memo,
     void_invoice,
 )
 from gdx_dispatch.routers.jobs import (
@@ -409,3 +420,207 @@ def test_a_row_written_before_127_restates_unless_the_job_was_uncompleted(db):
     current.is_restatement = False
     db.commit()
     assert closeout_hours_billed_before(db, current) == Decimal(0)
+
+
+# --- GDXA-1184: the way to the credit, never the credit itself -------------
+
+
+def _adjustments(db) -> list:
+    db.expire_all()
+    return db.execute(select(InvoiceAdjustment)).scalars().all()
+
+
+def test_a_restatement_below_what_was_billed_names_the_invoice_to_credit(db):
+    """3 h billed and sent, restated to 2 h: the suggestion, the closeout
+    response and its audit row name the first invoice and a 1 h credit at the
+    hourly rate. Nothing is credited until the office issues it, and the
+    pre-filled amount is one the real credit-memo route accepts."""
+    job = _job(db)
+    first = _billed_first(db, job, 3)
+    inv = db.get(Invoice, UUID(first))
+    assert Decimal(str(inv.balance_due)) == Decimal("325.00")  # $125 first hour + 2 h at $100
+
+    out = _close(db, job, 2)
+    co = get_current_closeout(db, job.id)
+    expected = {
+        "invoice_id": first, "invoice_number": inv.invoice_number, "status": "sent",
+        "closeout_id": str(co.id), "man_hours": 1.0, "hourly_rate": 100.0, "credit_value": 100.0,
+        "balance_due": 325.0, "amount": 100.0, "creditable": True,
+    }
+    assert out["credit_targets"] == [expected]
+    assert _suggest(db, job)["closeout"]["credit_targets"] == [expected]
+    [audit] = db.execute(
+        select(AuditLog).where(AuditLog.action == "job_closeout_superseded")
+    ).scalars().all()
+    assert audit.details["credit_targets"] == [expected]
+    assert _adjustments(db) == [], "crediting stays manual"
+
+    issue_credit_memo(
+        invoice_id=first,
+        payload=CreditMemoIn(amount=expected["amount"], reason="Closeout restated: 1.0 man-hours billed above",
+                             closeout_id=co.id),
+        db=db, _=USER,
+    )
+    [adj] = _adjustments(db)
+    assert (adj.kind, Decimal(str(adj.amount)), str(adj.created_by)) == ("credit_memo", Decimal("100.00"), ACTOR)
+    assert Decimal(str(db.get(Invoice, UUID(first)).balance_due)) == Decimal("225.00")
+    [issued] = db.execute(select(AuditLog).where(AuditLog.action == "credit_memo_issued")).scalars().all()
+    assert (issued.user_id, issued.details["closeout_id"]) == (ACTOR, str(co.id))
+
+    # Credited: the offer is not made again, here or on a further restatement.
+    assert _suggest(db, job)["closeout"]["credit_targets"] == []
+    assert _close(db, job, 2)["credit_targets"] == []
+
+
+def test_a_partial_credit_leaves_only_the_rest_on_offer(db):
+    job = _job(db)
+    first = _billed_first(db, job, 3)
+    _close(db, job, 2)
+    co = get_current_closeout(db, job.id)
+    issue_credit_memo(invoice_id=first, payload=CreditMemoIn(amount=40, reason="part", closeout_id=co.id), db=db, _=USER)
+    [t] = _suggest(db, job)["closeout"]["credit_targets"]
+    assert (t["credit_value"], t["amount"]) == (60.0, 60.0)
+
+
+def test_a_credit_memo_naming_another_jobs_closeout_is_refused(db):
+    job, other = _job(db), _job(db)
+    first = _billed_first(db, job, 3)
+    _close(db, other, 1)
+    with pytest.raises(HTTPException) as exc:
+        issue_credit_memo(invoice_id=first, payload=CreditMemoIn(
+            amount=10, reason="x", closeout_id=get_current_closeout(db, other.id).id), db=db, _=USER)
+    assert exc.value.status_code == 422
+    assert _adjustments(db) == []
+
+
+def test_the_credit_is_priced_at_the_rate_the_invoice_billed(db):
+    """The shop's rate moved from $100 to $150 after billing: the credit is
+    still the $100 the invoice charged for the hour."""
+    job = _job(db)
+    _billed_first(db, job, 3)
+    db.execute(select(PricingSettings)).scalar_one().service_call_hourly_rate = Decimal("150")
+    db.commit()
+    _close(db, job, 2)
+    [t] = _suggest(db, job)["closeout"]["credit_targets"]
+    assert (t["hourly_rate"], t["credit_value"]) == (100.0, 100.0)
+
+
+def test_labor_billed_elsewhere_on_the_job_already_holds_the_first_hour(db):
+    """4 h billed on another invoice of the job, 2 h billed from the closeout,
+    restated to 0.5 h: the job's first hour is already billed, so the whole
+    1.5 h comes back."""
+    job = _job(db)
+    first = _billed_first(db, job, 2)
+    other = _create(db, job, [InvoiceLineCreateIn(description="Earlier day labor", quantity=Decimal("4"),
+                                                  unit_price=100, taxable=False, category="Labor")])
+    _send(db, other["id"])
+    _close(db, job, 0.5)
+    [t] = _suggest(db, job)["closeout"]["credit_targets"]
+    assert (t["invoice_id"], t["man_hours"]) == (first, 1.5)
+
+
+def test_a_restatement_under_the_first_hour_never_credits_the_first_hour(db):
+    """3 h billed, restated to half an hour: a service job bills at least 1 h,
+    so the credit is 2 h, not 2.5 h."""
+    job = _job(db)
+    _billed_first(db, job, 3)
+    _close(db, job, 0.5)
+    [t] = _suggest(db, job)["closeout"]["credit_targets"]
+    assert (t["man_hours"], t["credit_value"]) == (2.0, 200.0)
+
+
+def test_a_restatement_at_or_above_what_was_billed_names_nothing(db):
+    job = _job(db)
+    _billed_first(db, job, 2)
+    assert _close(db, job, 2)["credit_targets"] == []
+    assert _close(db, job, 3)["credit_targets"] == []
+    assert _suggest(db, job)["closeout"]["credit_targets"] == []
+
+
+def test_a_paid_invoice_is_named_but_not_creditable(db):
+    """A credit memo cannot exceed the balance due, so a paid invoice is
+    named with no amount: the excess needs a refund."""
+    job = _job(db)
+    first = _billed_first(db, job, 3)
+    inv = db.get(Invoice, UUID(first))
+    inv.status, inv.balance_due = "paid", Decimal("0")
+    db.commit()
+    _close(db, job, 2)
+    [t] = _suggest(db, job)["closeout"]["credit_targets"]
+    assert (t["invoice_id"], t["creditable"], t["amount"], t["credit_value"]) == (first, False, 0.0, 100.0)
+
+
+def test_the_excess_is_credited_newest_invoice_first(db):
+    """2 h billed, restated to 3 h and the 1 h delta billed on a second
+    invoice, then restated to 1.5 h: 1.5 h over, the second invoice takes its
+    1 h and the first the remaining 0.5 h."""
+    job = _job(db)
+    first = _billed_first(db, job, 2)
+    _close(db, job, 3)
+    [line] = _suggest(db, job)["labor_lines"]
+    second = _create(db, job, [_as_line(line)])["id"]
+    _send(db, second)
+    _close(db, job, 1.5)
+    got = [(t["invoice_id"], t["man_hours"]) for t in _suggest(db, job)["closeout"]["credit_targets"]]
+    assert got == [(str(second), 1.0), (first, 0.5)]
+
+
+def test_hours_the_office_already_cut_from_the_invoice_are_not_credited_again(db):
+    """3 h billed, then the office edits the hourly line from 2 h to 1 h: the
+    invoice now bills 2 h. Restated to 2 h there is nothing left over; restated
+    to 1 h, only the 1 h the invoice still bills above it."""
+    job = _job(db)
+    first = _billed_first(db, job, 3)
+    [hourly] = db.execute(select(InvoiceLine).where(
+        InvoiceLine.invoice_id == UUID(first), InvoiceLine.category == "Labor",
+        InvoiceLine.description != FIRST_HOUR_DESCRIPTION,
+    )).scalars().all()
+    hourly.quantity = Decimal("1")
+    db.commit()
+    assert _close(db, job, 2)["credit_targets"] == []
+    [t] = _close(db, job, 1)["credit_targets"]
+    assert (t["invoice_id"], t["man_hours"], t["credit_value"]) == (first, 1.0, 100.0)
+
+
+def test_any_credit_already_on_the_invoice_comes_off_the_offer(db):
+    """A credit memo issued from the plain button, with no closeout named, still
+    counts: offering it again could credit the same hour twice."""
+    job = _job(db)
+    first = _billed_first(db, job, 3)
+    issue_credit_memo(invoice_id=first, payload=CreditMemoIn(amount=30, reason="goodwill"), db=db, _=USER)
+    _close(db, job, 2)
+    [t] = _suggest(db, job)["closeout"]["credit_targets"]
+    assert t["credit_value"] == 70.0
+    issue_credit_memo(invoice_id=first, payload=CreditMemoIn(amount=70, reason="billing error"), db=db, _=USER)
+    assert _suggest(db, job)["closeout"]["credit_targets"] == []
+
+
+def test_an_unsent_draft_does_not_hold_the_first_hour(db):
+    """3 h billed and sent, a 1 h labor draft on the job, restated to 0.5 h: the
+    draft bills nothing yet and can be deleted, so the first hour stays on the
+    sent invoice and only 2 h are offered."""
+    job = _job(db)
+    _billed_first(db, job, 3)
+    _create(db, job, [InvoiceLineCreateIn(description="Draft labor", quantity=Decimal("1"),
+                                          unit_price=100, taxable=False, category="Labor")])
+    _close(db, job, 0.5)
+    [t] = _suggest(db, job)["closeout"]["credit_targets"]
+    assert (t["man_hours"], t["credit_value"]) == (2.0, 200.0)
+
+
+def test_a_held_draft_is_never_a_target_and_never_shifts_the_first_hour(db):
+    """A bills 2 h and is sent; the 1 h delta of a restatement to 3 h sits on a
+    draft; another sent invoice bills 1 h from an earlier day. Restated to
+    0.5 h: the earlier day holds the first hour, so A takes 1.5 h, and the
+    draft is fixed by editing it, not by a credit."""
+    job = _job(db)
+    first = _billed_first(db, job, 2)
+    _close(db, job, 3)
+    [line] = _suggest(db, job)["labor_lines"]
+    _create(db, job, [_as_line(line)])
+    earlier = _create(db, job, [InvoiceLineCreateIn(description="Earlier day labor", quantity=Decimal("1"),
+                                                    unit_price=100, taxable=False, category="Labor")])
+    _send(db, earlier["id"])
+    _close(db, job, 0.5)
+    got = [(t["invoice_id"], t["man_hours"]) for t in _suggest(db, job)["closeout"]["credit_targets"]]
+    assert got == [(first, 1.5)]
