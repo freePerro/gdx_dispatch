@@ -64,7 +64,7 @@
               Receivables tie-out
               <Tag
                 :severity="ar.tied ? 'success' : 'danger'"
-                :value="ar.tied ? 'Tied' : ar.difference_cents ? `NOT TIED: ${fmt(ar.difference_cents)}` : 'NOT TIED'"
+                :value="arTagLabel(ar)"
                 data-testid="ar-control-tag"
               />
             </h3>
@@ -78,7 +78,7 @@
             <p class="totals-row" data-testid="ar-control-totals">
               Open invoices {{ fmt(ar.subledger_cents) }} · AR account {{ fmt(ar.control_cents) }}
             </p>
-            <p v-if="ar.unattributed_cents" class="skip-note" data-testid="ar-control-unattributed">
+            <p v-if="ar.unattributed_by_source?.length" class="skip-note" data-testid="ar-control-unattributed">
               {{ fmt(ar.unattributed_cents) }} of AR traces to no invoice:
               <span v-for="(row, i) in ar.unattributed_by_source" :key="row.source_type">
                 {{ row.source_type }} {{ fmt(row.amount_cents) }}<span v-if="i < ar.unattributed_by_source.length - 1">, </span>
@@ -415,6 +415,23 @@ const journalSourceOptions = [
 const fmt = (cents) => {
   const dollars = (cents || 0) / 100;
   return dollars.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+};
+
+// difference_cents is a signed net: invoices drifting +X and -X, or untraced
+// sources of +X and -X, cancel to $0.00 while the tie-out still fails. Name
+// what is off in figures that cannot cancel (GDXA-1229). An era-settlement
+// shortfall is on neither total, so it fails the tie-out at a zero net
+// (GDXA-1223).
+const arTagLabel = (a) => {
+  if (a.tied) return 'Tied';
+  const parts = [];
+  if (a.drift_invoice_count) parts.push(`${a.drift_invoice_count} invoice(s)`);
+  const untraced = (a.unattributed_by_source || [])
+    .reduce((sum, row) => sum + Math.abs(row.amount_cents), 0);
+  if (untraced) parts.push(`${fmt(untraced)} untraced`);
+  if (a.era_settlement_shortfall_cents) parts.push(`${fmt(a.era_settlement_shortfall_cents)} posted nowhere`);
+  if (parts.length) return `NOT TIED: ${parts.join(', ')}`;
+  return a.difference_cents ? `NOT TIED: ${fmt(a.difference_cents)}` : 'NOT TIED';
 };
 
 // What the ledger's net income does not contain yet (GDXA-356). The report
