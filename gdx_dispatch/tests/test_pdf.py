@@ -400,3 +400,229 @@ async def test_endpoint_returns_pdf(pdf_app: FastAPI, monkeypatch):
     assert isinstance(resp, StreamingResponse)
     assert resp.media_type == "application/pdf"
     assert "attachment;" in resp.headers.get("content-disposition", "")
+
+
+# ── Job name under the customer block (2026-10-15) ───────────────────────────
+
+
+def _render_html(monkeypatch, kind: str, data: dict) -> str:
+    """Render the REAL template; only the WeasyPrint byte step is stubbed."""
+    from gdx_dispatch.core import pdf_generator
+
+    captured: dict[str, str] = {}
+
+    class FakeHTML:
+        def __init__(self, string: str, base_url: str | None = None):
+            captured["html"] = string
+
+        def write_pdf(self) -> bytes:
+            return b"%PDF-1.7\n"
+
+    monkeypatch.setattr(pdf_generator, "HTML", FakeHTML)
+    gen = pdf_generator.generate_estimate_pdf if kind == "estimate" else pdf_generator.generate_invoice_pdf
+    gen({"customer": {}, **data}, {"company_name": "GDX"})
+    return captured["html"]
+
+
+def _seed_job(db, title: str):
+    from gdx_dispatch.models.tenant_models import Customer, Job
+
+    cust = Customer(name="Pat Example", address="9 Elm St", company_id="tenant-test")
+    db.add(cust)
+    db.flush()
+    job = Job(customer_id=cust.id, title=title, status="scheduled", company_id="tenant-test")
+    db.add(job)
+    db.flush()
+    return cust, job
+
+
+def test_estimate_job_name_prints_below_customer(pdf_app: FastAPI, monkeypatch):
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, _job = _seed_job(db, "unused")
+        est = Estimate(estimate_number="EST-JN-1", label="Smith 2-car carriage door",
+                       customer_id=cust.id, total=Decimal("0"), status="draft",
+                       public_token=uuid4().hex, company_id="tenant-test")
+        db.add(est)
+        db.flush()
+        payload = pdf_router._estimate_payload(est, cust, db=db)
+    finally:
+        db.close()
+    assert payload["job_name"] == "Smith 2-car carriage door"
+    html = _render_html(monkeypatch, "estimate", payload)
+    assert html.index("Pat Example") < html.index("Job Name") < html.index("Smith 2-car carriage door")
+
+
+def test_estimate_job_name_prefers_job_title_like_the_email(pdf_app: FastAPI):
+    """Same order as the estimate email subject (job title, then label), so
+    the email and its attached PDF never name the job differently."""
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Warehouse dock doors")
+        est = Estimate(estimate_number="EST-JN-2", label="Dock door quote", job_id=job.id,
+                       customer_id=cust.id, total=Decimal("0"), status="draft",
+                       public_token=uuid4().hex, company_id="tenant-test")
+        db.add(est)
+        db.flush()
+        assert pdf_router._estimate_payload(est, cust, db=db)["job_name"] == "Warehouse dock doors"
+    finally:
+        db.close()
+
+
+def test_invoice_job_name_from_linked_job(pdf_app: FastAPI, monkeypatch):
+    from gdx_dispatch.models.tenant_models import Invoice
+
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring replacement - garage 2")
+        inv = Invoice(invoice_number="INV-JN-1", job_id=job.id, customer_id=cust.id,
+                      subtotal=Decimal("0"), tax_amount=Decimal("0"), total=Decimal("0"),
+                      balance_due=Decimal("0"), status="sent", public_token=uuid4().hex,
+                      company_id="tenant-test")
+        db.add(inv)
+        db.flush()
+        payload = pdf_router._invoice_payload(inv, cust, db)
+    finally:
+        db.close()
+    assert payload["job_name"] == "Spring replacement - garage 2"
+    html = _render_html(monkeypatch, "invoice", payload)
+    assert html.index("Pat Example") < html.index("Job Name") < html.index("Spring replacement - garage 2")
+
+
+def test_no_job_name_prints_no_heading(pdf_app: FastAPI, monkeypatch):
+    """A QB-imported invoice has no job and no estimate: no empty heading."""
+    from gdx_dispatch.models.tenant_models import Invoice
+
+    inv = Invoice(invoice_number="INV-JN-2", subtotal=Decimal("0"), tax_amount=Decimal("0"),
+                  total=Decimal("0"), balance_due=Decimal("0"), status="sent",
+                  public_token=uuid4().hex, customer_id=uuid4(), company_id="tenant-test")
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        payload = pdf_router._invoice_payload(inv, None, db)
+    finally:
+        db.close()
+    assert payload["job_name"] == ""
+    assert "Job Name" not in _render_html(monkeypatch, "invoice", payload)
+
+
+# ── Jobsite, status label, pay link, money format (2026-10-15) ───────────────
+
+
+def _invoice_for(db, job=None, cust=None, **kw):
+    from gdx_dispatch.models.tenant_models import Invoice
+
+    fields = dict(invoice_number=f"INV-{uuid4().hex[:6]}", subtotal=Decimal("1800"),
+                  tax_amount=Decimal("0"), total=Decimal("1800"), balance_due=Decimal("1800"),
+                  status="sent", public_token=uuid4().hex, company_id="tenant-test",
+                  job_id=job.id if job is not None else None,
+                  customer_id=cust.id if cust is not None else uuid4())
+    fields.update(kw)
+    inv = Invoice(**fields)
+    db.add(inv)
+    db.flush()
+    return inv
+
+
+def test_invoice_prints_jobsite_when_it_differs_from_billing(pdf_app: FastAPI, monkeypatch):
+    from gdx_dispatch.models.tenant_models import CustomerLocation
+
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Cabin door")
+        loc = CustomerLocation(customer_id=str(cust.id), address="77 Lake Rd", city="Ely",
+                               state="MN", zip="55731", company_id="tenant-test")
+        db.add(loc)
+        db.flush()
+        job.location_id = loc.id
+        db.flush()
+        payload = pdf_router._invoice_payload(_invoice_for(db, job, cust), cust, db)
+    finally:
+        db.close()
+    assert payload["jobsite_address"] == "77 Lake Rd, Ely, MN 55731"
+    html = _render_html(monkeypatch, "invoice", payload)
+    assert html.index("Cabin door") < html.index("Jobsite") < html.index("77 Lake Rd, Ely, MN 55731")
+
+
+def test_invoice_omits_jobsite_equal_to_billing(pdf_app: FastAPI):
+    """No location rows → the resolver falls back to customer.address, which is
+    already printed: no duplicate Jobsite block."""
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring")
+        payload = pdf_router._invoice_payload(_invoice_for(db, job, cust), cust, db)
+    finally:
+        db.close()
+    assert payload["jobsite_address"] == ""
+
+
+@pytest.mark.parametrize(
+    ("status", "balance", "settled", "label"),
+    [
+        ("sent", 100, 0, "Unpaid"),
+        ("sent", 100, 50, "Partially paid"),
+        ("open", 100, 0, "Unpaid"),
+        ("paid", 0, 100, "Paid"),
+        ("void", 0, 0, "Void"),
+        ("draft", 100, 0, "Draft"),
+        ("sent", 0, 0, "No balance due"),
+    ],
+)
+def test_invoice_status_label(status, balance, settled, label):
+    assert pdf_router._invoice_status_label(status, balance, settled) == label
+
+
+def test_invoice_pdf_prints_customer_status_not_raw(monkeypatch):
+    html = _render_html(monkeypatch, "invoice", {"invoice_number": "I", "status": "sent",
+                                                 "status_label": "Unpaid", "balance_due": 5})
+    assert "Payment Status: Unpaid" in html
+    assert "Payment Status: sent" not in html
+
+
+def test_invoice_pay_link_gates(pdf_app: FastAPI, monkeypatch):
+    """The link prints only where the email would offer it AND the pay page
+    would accept it: balance owed, Stripe + base URL configured, not draft/void."""
+    from gdx_dispatch.core import payments
+
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://pay.example.test")
+    monkeypatch.setattr(payments, "stripe_configured", lambda: True)
+    monkeypatch.setattr(payments, "card_surcharge_notice", lambda db, tid: "Cards carry a 3% fee.")
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        owed = _invoice_for(db)
+        p = pdf_router._invoice_payload(owed, None, db)
+        assert p["pay_url"] == f"https://pay.example.test/pay/{owed.public_token}"
+        assert p["card_notice"] == "Cards carry a 3% fee."
+        html = _render_html(monkeypatch, "invoice", p)
+        assert f'href="https://pay.example.test/pay/{owed.public_token}"' in html
+        assert "Cards carry a 3% fee." in html
+        for kw in ({"status": "draft"}, {"status": "void"}, {"balance_due": Decimal("0"), "status": "paid"}):
+            assert pdf_router._invoice_payload(_invoice_for(db, **kw), None, db)["pay_url"] == ""
+        monkeypatch.setattr(payments, "stripe_configured", lambda: False)
+        assert pdf_router._invoice_payload(_invoice_for(db), None, db)["pay_url"] == ""
+    finally:
+        db.close()
+
+
+def test_totals_use_thousands_separator(monkeypatch):
+    inv = _render_html(monkeypatch, "invoice", {
+        "invoice_number": "I", "subtotal": 1800, "tax": 0, "total": 1800,
+        "paid_to_date": 1200, "credits_applied": 0, "balance_due": 600, "status": "sent"})
+    assert "$1,800.00" in inv and "-$1,200.00" in inv and "$1800.00" not in inv
+    est = _render_html(monkeypatch, "estimate", {
+        "estimate_number": "E", "subtotal": 2500, "discount": 100, "tax": 0, "total": 2400})
+    assert "$2,500.00" in est and "-$100.00" in est and "$2,400.00" in est and "$2400.00" not in est
+
+
+def test_past_due_invoice_prints_past_due(pdf_app: FastAPI):
+    """"overdue" is never stored — it is derived from the due date when read
+    (routers/invoices._effective_status). The PDF must say what the app says."""
+    from datetime import date, timedelta
+
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        late = _invoice_for(db, due_date=date.today() - timedelta(days=60))
+        assert pdf_router._invoice_payload(late, None, db)["status_label"] == "Past due"
+        not_yet = _invoice_for(db, due_date=date.today() + timedelta(days=30))
+        assert pdf_router._invoice_payload(not_yet, None, db)["status_label"] == "Unpaid"
+    finally:
+        db.close()
