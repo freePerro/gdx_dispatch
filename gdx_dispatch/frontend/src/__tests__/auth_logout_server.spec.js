@@ -42,6 +42,27 @@ describe('auth store — logout clears the server-side refresh cookie', () => {
     expect(logoutCall[1].keepalive, 'logout POST must use keepalive').toBe(true);
   });
 
+  it('logout() sends this tab\'s bearer so the server revokes it (GDXA-1215)', async () => {
+    sessionStorage.setItem('gdx_access_token', 'eyJhbGciOiJ.tab-token.sig');
+    const { useAuthStore } = await import('../stores/auth');
+    const store = useAuthStore();
+
+    store.logout();
+
+    const logoutCall = global.fetch.mock.calls.find(([url]) => url === '/auth/logout');
+    expect(logoutCall[1].headers.Authorization).toBe('Bearer eyJhbGciOiJ.tab-token.sig');
+  });
+
+  it('logout() with no token sends no Authorization header', async () => {
+    const { useAuthStore } = await import('../stores/auth');
+    const store = useAuthStore();
+
+    store.logout();
+
+    const logoutCall = global.fetch.mock.calls.find(([url]) => url === '/auth/logout');
+    expect(logoutCall[1].headers.Authorization).toBeUndefined();
+  });
+
   it('logout() still clears local session (no regression on the local guarantee)', async () => {
     sessionStorage.setItem('gdx_access_token', 'eyJhbGciOiJ.fake.sig');
     const { useAuthStore } = await import('../stores/auth');

@@ -2,9 +2,10 @@
 
 ``/ws/dispatch`` takes its JWT as a query parameter and decodes it itself, so
 it never reaches ``get_current_user``. Before GDXA-1188 that decode checked
-``typ`` but not the revocation denylist: a token revoked by logout,
-offboarding or admin revoke still opened the board socket until it expired
-(up to 15 minutes). It now goes through ``decode_live_access_token``, the
+``typ`` but not the revocation denylist: a token revoked by logout or
+``/auth/admin/revoke`` still opened the board socket until it expired (up to
+15 minutes). Offboarding (``revoke_user_sessions``) does not put the access
+token on the denylist, so this check does not stop it (GDXA-1215). It now goes through ``decode_live_access_token``, the
 same check as the bearer fallback in core/modules.py.
 
 The check runs at the handshake only. A socket already open when its token

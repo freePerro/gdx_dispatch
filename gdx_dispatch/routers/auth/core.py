@@ -730,21 +730,74 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     )
     return resp
 
+def _denylist_access_tokens_on_logout(request: Request) -> list[dict[str, str]]:
+    """Put the jti of each live access token on this request on the denylist.
+
+    Reads the ``access_token`` cookie and the Authorization bearer. A token
+    is denylisted only if it verifies (signature and expiry) and is an access
+    token: an expired one is already refused everywhere, and an unverified
+    one could name someone else's jti. Each entry expires with the token's
+    own ``exp``. Never raises: logout must not fail because of this. Returns
+    ``sub``/``tenant_id``/``jti`` of each token denylisted, for the audit row.
+    """
+    candidates: list[str] = []
+    cookie_token = request.cookies.get("access_token")
+    if cookie_token:
+        candidates.append(cookie_token)
+    auth_header = request.headers.get("authorization", "") or ""
+    if auth_header.lower().startswith("bearer "):
+        bearer = auth_header.split(" ", 1)[1].strip()
+        if bearer and bearer not in candidates:
+            candidates.append(bearer)
+    revoked: list[dict[str, str]] = []
+    for token in candidates:
+        try:
+            c = jwt.decode(token, VERIFY_KEY, algorithms=[ALG])
+            jti = c.get("jti")
+            if c.get("typ") not in (None, "access") or not jti or not c.get("exp"):
+                continue
+            _get_app_denylist(request).add(
+                str(jti), datetime.fromtimestamp(int(c["exp"]), tz=UTC),
+            )
+            revoked.append({
+                "sub": str(c.get("sub") or ""),
+                "tenant_id": str(c.get("tenant_id", "")),
+                "jti": str(jti),
+            })
+        except JWTError as exc:
+            log.info("auth_logout_access_token_undecodable: %s", exc.__class__.__name__)
+        except Exception:
+            log.exception("auth_logout_access_denylist_failed")
+    return revoked
+
+
 @router.post("/logout")
 def logout(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    # GDXA-1215: deleting the cookies only ends the session in this browser;
+    # a copied access token stayed valid for its 15-minute TTL. Denylist the
+    # jti of every access token the request carries (cookie and bearer), so
+    # every reader of the denylist refuses it on the next request.
+    revoked_access = _denylist_access_tokens_on_logout(request)
     token = request.cookies.get("refresh_token")
-    logout_sub = "anonymous"
-    logout_tid = ""
+    logout_sub = revoked_access[0]["sub"] if revoked_access else "anonymous"
+    logout_tid = revoked_access[0]["tenant_id"] if revoked_access else ""
     if token:
         try:
             c = jwt.decode(token, VERIFY_KEY, algorithms=[ALG], options={"verify_exp": False})
-            redis.sadd("used_refresh_jtis", str(c.get("jti", ""))); redis.expire("used_refresh_jtis", REFRESH_TTL)  # noqa: E701,E702
             logout_sub = str(c.get("sub") or "anonymous")
             logout_tid = str(c.get("tenant_id", ""))
         except JWTError as exc:
             # Logging out with a stale/undecodable token is expected — the
             # local logout still proceeds. Info-level, no stack trace.
             log.info("auth_logout_token_undecodable: %s", exc.__class__.__name__)
+        else:
+            # A Redis outage here used to escape as a 500: no audit row and
+            # no cookie delete, so the browser stayed logged in (GDXA-1215).
+            try:
+                redis.sadd("used_refresh_jtis", str(c.get("jti", "")))
+                redis.expire("used_refresh_jtis", REFRESH_TTL)
+            except Exception:
+                log.exception("auth_logout_refresh_revoke_failed")
     try:
         log_audit_event_sync(
             db,
@@ -753,7 +806,7 @@ def logout(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
             action="logout",
             entity_type="auth",
             entity_id=logout_sub,
-            details={},
+            details={"access_tokens_revoked": [{"sub": t["sub"], "jti": t["jti"]} for t in revoked_access]},
             request=request,
         )
         db.commit()
