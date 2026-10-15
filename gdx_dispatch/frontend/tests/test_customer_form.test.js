@@ -117,9 +117,12 @@ describe("CustomersView ↔ CustomerFormDialog", () => {
   });
 
   it("re-fetches customers when the dialog emits `saved`", async () => {
+    // Mount also loads the tag filter's options (GDXA-1046); count list fetches only.
+    const listFetches = () =>
+      getMock.mock.calls.filter(([url]) => String(url).startsWith("/api/customers")).length;
     const wrapper = mount(CustomersView, { global: { stubs } });
     await flushPromises();
-    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(listFetches()).toBe(1);
 
     await wrapper.find("[data-testid='new-customer-btn']").trigger("click");
     await flushPromises();
@@ -130,6 +133,6 @@ describe("CustomersView ↔ CustomerFormDialog", () => {
     await wrapper.vm.onCustomerSaved({ id: "cust-new", name: "New" });
     await flushPromises();
 
-    expect(getMock).toHaveBeenCalledTimes(2);
+    expect(listFetches()).toBe(2);
   });
 });

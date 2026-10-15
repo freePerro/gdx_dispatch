@@ -201,6 +201,11 @@
               {{ data.customer_type || 'Residential' }}
             </template>
           </Column>
+          <Column header="Tags">
+            <template #body="{ data }">
+              <CustomerTagChips :tags="data.tags" />
+            </template>
+          </Column>
           <Column field="created_at" header="Created">
             <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
           </Column>
@@ -297,7 +302,20 @@
                 aria-label="Operator"
                 :data-testid="`segments-rule-operator-${index}`"
               />
+              <Select
+                v-if="fieldMeta(rule.field).kind === 'tag'"
+                v-model="rule.value"
+                :options="tagOptions"
+                option-label="name"
+                option-value="id"
+                placeholder="Choose a tag"
+                filter
+                class="rule-value"
+                aria-label="Tag"
+                :data-testid="`segments-rule-tag-${index}`"
+              />
               <InputText
+                v-else
                 v-model="rule.value"
                 :placeholder="valuePlaceholder(rule)"
                 class="rule-value"
@@ -393,6 +411,7 @@ import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import { downloadAuthedFile } from '../composables/useAuthedFile';
 import EmptyState from '../components/EmptyState.vue';
+import CustomerTagChips from '../components/CustomerTagChips.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
 import Column from 'primevue/column';
@@ -441,6 +460,11 @@ const NUMBER_OPERATORS = [
   { label: 'is less than', value: 'less_than' },
   { label: 'equals', value: 'equals' },
 ];
+// A tag rule names a tag by id; the API refuses an unknown or deleted one.
+const TAG_OPERATORS = [
+  { label: 'has', value: 'has' },
+  { label: 'does not have', value: 'lacks' },
+];
 // Only fields the API can evaluate reliably. `customer_type` was a
 // candidate and was left out on purpose: its values are tenant data and the
 // backend compares them exactly and case-sensitively, so a free text box
@@ -449,12 +473,23 @@ const FIELD_OPTIONS = [
   { label: 'Last job date', value: 'last_job_date', kind: 'date' },
   { label: 'Customer created', value: 'created_at', kind: 'date' },
   { label: 'Lifetime value', value: 'lifetime_value', kind: 'number' },
+  { label: 'Tag', value: 'tag', kind: 'tag' },
 ];
 
 const OPERATORS_BY_KIND = {
   date: DATE_OPERATORS,
   number: NUMBER_OPERATORS,
+  tag: TAG_OPERATORS,
 };
+
+// GET /api/tags — the live tags a tag rule can name.
+const tagOptions = ref([]);
+// Only a successful load can say a tag is gone; until then a missing name
+// means "not fetched", not "deleted".
+const tagsLoaded = ref(false);
+function tagName(id) {
+  return tagOptions.value.find((t) => t.id === id)?.name;
+}
 
 function newRule() {
   return { field: 'last_job_date', operator: 'older_than', value: '90' };
@@ -623,6 +658,9 @@ function onRuleFieldChange(rule) {
   // older_than on lifetime_value.
   const allowed = operatorsFor(rule.field).map((o) => o.value);
   if (!allowed.includes(rule.operator)) rule.operator = allowed[0];
+  // A tag id is not a number of days, and a number is not a tag.
+  const isTag = fieldMeta(rule.field).kind === 'tag';
+  if (isTag !== Boolean(tagName(rule.value))) rule.value = '';
 }
 
 function valuePlaceholder(rule) {
@@ -649,12 +687,17 @@ function describeRules(rules) {
     .map((r) => {
       const field = FIELD_OPTIONS.find((f) => f.value === r.field);
       const label = field?.label || r.field;
-      const op = [...DATE_OPERATORS, ...NUMBER_OPERATORS].find(
+      const op = [...DATE_OPERATORS, ...NUMBER_OPERATORS, ...TAG_OPERATORS].find(
         (o) => o.value === r.operator
       );
       const opLabel = op?.label || r.operator;
       const kind = field?.kind;
-      const value = kind === 'date' ? `${String(r.value).replace(/\D/g, '')} days` : r.value;
+      let value = r.value;
+      if (kind === 'date') value = `${String(r.value).replace(/\D/g, '')} days`;
+      // A deleted tag still has its id stored; say so rather than show the id.
+      else if (kind === 'tag') {
+        value = tagName(r.value) ? `"${tagName(r.value)}"` : tagsLoaded.value ? 'a deleted tag' : 'a tag';
+      }
       return `${label} ${opLabel} ${value}`;
     });
   if (!parts.length) return '—';
@@ -755,6 +798,9 @@ async function saveBulkTag() {
     showBulkTagDialog.value = false;
     bulkTagValue.value = '';
     clearCustomerSelection();
+    // The Tags column, a tag segment's count and the rule's tag list all
+    // changed; show it rather than leave the table one tag behind.
+    await Promise.all([loadCustomers(activeCustomerSegment.value), loadSegments(), loadTags()]);
   } finally {
     bulkTagging.value = false;
   }
@@ -811,6 +857,17 @@ function viewCustomer(id) {
   router.push(`/customers/${id}`);
 }
 
+async function loadTags() {
+  try {
+    const data = await api.get('/api/tags');
+    tagOptions.value = Array.isArray(data) ? data : [];
+    tagsLoaded.value = Array.isArray(data);
+  } catch {
+    tagOptions.value = [];
+    tagsLoaded.value = false;
+  }
+}
+
 async function loadSegments() {
   loading.value = true;
   try {
@@ -861,12 +918,15 @@ const formRulesPayload = computed(() => ({
       field: r.field,
       operator: r.operator,
       // Day-based operators are stored the way the built-ins store them.
-      value:
-        fieldMeta(r.field).kind === 'date'
-          ? `${ruleNumber(r)} days`
-          : ruleNumber(r),
+      value: ruleValue(r),
     })),
 }));
+
+function ruleValue(rule) {
+  const kind = fieldMeta(rule.field).kind;
+  if (kind === 'tag') return rule.value || null;
+  return kind === 'date' ? `${ruleNumber(rule)} days` : ruleNumber(rule);
+}
 
 /** The rule's value as a number, or null when it isn't one. */
 function ruleNumber(rule) {
@@ -889,6 +949,10 @@ const formInvalidReason = computed(() => {
   const rules = segmentForm.value.rules.filter((r) => r.field && r.operator);
   if (!rules.length) return 'Add at least one rule.';
   for (const rule of rules) {
+    if (fieldMeta(rule.field).kind === 'tag') {
+      if (!tagName(rule.value)) return 'Choose a tag for the tag rule.';
+      continue;
+    }
     const n = ruleNumber(rule);
     if (n === null) return `Enter a number for ${fieldMeta(rule.field).label}.`;
     if (fieldMeta(rule.field).kind === 'date' && n < 1) {
@@ -937,6 +1001,7 @@ async function deleteSegment(segment) {
 
 onMounted(() => {
   loadSegments();
+  loadTags();
   loadCustomers();
 });
 </script>

@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
@@ -18,7 +18,8 @@ from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sql
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import Segment
+from gdx_dispatch.models.tenant_models import Segment, Tag
+from gdx_dispatch.routers.tags import canonical_entity_id, customer_tags_by_id, live_tag_or_none
 
 log = logging.getLogger(__name__)
 
@@ -183,10 +184,20 @@ DATE_FIELDS = {"last_job_date", "created_at"}
 NUMERIC_FIELDS = {"lifetime_value"}
 DATE_OPERATORS = {"older_than", "within_last"}
 NUMERIC_OPERATORS = {"greater_than", "less_than"}
-SUPPORTED_OPERATORS = DATE_OPERATORS | NUMERIC_OPERATORS | {"equals"}
+# A tag rule reads `tag_ids`, which `_customer_stats` attaches to every row
+# from the same reader the customer list uses (GDXA-1046). The value is a tag
+# id; `has` matches customers carrying that live tag, `lacks` the rest.
+TAG_FIELD = "tag"
+TAG_OPERATORS = {"has", "lacks"}
+SUPPORTED_OPERATORS = DATE_OPERATORS | NUMERIC_OPERATORS | TAG_OPERATORS | {"equals"}
 
 
-def _rule_match(customer: dict[str, Any], rule: dict[str, Any], now: datetime) -> bool:
+def _rule_match(
+    customer: dict[str, Any],
+    rule: dict[str, Any],
+    now: datetime,
+    live_tag_ids: frozenset[str] = frozenset(),
+) -> bool:
     field = str(rule.get("field") or "").strip()
     operator = str(rule.get("operator") or "").strip().lower()
     expected = rule.get("value")
@@ -223,18 +234,32 @@ def _rule_match(customer: dict[str, Any], rule: dict[str, Any], now: datetime) -
             return False
         return left > right if operator == "greater_than" else left < right
 
+    if operator in TAG_OPERATORS:
+        if field != TAG_FIELD:
+            raise HTTPException(status_code=422, detail=f"'{operator}' applies to tags only")
+        key = canonical_entity_id(expected)
+        # The validator only sees the tag on save; deleting it later must not
+        # turn `lacks` into "every customer" for the export and bulk-tag
+        # that read this list. A rule on a dead tag matches nobody.
+        if key not in live_tag_ids:
+            return False
+        has = key in (customer.get("tag_ids") or [])
+        return has if operator == "has" else not has
+
     if operator == "equals":
         return actual == expected
 
     raise HTTPException(status_code=422, detail=f"Unsupported segment operator '{operator}'")
 
 
-def _validate_rules(rules: dict[str, Any]) -> None:
+def _validate_rules(rules: dict[str, Any], db: Session) -> None:
     """Reject on write what ``_rule_match`` would reject on read.
 
     Without this a segment saves fine and then 422s the moment anyone opens
     it, because rule evaluation only happens on the read path. Same vocabulary
-    as ``_rule_match`` — keep the two in step.
+    as ``_rule_match`` — keep the two in step. A tag rule must name a live tag:
+    ``has`` on an unknown id would save a segment that matches nobody, and
+    ``lacks`` one that matches everybody.
     """
     match_mode, rule_list = _iter_rules(rules)
     if match_mode not in {"all", "any"}:
@@ -264,6 +289,12 @@ def _validate_rules(rules: dict[str, Any]) -> None:
                 raise HTTPException(
                     status_code=422, detail=f"Rule on '{field}' needs a window of at least 1 day"
                 )
+        if (field == TAG_FIELD) != (operator in TAG_OPERATORS):
+            raise HTTPException(
+                status_code=422, detail="A tag rule takes 'has' or 'lacks', and only a tag rule does"
+            )
+        if operator in TAG_OPERATORS and live_tag_or_none(db, raw_value) is None:
+            raise HTTPException(status_code=422, detail=f"Unknown tag '{raw_value}'")
         if operator in NUMERIC_OPERATORS:
             if field not in NUMERIC_FIELDS:
                 raise HTTPException(
@@ -276,7 +307,18 @@ def _validate_rules(rules: dict[str, Any]) -> None:
                 )
 
 
-def _apply_rules(customers: list[dict[str, Any]], rules: dict[str, Any]) -> list[dict[str, Any]]:
+def _live_tag_ids(db: Session) -> frozenset[str]:
+    """Canonical ids of every live tag, for ``_rule_match``'s tag branch."""
+    return frozenset(
+        str(tag_id) for tag_id in db.execute(select(Tag.id).where(Tag.deleted_at.is_(None))).scalars()
+    )
+
+
+def _apply_rules(
+    customers: list[dict[str, Any]],
+    rules: dict[str, Any],
+    live_tag_ids: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     now = datetime.now(UTC)
     match_mode, rule_list = _iter_rules(rules)
     if not rule_list:
@@ -284,7 +326,7 @@ def _apply_rules(customers: list[dict[str, Any]], rules: dict[str, Any]) -> list
 
     matched: list[dict[str, Any]] = []
     for customer in customers:
-        outcomes = [_rule_match(customer, rule, now) for rule in rule_list]
+        outcomes = [_rule_match(customer, rule, now, live_tag_ids) for rule in rule_list]
         is_match = any(outcomes) if match_mode == "any" else all(outcomes)
         if is_match:
             matched.append(customer)
@@ -376,6 +418,9 @@ def _customer_stats(db: Session) -> list[dict[str, Any]]:
     rows = db.execute(
         text(_customer_stats_sql(has_customer_type, has_metadata))
     ).mappings().all()
+    # Every customer's tags in one query, not a GROUP BY string_agg the two
+    # engines spell differently (GDXA-1046).
+    tag_map = customer_tags_by_id(db)
     payload: list[dict[str, Any]] = []
     for row in rows:
         item = {k: _normalize_value(v) for k, v in dict(row).items()}
@@ -389,6 +434,10 @@ def _customer_stats(db: Session) -> list[dict[str, Any]]:
         if isinstance(metadata, dict):
             for key, value in metadata.items():
                 item.setdefault(str(key), value)
+        # Assigned, not setdefault: a metadata key must not stand in for tags.
+        tags = tag_map.get(canonical_entity_id(item.get("id")) or "", [])
+        item["tags"] = tags
+        item["tag_ids"] = [t["id"] for t in tags]
         payload.append(item)
     return payload
 
@@ -440,6 +489,7 @@ async def list_segments(
     # populated here, so the list's Customers column and the segment chips
     # rendered 0 for every row forever (#455).
     stats = _customer_stats(db)
+    live_tags = _live_tag_ids(db)
 
     custom_rows = db.query(Segment).filter(
         Segment.deleted_at.is_(None),
@@ -451,7 +501,7 @@ async def list_segments(
             # stored rules is not a JSON object raises from here, and doing
             # it at the call site put that case outside the try — so the
             # guard could not fire for half of what its name covers.
-            return len(_apply_rules(stats, _coerce_rules(raw_rules)))
+            return len(_apply_rules(stats, _coerce_rules(raw_rules), live_tags))
         except (HTTPException, ValueError, TypeError):
             # A single unreadable segment must not take the whole library
             # down. Catching HTTPException alone was not enough: rows
@@ -493,7 +543,7 @@ async def create_segment(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SegmentOut:
-    _validate_rules(payload.rules)
+    _validate_rules(payload.rules, db)
     segment_uuid = uuid4()
     segment_id = str(segment_uuid)
     now = datetime.now(UTC)
@@ -535,7 +585,7 @@ async def get_segment(
     db: Session = Depends(get_db),
 ) -> SegmentOut:
     segment = _resolve_segment_or_404(db, segment_id)
-    matches = _apply_rules(_customer_stats(db), segment["rules"])
+    matches = _apply_rules(_customer_stats(db), segment["rules"], _live_tag_ids(db))
     return SegmentOut(
         id=segment["id"],
         name=segment["name"],
@@ -553,7 +603,7 @@ async def list_segment_customers(
     db: Session = Depends(get_db),
 ) -> SegmentCustomersOut:
     segment = _resolve_segment_or_404(db, segment_id)
-    matches = _apply_rules(_customer_stats(db), segment["rules"])
+    matches = _apply_rules(_customer_stats(db), segment["rules"], _live_tag_ids(db))
     return SegmentCustomersOut(items=matches, total=len(matches))
 
 
@@ -564,7 +614,7 @@ async def get_segment_count(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     segment = _resolve_segment_or_404(db, segment_id)
-    matches = _apply_rules(_customer_stats(db), segment["rules"])
+    matches = _apply_rules(_customer_stats(db), segment["rules"], _live_tag_ids(db))
     return {"segment_id": segment["id"], "count": len(matches)}
 
 
@@ -605,7 +655,7 @@ async def update_segment(
         row.name = str(data["name"])
         changed.append("name")
     if data.get("rules") is not None:
-        _validate_rules(data["rules"])
+        _validate_rules(data["rules"], db)
         row.rules = data["rules"]
         changed.append("rules")
 
