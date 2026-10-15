@@ -25,7 +25,12 @@ from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.permissions import assert_can_assign_role
-from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
+from gdx_dispatch.core.roles import (
+    ASSIGNABLE_ROLES,
+    assignable_role_input_pattern,
+    is_role_admin_actor,
+    normalize_role,
+)
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
@@ -49,9 +54,9 @@ router = APIRouter(
 # either spelling on input (frontend still posts short) and normalize to the
 # canonical form below before persisting, so users.role only ever holds ONE
 # vocabulary. See core/roles.normalize_role and docs/ROLE_AND_NAV_NAMING_CONVENTIONS.md.
-VALID_ROLES = ("admin", "dispatcher", "technician", "sales", "owner")
+VALID_ROLES = ASSIGNABLE_ROLES
 # Input pattern accepts both spellings; the validator canonicalizes.
-_ROLE_INPUT_PATTERN = r"^(admin|owner|sales|dispatch|dispatcher|tech|technician)$"
+_ROLE_INPUT_PATTERN = assignable_role_input_pattern()
 
 
 class UserCreateIn(BaseModel):
