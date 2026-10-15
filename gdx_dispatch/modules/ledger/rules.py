@@ -254,8 +254,34 @@ def _shop_effective_at(
     replay (backfill, resettle) of an evening row posted under the old UTC
     rule would mint a second key and post the money twice.
     """
-    posted = session.scalars(
-        select(GlJournalEntry.effective_at).where(
+    posted = _live_event_entry(session, source_type, source_id, event)
+    if posted is not None:
+        return posted.effective_at
+    if ts is None:
+        return shop_today_from_settings(session)
+    return shop_day_of(ts, shop_tz_name_from_settings(session))
+
+
+def _live_event_entry(
+    session: Session, source_type: str, source_id: str, event: str
+) -> GlJournalEntry | None:
+    """The earliest live entry for one (source, event), whatever its content.
+
+    A ONE-SHOT event — a P8 anchor, an opening-era payment-void compensator, a
+    credit memo, a refund, a credit application — records something that
+    happened once. Its poster runs again on every replay (``run_replay``) or
+    recalc (``repost_invoice_issuance``, ``resettle_invoice_payments``), and
+    the engine keys by CONTENT, so when an input moved since (the invoice's
+    job or customer, its total, a payment-method mapping, the 2300 balance a
+    refund splits against) a fresh key minted a SECOND live entry beside the
+    first and nothing reversed it: a doubled anchor holds AR the invoice does
+    not owe (GDXA-1238). Those posters return this entry instead of posting.
+    Earliest, so the guard and ``backfill.duplicate_one_shot_entries`` keep
+    the same one.
+    """
+    return session.scalars(
+        select(GlJournalEntry)
+        .where(
             GlJournalEntry.source_type == source_type,
             GlJournalEntry.source_id == source_id,
             GlJournalEntry.status == ENTRY_STATUS_POSTED,
@@ -263,12 +289,8 @@ def _shop_effective_at(
                 _escape_like(f"{source_type}:{source_id}:{event}:") + "%", escape="\\"
             ),
         )
+        .order_by(GlJournalEntry.created_at, GlJournalEntry.entry_no, GlJournalEntry.id)
     ).first()
-    if posted is not None:
-        return posted
-    if ts is None:
-        return shop_today_from_settings(session)
-    return shop_day_of(ts, shop_tz_name_from_settings(session))
 
 
 def post_invoice_issuance(session: Session, invoice, old_status, new_status, actor) -> None:
@@ -854,6 +876,9 @@ def post_credit_memo(session: Session, adjustment, invoice, actor: str | None = 
     amount_cents = to_cents(_dec(adjustment.amount))
     if amount_cents == 0:
         return None
+    live = _live_event_entry(session, "adjustment", str(adjustment.id), "credit_memo")
+    if live is not None:
+        return live  # one-shot (GDXA-1238)
     settings = ledger_service.get_gl_settings(session, invoice.company_id)
     return post_for_event(
         session,
@@ -945,6 +970,12 @@ def post_refund(session: Session, adjustment, invoice, actor: str | None = None)
     amount_cents = to_cents(_dec(adjustment.amount))
     if amount_cents == 0:
         return None
+    # One-shot (GDXA-1238): the credit/revenue split below reads the 2300
+    # balance NOW, so a replay after other credit moved re-split it and posted
+    # the cash-out a second time. The refund posted is the refund that happened.
+    live = _live_event_entry(session, "adjustment", str(adjustment.id), "refund")
+    if live is not None:
+        return live
     settings = ledger_service.get_gl_settings(session, invoice.company_id)
     if settings is None:
         raise LedgerConfigError("gl_settings missing — accounting not initialized")
@@ -1017,6 +1048,9 @@ def post_credit_application(session: Session, adjustment, invoice, actor: str | 
     amount_cents = to_cents(_dec(adjustment.amount))
     if amount_cents == 0:
         return None
+    live = _live_event_entry(session, "adjustment", str(adjustment.id), "credit_applied")
+    if live is not None:
+        return live  # one-shot (GDXA-1238)
     return post_for_event(
         session,
         PostingEvent(
@@ -1394,6 +1428,15 @@ def post_opening_balance(session: Session, invoice, *, actor: str | None = None)
         return None
     if _effective_at(invoice) >= cutover:
         return None  # post-cutover invoice: P1 territory, not P8
+    # The anchor is posted once (GDXA-1238). Every recalc of an era invoice
+    # comes through here (``repost_invoice_issuance``), and the content key
+    # carries the invoice's total, job and customer: change one and a second
+    # anchor posted beside the first, doubling the opening AR. Spec §5.7
+    # already holds the anchor immutable; post-cutover changes post their
+    # own entries against it.
+    live = _live_event_entry(session, "invoice", str(invoice.id), EVENT_OPENING)
+    if live is not None:
+        return live
     opening = opening_balance_cents(session, invoice, cutover)
     lines = build_opening_lines(invoice, opening)
     if not lines:
@@ -1542,6 +1585,13 @@ def _post_opening_payment_void(session: Session, payment, invoice, actor: str | 
     method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
     amount_cents = to_cents(_dec(payment.amount))
     if amount_cents == 0:
+        return
+    # One-shot (GDXA-1238): every resettle of the invoice calls this for the
+    # voided row, and a changed job, customer or method mapping posted a
+    # second AR debit.
+    if _live_event_entry(
+        session, "payment", str(payment.id), EVENT_OPENING_PAYMENT_VOID
+    ) is not None:
         return
     voided_on = _shop_effective_at(
         session, "payment", str(payment.id),
