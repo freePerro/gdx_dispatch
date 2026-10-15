@@ -9,23 +9,55 @@ Every test here does a real logout over HTTP through the real auth router,
 then presents the same token on a real route or a real WebSocket handshake
 in the same app, so the denylist the logout wrote is the one the reader
 checks. Only the refresh-token Redis set and the audit writer are stubbed.
+
+The socket also runs the users-row check and the jobs.read_all gate
+(GDXA-1210), so the tests that open it mint the token for a real
+dispatcher row in an in-memory SQLite database.
 """
 from __future__ import annotations
 
 from typing import Annotated, Any
+from uuid import uuid4
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from starlette.websockets import WebSocketDisconnect
 
+from gdx_dispatch.core import database
+from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.denylist import Denylist
 from gdx_dispatch.core.modules import require_role
+from gdx_dispatch.core.tenant import single_tenant
 from gdx_dispatch.core.websocket import manager
+from gdx_dispatch.models.tenant_models import User
+from gdx_dispatch.routers import dispatch_ws
 from gdx_dispatch.routers.auth import core as auth_core
 from gdx_dispatch.routers.auth.core import _issue, get_current_user
 from gdx_dispatch.routers.dispatch_ws import dispatch_board_ws
+
+TENANT = single_tenant()["id"]
+
+
+@pytest.fixture
+def dispatcher(monkeypatch) -> str:
+    """A dispatcher users row the socket's row check and permission lookup read."""
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(dispatch_ws, "SessionLocal", factory)
+    monkeypatch.setattr(database, "app_engine", engine)
+    uid = uuid4()
+    with factory() as db:
+        db.add(User(id=uid, email=f"{uid.hex[:8]}@example.com", username=uid.hex[:8],
+                    role="dispatcher", company_id=TENANT))
+        db.commit()
+    yield str(uid)
+    engine.dispose()
 
 
 class _FakeRefreshRedis:
@@ -92,8 +124,8 @@ def _ws_close_code(client: TestClient, token: str) -> int | None:
     return None
 
 
-def test_bearer_logout_then_the_same_token_is_refused_everywhere(client, audit_rows):
-    token, jti = _issue("dispatcher-1", "t", "dispatcher", 600, "access")
+def test_bearer_logout_then_the_same_token_is_refused_everywhere(client, audit_rows, dispatcher):
+    token, jti = _issue(dispatcher, TENANT, "dispatcher", 600, "access")
     # Falsifier: the token works on all three before logout, so a refusal
     # afterwards is the logout's doing, not a broken fixture.
     assert client.get("/role-gated", headers=_bearer(token)).status_code == 200
@@ -109,14 +141,14 @@ def test_bearer_logout_then_the_same_token_is_refused_everywhere(client, audit_r
     logout = [r for r in audit_rows if r["action"] == "logout"]
     assert len(logout) == 1
     assert logout[0]["details"] == {
-        "access_tokens_revoked": [{"sub": "dispatcher-1", "jti": jti}],
+        "access_tokens_revoked": [{"sub": dispatcher, "jti": jti}],
     }
-    assert logout[0]["user_id"] == "dispatcher-1"
+    assert logout[0]["user_id"] == dispatcher
 
 
-def test_cookie_logout_revokes_the_cookie_token_and_the_refresh_token(client):
-    access, _ = _issue("dispatcher-2", "t", "dispatcher", 600, "access")
-    refresh, refresh_jti = _issue("dispatcher-2", "t", "dispatcher", 3600, "refresh")
+def test_cookie_logout_revokes_the_cookie_token_and_the_refresh_token(client, dispatcher):
+    access, _ = _issue(dispatcher, TENANT, "dispatcher", 600, "access")
+    refresh, refresh_jti = _issue(dispatcher, TENANT, "dispatcher", 3600, "refresh")
     client.cookies.set("access_token", access)
     client.cookies.set("refresh_token", refresh)
 
