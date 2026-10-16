@@ -118,6 +118,8 @@ const weekRowIds = (w) => w.vm.$.setupState.weekRows.map((r) => r.id);
 describe("DispatchView — inactive techs", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    // Day/Week is remembered in storage; a week test must not open the next in Week.
+    window.localStorage.clear();
     getMock.mockReset();
     granted = new Set(["jobs.read_all"]);
   });

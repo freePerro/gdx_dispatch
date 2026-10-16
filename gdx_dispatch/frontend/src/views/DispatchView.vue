@@ -1319,7 +1319,18 @@ watch(closeoutOpen, async (v) => {
 });
 
 const selectedDate = ref(new Date());
-const viewMode = ref('day');
+// Day or Week survives a reload, as the compact toggle does (COMPACT_KEY).
+const VIEW_MODE_KEY = 'gdx.dispatch.viewMode';
+function readViewMode() {
+  try {
+    const v = window.localStorage.getItem(VIEW_MODE_KEY);
+    return v === 'week' ? 'week' : 'day';
+  } catch { return 'day'; }
+}
+const viewMode = ref(readViewMode());
+watch(viewMode, (v) => {
+  try { window.localStorage.setItem(VIEW_MODE_KEY, v); } catch { /* private mode */ }
+});
 const viewOptions = [
   { label: 'Day', value: 'day' },
   { label: 'Week', value: 'week' },
@@ -2333,9 +2344,19 @@ async function onWeekCellDrop(event, techId, dayStr) {
   if (source?.technician_id && !crew.includes(String(source.technician_id))) crew.push(String(source.technician_id));
   const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
   if (source && onCrew) {
+    const datePatch = { scheduled_at: iso };
+    // An undated job with no hours gets the hours question placeCrewJob asks,
+    // or it lands in the tech's day uncounted in capacity; closing it moves
+    // nothing. The "No tech" row has no capacity, so it is exempt, as
+    // _needsDurationPrompt exempts techId=null.
+    if (techId && !source.scheduled_at && !jobHasDuration(source)) {
+      const hours = await askDurationFor(source);
+      if (hours === null) return;
+      if (hours > 0) datePatch.scheduled_duration_hours = hours;
+    }
     await withBoardWrite(async () => {
       try {
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso });
+        await api.patch(`/api/jobs/${jobId}`, datePatch);
       } catch { /* api composable already toasts */ }
       await fetchJobs();
     });

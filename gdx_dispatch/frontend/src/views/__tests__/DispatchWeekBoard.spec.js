@@ -26,6 +26,12 @@
  * 11. The strip refuses finished and under-way work, and a chip let go over
  *     the strip or lane it came from writes nothing (/audit, 2026-10-16: it
  *     took a self-assigned tech off an undated job).
+ * 12. An undated job with no hours dropped in its own tech's row asks the
+ *     hours question before dating it, and sends the hours in the same PATCH;
+ *     closing the question moves nothing; the "No tech" row only dates it,
+ *     as the day view exempts no-tech drops (GDXA-1261).
+ * 13. Day or Week survives a reload (localStorage); a bad stored value or a
+ *     storage that throws opens Day (GDXA-1261).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -112,7 +118,7 @@ let boardRows = [];
 let visitItems = [];
 let areas = [];
 
-async function mountBoard() {
+async function mountBoard(view = "week") {
   getMock.mockImplementation((url) => {
     const u = String(url || "");
     if (u.includes("/api/dispatch/visits")) return Promise.resolve({ items: visitItems, job_ids: [], timezone: null });
@@ -128,8 +134,10 @@ async function mountBoard() {
   });
   const w = mount(DispatchView, { global: { stubs } });
   await flushAll();
-  w.vm.$.setupState.viewMode = "week";
-  await flushAll();
+  if (view) {
+    w.vm.$.setupState.viewMode = view;
+    await flushAll();
+  }
   return w;
 }
 
@@ -148,6 +156,7 @@ describe("DispatchView — week board", () => {
     patchMock.mockResolvedValue({});
     granted = new Set(["jobs.read_all"]);
     boardRows = [JOB, INTAKE]; visitItems = []; areas = [];
+    window.localStorage.clear();
   });
 
   it("steps a week at a time in week view and a day in day view", async () => {
@@ -204,6 +213,100 @@ describe("DispatchView — week board", () => {
       ["/api/jobs/job-3", ["scheduled_at"]],
     ]);
     expect(wallOf(patchMock.mock.calls[0][1].scheduled_at)).toEqual([OTHER_DAY, 10, 30]);
+  });
+
+  describe("an undated job with no hours dropped in its own tech's row", () => {
+    const SELF = {
+      ...INTAKE, id: "job-5", assigned_to: "tech-1", assigned_tech_ids: ["tech-1"], technician_id: "tech-1",
+      scheduled_duration_hours: null, effective_duration_hours: null,
+    };
+    const durationPrompt = (w) => w.find('[data-testid="dispatch-duration-prompt"]');
+    async function dropSelf(w) {
+      w.vm.onDragStart(SELF, null);
+      const drop = cell(w, "tech-1", OTHER_DAY).trigger("drop");
+      await flushAll();
+      return drop;
+    }
+
+    it("asks for the hours and sends them with the date", async () => {
+      boardRows = [JOB, SELF];
+      const w = await mountBoard();
+      const drop = await dropSelf(w);
+      expect(durationPrompt(w).exists()).toBe(true);
+      expect(patchMock).not.toHaveBeenCalled();
+      w.vm.$.setupState.durationPromptHours = 3;
+      await flushAll();
+      await w.find('[data-testid="dispatch-duration-prompt-save"]').trigger("click");
+      await drop; await flushAll();
+      expect(patchMock).toHaveBeenCalledTimes(1);
+      const [url, body] = patchMock.mock.calls[0];
+      expect(url).toBe("/api/jobs/job-5");
+      expect(Object.keys(body).sort()).toEqual(["scheduled_at", "scheduled_duration_hours"]);
+      expect(body.scheduled_duration_hours).toBe(3);
+      expect(wallOf(body.scheduled_at)).toEqual([OTHER_DAY, 8, 0]);
+    });
+
+    it("dates it without hours on Skip", async () => {
+      boardRows = [JOB, SELF];
+      const w = await mountBoard();
+      const drop = await dropSelf(w);
+      await w.find('[data-testid="dispatch-duration-prompt-skip"]').trigger("click");
+      await drop; await flushAll();
+      expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-5", ["scheduled_at"]]]);
+    });
+
+    it("moves nothing when the hours question is closed", async () => {
+      boardRows = [JOB, SELF];
+      const w = await mountBoard();
+      const drop = await dropSelf(w);
+      w.vm.$.setupState.durationPromptOpen = false;
+      w.vm.$.setupState.onDurationPromptHide();
+      await drop; await flushAll();
+      expect(patchMock).not.toHaveBeenCalled();
+    });
+
+    it("on the No tech row only dates it: that row has no capacity to count", async () => {
+      const LOOSE = { ...INTAKE, scheduled_duration_hours: null, effective_duration_hours: null };
+      boardRows = [JOB, LOOSE];
+      const w = await mountBoard();
+      await dragOnto(w, LOOSE, "unassigned", OTHER_DAY);
+      expect(durationPrompt(w).exists()).toBe(false);
+      expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-2", ["scheduled_at"]]]);
+    });
+  });
+
+  describe("view mode across reloads", () => {
+    it("reopens in the mode last picked", async () => {
+      const first = await mountBoard();
+      expect(window.localStorage.getItem("gdx.dispatch.viewMode")).toBe("week");
+      first.unmount();
+      const second = await mountBoard(null);
+      expect(second.vm.$.setupState.viewMode).toBe("week");
+      expect(second.find('[data-testid="week-board"]').exists()).toBe(true);
+      second.vm.$.setupState.viewMode = "day";
+      await flushAll();
+      second.unmount();
+      expect((await mountBoard(null)).vm.$.setupState.viewMode).toBe("day");
+    });
+
+    it("opens Day on a stored value it does not know", async () => {
+      window.localStorage.setItem("gdx.dispatch.viewMode", "month");
+      expect((await mountBoard(null)).vm.$.setupState.viewMode).toBe("day");
+    });
+
+    it("opens Day when storage throws", async () => {
+      // Only this key throws: the auth store reads storage too.
+      const real = Storage.prototype.getItem;
+      const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (k) {
+        if (k === "gdx.dispatch.viewMode") throw new Error("denied");
+        return real.call(this, k);
+      });
+      try {
+        expect((await mountBoard(null)).vm.$.setupState.viewMode).toBe("day");
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   it("starts a job with no time at the tech's shift start on an empty day", async () => {
