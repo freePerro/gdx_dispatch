@@ -116,19 +116,66 @@
                 />
               </div>
 
-              <div class="compose-row">
+              <div
+                v-if="photos.length"
+                class="photo-strip"
+                data-test="pc-compose-photos"
+              >
+                <div v-for="(p, i) in photos" :key="i" class="photo-chip">
+                  <img v-if="p.preview" :src="p.preview" alt="" class="photo-thumb" />
+                  <span v-else class="photo-name">{{ p.file.name }}</span>
+                  <Button
+                    icon="pi pi-times"
+                    text
+                    rounded
+                    size="small"
+                    severity="secondary"
+                    :aria-label="`Remove ${p.file.name}`"
+                    @click="removePhoto(i)"
+                  />
+                </div>
+                <span class="text-muted photo-note">
+                  {{ photos.length > 1 ? `${photos.length} photos — each goes as its own text` : 'Sent as a picture text' }}
+                </span>
+              </div>
+              <div
+                class="compose-row"
+                @dragover.prevent
+                @drop.prevent="addFromDataTransfer($event.dataTransfer)"
+              >
                 <Textarea
                   v-model="composeBody"
                   rows="2"
-                  placeholder="Type a reply…"
+                  :placeholder="photos.length ? 'Add a message (optional)…' : 'Type a reply…'"
                   class="compose-input"
                   data-test="pc-compose-body"
+                  @paste="onPaste"
                 />
                 <div class="compose-actions">
+                  <input
+                    ref="photoInput"
+                    type="file"
+                    :accept="SMS_PHOTO_ACCEPT"
+                    multiple
+                    hidden
+                    data-test="pc-compose-photo-input"
+                    @change="onPhotoPick"
+                  />
+                  <Button
+                    v-tooltip="'Attach a photo'"
+                    icon="pi pi-paperclip"
+                    severity="secondary"
+                    outlined
+                    aria-label="Attach a photo"
+                    :disabled="sending"
+                    @click="photoInput?.click()"
+                    data-test="pc-compose-attach"
+                  />
                   <Button
                     label="Send"
                     icon="pi pi-send"
-                    :disabled="!composeBody.trim()"
+                    :disabled="sending || (!composeBody.trim() && !photos.length)"
+                    :loading="sending"
                     @click="sendReply"
                     data-test="pc-compose-send"
                   />
@@ -137,11 +184,17 @@
                     icon="pi pi-clock"
                     severity="secondary"
                     outlined
-                    :disabled="!composeBody.trim()"
+                    :disabled="!composeBody.trim() || photos.length > 0"
                     @click="laterOpen = !laterOpen"
                     data-test="pc-compose-later"
                   />
                 </div>
+              </div>
+              <div v-if="photoProgress" class="status-line text-muted" data-test="pc-photo-progress">
+                {{ photoProgress }}
+              </div>
+              <div v-if="photoError" class="status-line error-banner" data-test="pc-photo-error">
+                {{ photoError }}
               </div>
               <div
                 v-if="quiet && composeBody.trim() && !laterOpen"
@@ -187,6 +240,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 import SendLaterPanel from '../components/SendLaterPanel.vue'
 import ScheduledTextsList from '../components/ScheduledTextsList.vue'
 import { isQuietHours, whenLabel } from '../utils/sendLater'
+import { useSmsPhotos, SMS_PHOTO_ACCEPT } from '../composables/useSmsPhotos'
 
 const api = useApi()
 const smsUnread = useSmsUnreadStore()
@@ -202,6 +256,24 @@ const threadLoading = ref(false)
 const composeBody = ref('')
 const composeStatus = ref(null)
 const markReadLoading = ref(false)
+
+// Picture texts (MMS) — one photo per text; see composables/useSmsPhotos.js.
+const {
+  photos, photoError, progress: photoProgress,
+  add: addPhotos, remove: removePhoto, clear: clearPhotos, addFromDataTransfer, sendAll: sendPhotos,
+} = useSmsPhotos(api)
+const photoInput = ref(null)
+const sending = ref(false)
+
+function onPhotoPick(e) {
+  addPhotos(e.target.files)
+  e.target.value = '' // picking the same photo again must fire change again
+}
+
+function onPaste(e) {
+  // A pasted screenshot becomes an attachment; pasted text pastes as usual.
+  if (addFromDataTransfer(e.clipboardData)) e.preventDefault()
+}
 
 // Send later — the server side is modules/phone_com/scheduled.py.
 const laterOpen = ref(false)
@@ -303,6 +375,8 @@ const fetchThreads = async () => {
 }
 
 const openThread = async (thread) => {
+  // A photo picked for one customer must never ride along to the next.
+  if (selectedThread.value?.thread_key !== thread.thread_key) clearPhotos()
   selectedThread.value = thread
   threadMessages.value = []
   quiet.value = isQuietHours()
@@ -328,25 +402,52 @@ const openThread = async (thread) => {
 }
 
 const sendReply = async () => {
-  if (!selectedThread.value || !composeBody.value.trim()) return
+  if (!selectedThread.value || sending.value) return
+  if (!composeBody.value.trim() && !photos.value.length) return
+  // The thread is fixed when Send is pressed. The user may open another one
+  // while this uploads; nothing below may then write into that one.
+  const thread = selectedThread.value
+  const stillOpen = () => selectedThread.value?.thread_key === thread.thread_key
   composeStatus.value = null
+  sending.value = true
   try {
+    if (photos.value.length) {
+      const r = await sendPhotos({
+        to: thread.other_party_number,
+        body: composeBody.value,
+        customerId: thread.customer_id,
+      })
+      if (!stillOpen()) return
+      if (r.wordsSent) composeBody.value = ''
+      composeStatus.value = r.error
+        ? { ok: false, message: r.sent ? `${r.sent} sent, then: ${r.error}` : r.error }
+        : { ok: true, message: r.sent > 1 ? `Sent ${r.sent} photos` : 'Photo sent' }
+      // Always reload: a send Phone.com did not confirm is in the thread as
+      // "unknown", and the error says to check there before sending again.
+      await openThread(thread)
+      return
+    }
     const r = await api.post('/api/phone-com/messages', {
-      to: selectedThread.value.other_party_number,
+      to: thread.other_party_number,
       body: composeBody.value.trim(),
-      customer_id: selectedThread.value.customer_id || undefined,
+      customer_id: thread.customer_id || undefined,
     })
+    if (!stillOpen()) return
     composeStatus.value = {
       ok: true,
       message: `Sent · ${r.delivery_status || 'queued'}`,
     }
     composeBody.value = ''
-    await openThread(selectedThread.value)
+    await openThread(thread)
   } catch (err) {
+    if (!stillOpen()) return
     composeStatus.value = {
       ok: false,
       message: err.message || 'Send failed',
     }
+    await openThread(thread)
+  } finally {
+    sending.value = false
   }
 }
 
@@ -377,6 +478,7 @@ const closeThread = () => {
   laterOpen.value = false
   composeBody.value = ''
   composeStatus.value = null
+  clearPhotos()
   _revokeMedia()
 }
 
@@ -400,6 +502,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (_threadsTimer) clearInterval(_threadsTimer)
+  clearPhotos()
   _revokeMedia()
 })
 </script>
@@ -552,6 +655,45 @@ onUnmounted(() => {
 }
 .compose-later {
   margin-top: 0.5rem;
+}
+.photo-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.photo-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 6px;
+  padding: 2px;
+}
+.photo-chip .p-button {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  background: var(--p-content-background);
+}
+.photo-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+.photo-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  padding: 0 1.2rem 0 0.4rem;
+}
+.photo-note {
+  font-size: 0.85rem;
 }
 .quiet-hint {
   margin-top: 0.4rem;

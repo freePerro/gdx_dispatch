@@ -646,9 +646,16 @@ class PhoneComClient:
         from_number: str,
         to_number: str,
         body: str,
-        media_urls: list[str] | None = None,
+        media: list[tuple[bytes, str]] | None = None,
         extension_id: int | None = None,
     ) -> dict[str, Any]:
+        """Send a text, or an MMS when ``media`` carries ``(bytes, filename)``
+        pairs. Phone.com wants MMS media inline as ``media: [{data, filename}]``
+        with ``data`` base64 — not URLs (apidocs.phone.com Send Message,
+        2025-10-16; a 521KB JPEG sent this way reached a Verizon phone intact,
+        2026-10-15). The caller sizes the bytes; see ``mms.shrink_for_mms``."""
+        import base64
+
         if len(body) > self._SMS_MAX_BODY:
             raise PhoneComAPIError(
                 f"body too long for P2P SMS: {len(body)} > {self._SMS_MAX_BODY}",
@@ -660,8 +667,17 @@ class PhoneComClient:
             else f"/accounts/{vid}/messages"
         )
         payload: dict[str, Any] = {"from": from_number, "to": to_number, "text": body}
-        if media_urls:
-            payload["media_urls"] = media_urls
+        if media:
+            # The documented shape is a list of recipients. A bare string has
+            # always worked for plain texts and is left alone there; the MMS
+            # path sends exactly the shape that was proven.
+            payload["to"] = [to_number]
+            payload["media"] = [
+                {"data": base64.b64encode(data).decode("ascii"), "filename": name}
+                for data, name in media
+            ]
+            if not body:
+                del payload["text"]
         resp = self._request_with_retry("POST", path, idempotent=False, json=payload)
         if not resp.is_success:
             raise PhoneComAPIError(

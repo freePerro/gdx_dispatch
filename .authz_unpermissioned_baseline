@@ -108,6 +108,12 @@
 # /api/workflows/{rule_id}. PRUNED, gated: each now carries
 # require_role(DISPATCH_MANAGER_ROLES). Every rule is a standing order to send
 # customer email; reads stay open to any signed-in user.
+#
+# 366 → 367 (2026-10-15, picture texts): POST /api/phone-com/messages/photo —
+# ADDED, the same gate as POST /api/phone-com/messages (the phone_com module;
+# any staff user who can text can text a photo). It is that send with one
+# picture attached, through the same _send_and_record and its audit trail; a
+# permission key would 403 every technician on the mobile composer it serves.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -404,6 +410,7 @@ POST /api/phone-com/blocked-calls
 POST /api/phone-com/calls/originate
 POST /api/phone-com/calls/{call_id}/mark-heard
 POST /api/phone-com/messages
+POST /api/phone-com/messages/photo
 POST /api/phone-com/messages/schedule
 POST /api/phone-com/scheduled/{scheduled_id}/cancel
 POST /api/phone-com/messages/threads/{thread_key}/mark-read
