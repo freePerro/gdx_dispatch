@@ -232,8 +232,19 @@ async function generateInvoice() {
 async function resendInvoice(inv) {
   submitting.value = true
   try {
-    await api.post(`/api/mobile/invoices/${inv.id}/send`, {})
-    toast.add({ severity: 'success', summary: 'Invoice re-sent', life: 2500 })
+    const res = await api.post(`/api/mobile/invoices/${inv.id}/send`, {})
+    const payload = res?.data || res
+    // Read the delivery result: a suppressed repeat or an undelivered email
+    // is not "re-sent" (GDXA-1278). The server names no reason for a
+    // non-delivery (no customer address and a refused provider look alike),
+    // so the toast does not guess one.
+    if (payload?.email_skip_reason === 'duplicate_send_suppressed') {
+      toast.add({ severity: 'info', summary: 'Already sent', detail: 'An email for this invoice went out moments ago.', life: 4000 })
+    } else if (payload?.email_sent === false) {
+      toast.add({ severity: 'warn', summary: 'Email not delivered', detail: 'The customer was not emailed — check their email address, or ask the office.', life: 5000 })
+    } else {
+      toast.add({ severity: 'success', summary: 'Invoice re-sent', life: 2500 })
+    }
     await loadSummary()
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Could not re-send', detail: e.message, life: 4000 })
@@ -252,6 +263,8 @@ async function sendReceipt(inv) {
     // defect one layer up. CLAUDE.md: no faked success, ever.
     if (payload?.sent) {
       toast.add({ severity: 'success', summary: 'Receipt sent', life: 2500 })
+    } else if (payload?.skip_reason === 'duplicate_send_suppressed') {
+      toast.add({ severity: 'info', summary: 'Already sent', detail: 'The receipt for this payment went out moments ago.', life: 4000 })
     } else {
       const reason = payload?.skip_reason || 'delivery failed'
       toast.add({

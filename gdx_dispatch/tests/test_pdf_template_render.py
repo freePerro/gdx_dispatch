@@ -15,7 +15,7 @@ same approach as test_pdf.py.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -353,11 +353,14 @@ def test_invoice_notes_heading_replaces_terms_mislabel(captured_html):
         _invoice_data(notes="Thanks for your business"), _BRANDING)
     html = captured_html["html"]
     assert "<strong>Notes</strong>" in html and "Thanks for your business" in html
-    # the old mislabeled heading is gone for good (pin the heading markup,
-    # not the bare word — 'Terms' could legitimately appear in notes text)
-    assert "<strong>Terms</strong>" not in html
+    # Operator notes print under Notes, never under the Terms heading. The
+    # Terms block (GDXA-1291) carries only data.terms — payment terms derived
+    # from the invoice's dates — and it precedes Notes.
+    terms_at = html.index("<strong>Terms</strong>")
+    notes_at = html.index("<strong>Notes</strong>")
+    assert terms_at < html.index("Due on receipt") < notes_at < html.index("Thanks for your business")
 
-    pdf_generator.generate_invoice_pdf(_invoice_data(), _BRANDING)
+    pdf_generator.generate_invoice_pdf(_invoice_data(terms=""), _BRANDING)
     html = captured_html["html"]
     assert "<strong>Notes</strong>" not in html
     assert "<strong>Terms</strong>" not in html
@@ -392,7 +395,12 @@ def test_invoice_payload_derives_dates_and_notes():
     payload = pdf_router._invoice_payload(_fake_p3_invoice(), None)
     assert payload["invoice_date"] == "2026-07-01"  # created_at fallback
     assert payload["notes"] == "call before delivery"
-    assert "terms" not in payload  # mislabel key retired
+    # "terms" is payment terms from the invoice's dates, never invoice.notes
+    # (the old mislabel). No stored invoice_date → no terms line.
+    assert payload["terms"] == ""
+    assert pdf_router._invoice_payment_terms(
+        _fake_p3_invoice(invoice_date=date(2026, 7, 1), due_date=date(2026, 7, 31))
+    ) == "Net 30, due 2026-07-31"
 
 
 def test_paid_to_date_sums_only_live_payments():
