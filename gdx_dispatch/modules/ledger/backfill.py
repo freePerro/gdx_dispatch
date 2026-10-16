@@ -546,9 +546,9 @@ def duplicate_one_shot_entries(session: Session, company_id: str) -> list[dict]:
     that holds no AR (its cash or 2300 effect is not something the AR control
     can prove), is listed with a ``hold_reason`` and left alone. Read-only.
     """
-    from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Payment
     from sqlalchemy import func
 
+    from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Payment
     from gdx_dispatch.modules.ledger.rules import RECEIVABLE_STATUSES
 
     wanted = set(ONE_SHOT_EVENTS)
