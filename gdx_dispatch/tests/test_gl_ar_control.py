@@ -413,12 +413,85 @@ def test_void_and_draft_owe_nothing(db):
     voided = _issued(db, "70.00")
     transition_invoice_status(db, voided, "void", actor="t")
     voided.balance_due = Decimal("0")
-    _issued(db, "80.00", status="draft")
+    draft = _issued(db, "80.00", status="draft")
 
     out = reports.ar_control(db, COMPANY)
     assert out["subledger_cents"] == 100_00
     assert out["control_cents"] == 100_00
     assert out["tied"] is True
+
+    # GDXA-1246: record_payment refuses only a void, so a draft can take a
+    # payment. It posts a lone AR credit (no issuance behind it). The tie stays
+    # red; the row says why and shows the balance the draft itself carries.
+    _payment(db, recorded_on=draft, posted_against=draft, amount="30.00")
+    draft.balance_due = Decimal("50.00")
+    db.flush()
+
+    out = reports.ar_control(db, COMPANY)
+    assert out["subledger_cents"] == 100_00
+    assert out["control_cents"] == 70_00
+    assert out["tied"] is False
+    assert out["drift"] == [
+        {
+            "invoice_id": str(draft.id),
+            "invoice_number": draft.invoice_number,
+            "status": "draft",
+            "deleted": False,
+            "open_balance_cents": 0,
+            "ledger_ar_cents": -30_00,
+            "drift_cents": -30_00,
+            "balance_due_cents": 50_00,
+            "reason": "payment_on_draft",
+        }
+    ]
+
+
+def test_ar_on_a_void_or_deleted_invoice_shows_its_balance_but_is_not_a_draft_payment(db):
+    """The sweep of GDXA-1246's class: any row whose expected balance is
+    zeroed by status or deletion. A void (balance_due 0 by void_invoice) and a
+    soft-deleted issued invoice still carrying AR show their own balance_due;
+    neither is labelled a draft payment."""
+    voided = _issued(db, "70.00")
+    _payment(db, recorded_on=voided, posted_against=voided, amount="20.00")
+    transition_invoice_status(db, voided, "void", actor="t")
+    voided.balance_due = Decimal("0")
+    deleted = _issued(db, "40.00")
+    deleted.deleted_at = deleted.created_at or date(2026, 7, 10)
+    db.flush()
+
+    out = reports.ar_control(db, COMPANY)
+    rows = {r["invoice_id"]: r for r in out["drift"]}
+    assert out["tied"] is False
+    assert rows[str(voided.id)]["ledger_ar_cents"] == -20_00
+    assert rows[str(voided.id)]["balance_due_cents"] == 0
+    assert rows[str(deleted.id)]["ledger_ar_cents"] == 40_00
+    assert rows[str(deleted.id)]["balance_due_cents"] == 40_00
+    assert "reason" not in rows[str(voided.id)]
+    assert "reason" not in rows[str(deleted.id)]
+
+
+def test_a_deleted_draft_with_a_payment_shows_its_balance_but_no_reason(db):
+    draft = _issued(db, "80.00", status="draft")
+    _payment(db, recorded_on=draft, posted_against=draft, amount="30.00")
+    draft.balance_due = Decimal("50.00")
+    draft.deleted_at = date(2026, 7, 10)
+    db.flush()
+
+    (row,) = reports.ar_control(db, COMPANY)["drift"]
+    assert row["deleted"] is True
+    assert row["ledger_ar_cents"] == -30_00
+    assert row["balance_due_cents"] == 50_00
+    assert "reason" not in row
+
+
+def test_a_live_drift_row_carries_no_balance_due_or_reason(db):
+    inv = _issued(db, "100.00")
+    inv.balance_due = Decimal("90.00")
+    db.flush()
+
+    (row,) = reports.ar_control(db, COMPANY)["drift"]
+    assert "balance_due_cents" not in row
+    assert "reason" not in row
 
 
 def test_endpoint_returns_the_report(db):

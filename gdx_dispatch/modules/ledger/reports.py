@@ -553,6 +553,7 @@ def ar_control(session: Session, company_id: str) -> dict:
 
     control = 0
     ledger_by_invoice: dict[str, int] = {}
+    payment_ar_by_invoice: dict[str, int] = {}
     unattributed: dict[str, int] = {}
     for source_type, source_id, amount in lines:
         control += amount
@@ -568,6 +569,10 @@ def ar_control(session: Session, company_id: str) -> dict:
             unattributed[key] = unattributed.get(key, 0) + amount
         else:
             ledger_by_invoice[invoice_id] = ledger_by_invoice.get(invoice_id, 0) + amount
+            if source_type == "payment":
+                payment_ar_by_invoice[invoice_id] = (
+                    payment_ar_by_invoice.get(invoice_id, 0) + amount
+                )
 
     subledger = 0
     drift: list[dict] = []
@@ -588,17 +593,30 @@ def ar_control(session: Session, company_id: str) -> dict:
         subledger += expected
         ledger = ledger_by_invoice.get(key, 0)
         if ledger != expected:
-            drift.append(
-                {
-                    "invoice_id": key,
-                    "invoice_number": inv.invoice_number,
-                    "status": inv.status,
-                    "deleted": inv.deleted_at is not None,
-                    "open_balance_cents": expected,
-                    "ledger_ar_cents": ledger,
-                    "drift_cents": ledger - expected,
-                }
-            )
+            row = {
+                "invoice_id": key,
+                "invoice_number": inv.invoice_number,
+                "status": inv.status,
+                "deleted": inv.deleted_at is not None,
+                "open_balance_cents": expected,
+                "ledger_ar_cents": ledger,
+                "drift_cents": ledger - expected,
+            }
+            if not live:
+                # Status or deletion zeroed the open balance; carry the row's
+                # own balance_due so the drift can be read against it.
+                row["balance_due_cents"] = to_cents(_dec(inv.balance_due))
+                # record_payment refuses only a void, and a draft posts no
+                # issuance, so a partial payment on a draft is a lone AR
+                # credit. The row stays drift (GDXA-1246). A deleted draft is
+                # not labelled: issuing it is not the remedy there.
+                if (
+                    inv.status == "draft"
+                    and inv.deleted_at is None
+                    and payment_ar_by_invoice.get(key, 0)
+                ):
+                    row["reason"] = "payment_on_draft"
+            drift.append(row)
     # AR sourced from an invoice id that no longer resolves to a row.
     for invoice_id, amount in ledger_by_invoice.items():
         if invoice_id not in seen and amount:

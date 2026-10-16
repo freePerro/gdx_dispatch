@@ -405,6 +405,30 @@ const disconnect = async () => {
   }
 }
 
+// GDXA-1201 — "On my way" texts the customer (core/on_my_way_sms). Off until
+// an admin turns it on; read back from the settings GET, saved on its own
+// route so a toggle never re-validates the token against Phone.com.
+const onMyWayBusy = ref(false)
+const onMyWayError = ref(null)
+
+const toggleOnMyWay = async (event) => {
+  const box = event?.target
+  const next = !phoneSettings.value.on_my_way_sms_enabled
+  onMyWayBusy.value = true
+  onMyWayError.value = null
+  try {
+    const r = await api.put('/api/settings/integrations/phone-com/on-my-way', { enabled: next })
+    phoneSettings.value = { ...phoneSettings.value, on_my_way_sms_enabled: !!r?.enabled }
+  } catch (err) {
+    onMyWayError.value = err.message || 'Failed to save'
+    // The click already flipped the box and the bound value did not change,
+    // so Vue will not re-render it: put it back to what the server holds.
+    if (box) box.checked = !!phoneSettings.value.on_my_way_sms_enabled
+  } finally {
+    onMyWayBusy.value = false
+  }
+}
+
 const loadCard = async () => {
   // Order matters: tests queue api.get mocks in [modules, settings] sequence.
   // Sequential awaits keep that ordering. Catalogs only fetched once a token
@@ -662,6 +686,28 @@ onMounted(loadCard)
               · validated {{ formatRelative(phoneSettings.last_validated_at) }}
             </span>
           </span>
+          <div class="on-my-way-row" data-test="pc-on-my-way">
+            <div class="toggle-row">
+              <input
+                type="checkbox"
+                id="pc-on-my-way-toggle"
+                class="toggle-input"
+                data-test="pc-on-my-way-toggle"
+                :checked="!!phoneSettings.on_my_way_sms_enabled"
+                :disabled="onMyWayBusy"
+                @change="toggleOnMyWay"
+              />
+              <label for="pc-on-my-way-toggle">Text the customer when a tech is on the way</label>
+            </div>
+            <p class="muted">
+              Sent when a tech taps “On my way” (or the office marks the visit on the way).
+              Skips customers who opted out of texts or have no textable number, and texts
+              once per job every few hours.
+            </p>
+            <div v-if="onMyWayError" class="status-row status-error" data-test="pc-on-my-way-error">
+              {{ onMyWayError }}
+            </div>
+          </div>
           <div class="features muted">
             Webhook:
             <span :class="phoneSettings.webhook_status.registered ? 'status-ok' : 'status-warn'">
@@ -1000,6 +1046,17 @@ onMounted(loadCard)
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.on-my-way-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+}
+
+.on-my-way-row p {
+  margin: 0;
 }
 
 .features {

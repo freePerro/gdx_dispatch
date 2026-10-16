@@ -189,6 +189,38 @@ def _audit(db: Session, row: ScheduledSms, action: str, *, user_id: Any, request
 # ── schedule / list / cancel ────────────────────────────────────────────
 
 
+def new_row(
+    *,
+    tenant_id: UUID | str,
+    actor: UUID,
+    audit_action: str,
+    kind: str,
+    to: str,
+    body: str | None,
+    send_at: datetime,
+    entity_id: UUID | None = None,
+    customer_id: UUID | None = None,
+    job_id: UUID | None = None,
+) -> ScheduledSms:
+    """An unsaved ``scheduled`` row. ``send_at`` is taken as given (UTC):
+    ``create()`` validates the office's chosen time first; a system-queued
+    text due now (core/on_my_way_sms.py) passes the current instant."""
+    return ScheduledSms(
+        id=uuid4(),
+        kind=kind,
+        entity_id=entity_id,
+        to_number=to,
+        body=body,
+        customer_id=customer_id,
+        job_id=job_id,
+        send_at=send_at,
+        status="scheduled",
+        audit_action=audit_action,
+        tenant_id=str(tenant_id),
+        created_by_user_id=actor,
+    )
+
+
 def create(
     db: Session,
     *,
@@ -211,19 +243,9 @@ def create(
         # A scheduled text sends as a person; with no person there is no one
         # to re-check at send time or to answer for it.
         raise refuse(403, "no_user", "Only a signed-in user can schedule a text.")
-    row = ScheduledSms(
-        id=uuid4(),
-        kind=kind,
-        entity_id=entity_id,
-        to_number=to,
-        body=body,
-        customer_id=customer_id,
-        job_id=job_id,
-        send_at=normalize_send_at(send_at),
-        status="scheduled",
-        audit_action=audit_action,
-        tenant_id=str(tenant_id),
-        created_by_user_id=actor,
+    row = new_row(
+        kind=kind, to=to, body=body, send_at=normalize_send_at(send_at), audit_action=audit_action,
+        tenant_id=tenant_id, actor=actor, entity_id=entity_id, customer_id=customer_id, job_id=job_id,
     )
     db.add(row)
     db.flush()
@@ -419,6 +441,8 @@ def _alert_office(db: Session, row: ScheduledSms) -> None:
         customer = active_customer(db, row.customer_id) if row.customer_id else None
         who = (getattr(customer, "name", None) or "").strip() or f"…{(row.to_number or '')[-4:]}"
         noun = _KIND_NOUN.get(row.kind, "text")
+        if row.audit_action == "on_my_way_sms":  # core/on_my_way_sms.ACTION_ON_MY_WAY
+            noun = "on-my-way text"
         number = _document_number(db, row)
         if number:
             noun = f"{noun} for {number}"
@@ -522,6 +546,14 @@ def _send_message_row(db: Session, row: ScheduledSms) -> None:
     from gdx_dispatch.modules.phone_com.outbound_did import resolve_outbound_did
     from gdx_dispatch.modules.phone_com.router import _get_phone_com_client, _thread_key_for
 
+    if row.audit_action == "on_my_way_sms":  # core/on_my_way_sms.ACTION_ON_MY_WAY
+        from gdx_dispatch.core.on_my_way_sms import is_enabled
+
+        # Switched off after it was queued: the admin's latest word wins.
+        if not is_enabled(db):
+            _finish(db, row, "skipped", code="on_my_way_disabled",
+                    message="On-my-way texts were turned off before this one sent.")
+            return
     if row.customer_id:
         customer = active_customer(db, row.customer_id)
         if customer is not None and customer.sms_opt_out:

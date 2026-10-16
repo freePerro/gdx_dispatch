@@ -7,6 +7,7 @@ const getMock = vi.fn();
 const postMock = vi.fn();
 const patchMock = vi.fn();
 const delMock = vi.fn();
+const putMock = vi.fn();
 
 vi.mock('../src/composables/useApi', () => ({
   useApi: () => ({
@@ -15,7 +16,7 @@ vi.mock('../src/composables/useApi', () => ({
     patch: patchMock,
     del: delMock,
     request: vi.fn(),
-    put: vi.fn(),
+    put: putMock,
   }),
 }));
 
@@ -65,6 +66,7 @@ describe('PhoneComIntegrationCard', () => {
     postMock.mockReset();
     patchMock.mockReset();
     delMock.mockReset();
+    putMock.mockReset();
     // Wave C added fetchCatalogs (numbers + extensions) on mount. Route those
     // to empty stubs so the existing mockResolvedValueOnce sequences for
     // /api/settings/* aren't consumed by the new endpoints.
@@ -395,5 +397,67 @@ describe('PhoneComIntegrationCard', () => {
     expect(wrapper.find('[data-test="pc-modules-retry"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="phone-com-module-toggle"]').element.disabled).toBe(false);
     expect(wrapper.find('[data-test="pc-oauth-toggle"]').exists()).toBe(true);
+  });
+
+  // ── GDXA-1201: "On my way" text opt-in ────────────────────────────────
+
+  it('on-my-way toggle reads off by default and PUTs enabled:true when clicked', async () => {
+    getMock
+      .mockResolvedValueOnce(_MODULE_ON)
+      .mockResolvedValueOnce(_CONFIGURED_STATE);
+    putMock.mockResolvedValueOnce({ enabled: true });
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+
+    const box = wrapper.find('[data-test="pc-on-my-way-toggle"]');
+    expect(box.exists()).toBe(true);
+    expect(box.element.checked).toBe(false);
+    expect(wrapper.text()).toContain('Text the customer when a tech is on the way');
+
+    await box.setValue(true); // a real click: the box flips, then change fires
+    await flushPromises();
+    expect(putMock).toHaveBeenCalledWith('/api/settings/integrations/phone-com/on-my-way', { enabled: true });
+    expect(wrapper.find('[data-test="pc-on-my-way-toggle"]').element.checked).toBe(true);
+  });
+
+  it('on-my-way toggle reflects a saved ON and turns it off', async () => {
+    getMock
+      .mockResolvedValueOnce(_MODULE_ON)
+      .mockResolvedValueOnce({ ..._CONFIGURED_STATE, on_my_way_sms_enabled: true });
+    putMock.mockResolvedValueOnce({ enabled: false });
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+
+    const box = wrapper.find('[data-test="pc-on-my-way-toggle"]');
+    expect(box.element.checked).toBe(true);
+    await box.setValue(false);
+    await flushPromises();
+    expect(putMock).toHaveBeenCalledWith('/api/settings/integrations/phone-com/on-my-way', { enabled: false });
+    expect(wrapper.find('[data-test="pc-on-my-way-toggle"]').element.checked).toBe(false);
+  });
+
+  it('a refused on-my-way save keeps the old state and says why', async () => {
+    getMock
+      .mockResolvedValueOnce(_MODULE_ON)
+      .mockResolvedValueOnce(_CONFIGURED_STATE);
+    putMock.mockRejectedValueOnce({ status: 403, message: 'admin only' });
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+
+    // setValue flips the box the way a click does; the refused save must
+    // put it back, or it shows ON while the server still says off.
+    await wrapper.find('[data-test="pc-on-my-way-toggle"]').setValue(true);
+    await flushPromises();
+    expect(wrapper.find('[data-test="pc-on-my-way-error"]').text()).toContain('admin only');
+    expect(wrapper.find('[data-test="pc-on-my-way-toggle"]').element.checked).toBe(false);
+  });
+
+  it('no on-my-way toggle before Phone.com is connected', async () => {
+    getMock
+      .mockResolvedValueOnce(_MODULE_OFF)
+      .mockResolvedValueOnce(_UNSET_STATE);
+    const wrapper = mount(PhoneComIntegrationCard);
+    await flushPromises();
+    expect(wrapper.find('[data-test="pc-on-my-way-toggle"]').exists()).toBe(false);
   });
 });
