@@ -182,3 +182,32 @@ describe("Appointments page — arrivals", () => {
     }
   });
 });
+
+describe("Appointments page — On My Way (GDXA-1203)", () => {
+  const CONFIRMED = { id: "conf", title: "Tune-up", tech_id: "t1", status: "confirmed",
+    start_at: "2026-10-05T15:00:00Z", arrived_at: null };
+  beforeEach(() => {
+    getMock.mockImplementation((url) =>
+      url.startsWith("/api/appointments") && !url.startsWith("/api/appointments/unconfirmed")
+        ? Promise.resolve([{ ...CONFIRMED }])
+        : routeGet(url));
+  });
+
+  it("says the customer was texted only when the server queued a text", async () => {
+    postMock.mockResolvedValue({ status: "en_route", customer_notified: true });
+    const w = await mountView();
+    await w.get('[data-testid="row-action-conf"]').trigger("click");
+    await flushPromises();
+    expect(postMock.mock.calls[0][0]).toBe("/api/appointments/conf/on-my-way");
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: "Customer texted" }));
+  });
+
+  it("says nothing about a text when none was queued", async () => {
+    postMock.mockResolvedValue({ status: "en_route", customer_notified: false, customer_notified_reason: "disabled" });
+    const w = await mountView();
+    await w.get('[data-testid="row-action-conf"]').trigger("click");
+    await flushPromises();
+    expect(postMock.mock.calls[0][0]).toBe("/api/appointments/conf/on-my-way");
+    expect(toastAdd).not.toHaveBeenCalled();
+  });
+});

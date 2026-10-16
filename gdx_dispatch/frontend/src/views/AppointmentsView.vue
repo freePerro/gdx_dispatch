@@ -640,9 +640,18 @@ async function triggerTransition(appointment, config) {
   if (!appointment?.id) return;
   actionLoadingId.value = appointment.id;
   try {
-    await api.post(`/api/appointments/${appointment.id}/${config.endpoint}`, config.payload || null, {
+    const result = await api.post(`/api/appointments/${appointment.id}/${config.endpoint}`, config.payload || null, {
       successMessage: config.message,
     });
+    // On My Way texts the customer when the tenant opted in (core/on_my_way_sms).
+    if (result?.customer_notified) {
+      toast.add({
+        severity: 'info',
+        summary: 'Customer texted',
+        detail: 'The on-my-way text goes out within a minute.',
+        life: 4000,
+      });
+    }
     await fetchAppointments();
     await fetchUnconfirmed();
   } catch {

@@ -799,6 +799,12 @@ def on_my_way(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    """Office On My Way. The en-route write commits first; then the customer
+    is texted through the shared helper (core/on_my_way_sms), which never
+    raises, so a text that cannot go never fails the write. ``customer_notified``
+    is True only when a text was queued by this call."""
+    from gdx_dispatch.core.on_my_way_sms import send_on_my_way  # noqa: PLC0415
+
     tenant_id = _tenant_id(request)
     a = _get_scoped(db, appt_id, tenant_id)
     if a.status in ("completed", "cancelled"):
@@ -812,7 +818,19 @@ def on_my_way(
         db, a, tenant_id=tenant_id, user=user, action="appointment_en_route",
         request=request, job_ids=(a.job_id,),
     )
-    return _serialize(a)
+    out = _serialize(a)
+    # The office presses this for the assigned tech: the text names the tech,
+    # never the office user (unassigned or unknown reads "your technician").
+    from gdx_dispatch.models.tenant_models import Technician  # noqa: PLC0415
+
+    tech = db.get(Technician, a.tech_id) if a.tech_id else None
+    tech_first = ((tech.name or "").strip().split(" ")[0] if tech and (tech.name or "").strip() else "")
+    sms = send_on_my_way(
+        db, user=user, request=request, job_id=a.job_id, customer_id=a.customer_id, tech_name=tech_first,
+    )
+    out["customer_notified"] = sms.queued
+    out["customer_notified_reason"] = sms.reason
+    return out
 
 
 @router.post("/api/appointments/{appt_id}/arrived", response_model=None, dependencies=[Depends(_office)])

@@ -2467,16 +2467,24 @@ def mobile_job_en_route(
             _audit_db.commit()
         except Exception:
             log.exception('mobile_job_en_route_audit_failed')
+    # The on-my-way text (GDXA-1202), after the en-route write has committed.
+    # The helper never raises and audits its own sends and skips, so a text
+    # that cannot go never fails the tap that time tracking depends on.
+    from gdx_dispatch.core.on_my_way_sms import send_on_my_way
+
+    sms = send_on_my_way(
+        db, user=user, request=request, job_id=job_id, eta_minutes=payload.eta_minutes,
+    )
     return jsonable_response(
         {
             "ok": True,
             "job_id": job_id,
             "dispatch_status": dispatch_status,
             "eta_minutes": payload.eta_minutes,
-            # Honest: this handler sends the customer nothing (no mail, SMS
-            # or task call anywhere in it). It said True for its whole life;
-            # nothing in frontend/src reads the field, so no UI changes.
-            "customer_notified": False,
+            # True only when this tap queued a text (GDXA-970: it once said
+            # True and sent nothing). A re-tap inside the dedupe window is
+            # False — that tap queued nothing.
+            "customer_notified": sms.queued,
         }
     )
 
