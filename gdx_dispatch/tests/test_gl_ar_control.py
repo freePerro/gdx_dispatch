@@ -180,10 +180,12 @@ def test_a_late_era_payment_beyond_its_anchor_is_not_tied(db):
         200_00, 100_00, 100_00,
     )
     assert row["refunded_cents"] == 0
-    # One computation, two reports: they cannot disagree.
-    assert reconciliation_report(db, COMPANY)["era_settlement_shortfalls"] == out[
-        "era_settlement_shortfalls"
-    ]
+    # Both reports take their rows from one computation; ar_control orders
+    # and caps them, so compare ignoring order (the cap test pins the rest).
+    by_payment = lambda rows: sorted(rows, key=lambda r: r["payment_id"])  # noqa: E731
+    assert by_payment(
+        reconciliation_report(db, COMPANY)["era_settlement_shortfalls"]
+    ) == by_payment(out["era_settlement_shortfalls"])
     assert out["era_settlement_shortfall_count"] == 1
 
 
@@ -292,7 +294,10 @@ def test_shortfall_rows_are_capped_largest_first_and_the_count_and_total_are_not
 ):
     """GDXA-1244. The payload lists at most AR_SHORTFALL_ROW_LIMIT shortfalls,
     largest uncovered first, like drift; the count and the cents total cover
-    every one, so the cap changes what is listed and never whether it ties."""
+    every one, so the cap changes what is listed and never whether it ties.
+    reconciliation_report takes the same rows and lists every one."""
+    from gdx_dispatch.modules.ledger.backfill import reconciliation_report
+
     monkeypatch.setattr(reports, "AR_SHORTFALL_ROW_LIMIT", 2)
     settings = ensure_gl_seed(db, COMPANY)
     settings.cutover_month = date(2026, 7, 1)
@@ -311,6 +316,9 @@ def test_shortfall_rows_are_capped_largest_first_and_the_count_and_total_are_not
     assert [r["uncovered_cents"] for r in out["era_settlement_shortfalls"]] == [150_00, 90_00]
     assert all(excess[r["invoice_id"]] == r["uncovered_cents"] for r in out["era_settlement_shortfalls"])
     assert out["tied"] is False
+    full = reconciliation_report(db, COMPANY)["era_settlement_shortfalls"]
+    assert sorted(r["uncovered_cents"] for r in full) == [30_00, 90_00, 150_00]
+    assert all(r in full for r in out["era_settlement_shortfalls"])
 
 
 def test_drift_rows_are_capped_largest_first_and_the_count_is_not(db, monkeypatch):
