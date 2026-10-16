@@ -32,6 +32,7 @@ from gdx_dispatch.modules.ledger.rules import (
     invoice_ar_balance_cents,
     post_credit_memo,
     post_payment_received,
+    post_refund,
 )
 from gdx_dispatch.modules.ledger.service import ensure_gl_seed, transition_invoice_status
 from gdx_dispatch.routers.invoices import _recalculate_invoice
@@ -178,11 +179,112 @@ def test_a_late_era_payment_beyond_its_anchor_is_not_tied(db):
     assert (row["amount_cents"], row["allocated_cents"], row["uncovered_cents"]) == (
         200_00, 100_00, 100_00,
     )
+    assert row["refunded_cents"] == 0
     # One computation, two reports: they cannot disagree.
     assert reconciliation_report(db, COMPANY)["era_settlement_shortfalls"] == out[
         "era_settlement_shortfalls"
     ]
     assert out["era_settlement_shortfall_count"] == 1
+
+
+def _era_overpaid(db) -> tuple[Invoice, Payment]:
+    """A $100 era invoice paid $200 by a late-learned era payment: $100 of
+    it posts nowhere (the GDXA-1223 shortfall)."""
+    settings = ensure_gl_seed(db, COMPANY)
+    settings.cutover_month = date(2026, 7, 1)
+    db.flush()
+    era = _issued(db, "100.00", invoice_date=date(2026, 6, 15))
+    late = _payment(
+        db, recorded_on=era, posted_against=era, amount="200.00", paid_on=date(2026, 6, 20)
+    )
+    _recalculate_invoice(era, db, actor="t")
+    db.flush()
+    return era, late
+
+
+def _refund(db, invoice: Invoice, amount: str) -> InvoiceAdjustment:
+    """A refund through the real posting rule, as process_refund records it."""
+    refund = InvoiceAdjustment(
+        id=uuid4(), invoice_id=invoice.id, kind="refund", amount=Decimal(amount),
+        reason="overpaid", refund_method="check", created_by="t", company_id=COMPANY,
+    )
+    db.add(refund)
+    db.flush()
+    post_refund(db, refund, invoice, actor="t")
+    db.flush()
+    return refund
+
+
+def test_a_refunded_era_overpayment_ties(db):
+    """GDXA-1247. The $100 that posted nowhere went back to the customer, so
+    no money is missing: the shortfall nets to zero and the book ties."""
+    from gdx_dispatch.modules.ledger.backfill import reconciliation_report
+
+    era, _late = _era_overpaid(db)
+    assert reports.ar_control(db, COMPANY)["tied"] is False
+    _refund(db, era, "100.00")
+
+    out = reports.ar_control(db, COMPANY)
+    assert (out["control_cents"], out["subledger_cents"]) == (0, 0)
+    assert out["era_settlement_shortfalls"] == []
+    assert out["era_settlement_shortfall_cents"] == 0
+    assert out["era_settlement_refunded_cents"] == 100_00
+    assert out["tied"] is True
+    report = reconciliation_report(db, COMPANY)
+    assert report["era_settlement_shortfalls"] == []
+    assert report["totals"]["era_settlement_refunded_cents"] == 100_00
+
+
+def test_a_partly_refunded_era_overpayment_shows_the_remainder(db):
+    era, late = _era_overpaid(db)
+    _refund(db, era, "40.00")
+
+    out = reports.ar_control(db, COMPANY)
+    [row] = out["era_settlement_shortfalls"]
+    assert row["payment_id"] == str(late.id)
+    assert (row["allocated_cents"], row["refunded_cents"], row["uncovered_cents"]) == (
+        100_00, 40_00, 60_00,
+    )
+    assert out["era_settlement_shortfall_cents"] == 60_00
+    assert out["era_settlement_refunded_cents"] == 40_00
+    assert out["tied"] is False
+
+
+def test_a_reversed_refund_does_not_net_the_shortfall(db):
+    """A refund whose entry was reversed has returned nothing to the books."""
+    from gdx_dispatch.modules.ledger.engine import reverse_entry
+    from gdx_dispatch.modules.ledger.models import GlJournalEntry
+
+    era, _late = _era_overpaid(db)
+    refund = _refund(db, era, "100.00")
+    [entry] = db.scalars(
+        select(GlJournalEntry).where(
+            GlJournalEntry.source_type == "adjustment",
+            GlJournalEntry.source_id == str(refund.id),
+        )
+    ).all()
+    reverse_entry(db, entry, created_by="t")
+    db.flush()
+
+    out = reports.ar_control(db, COMPANY)
+    [row] = out["era_settlement_shortfalls"]
+    assert (row["refunded_cents"], row["uncovered_cents"]) == (0, 100_00)
+    assert out["era_settlement_refunded_cents"] == 0
+    assert out["tied"] is False
+
+
+def test_a_refund_of_customer_credit_does_not_net_the_shortfall(db):
+    """A later $50 payment on the paid era invoice is all 2300 credit; a $50
+    refund retires that credit (post_refund is credit-first). The $100 that
+    posted nowhere is still missing."""
+    era, _late = _era_overpaid(db)
+    _payment(db, recorded_on=era, posted_against=era, amount="50.00", paid_on=date(2026, 7, 20))
+    _refund(db, era, "50.00")
+
+    out = reports.ar_control(db, COMPANY)
+    [row] = out["era_settlement_shortfalls"]
+    assert (row["refunded_cents"], row["uncovered_cents"]) == (0, 100_00)
+    assert out["tied"] is False
 
 
 def test_shortfall_rows_are_capped_largest_first_and_the_count_and_total_are_not(

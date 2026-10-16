@@ -296,6 +296,56 @@ describe('AccountingLedgerView', () => {
     expect(wrapper.find('[data-testid="ar-control-shortfall-cap"]').exists()).toBe(false);
   });
 
+  it('shows what was refunded beside what is still uncovered (GDXA-1247)', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) {
+        return {
+          ...AR,
+          tied: false,
+          era_settlement_shortfall_cents: 6000,
+          era_settlement_shortfall_count: 1,
+          era_settlement_refunded_cents: 4000,
+          era_settlement_shortfalls: [{
+            invoice_id: 'inv7', invoice_number: 'INV-7', payment_id: 'p1',
+            payment_date: '2026-06-20', amount_cents: 20000, allocated_cents: 10000,
+            refunded_cents: 4000, uncovered_cents: 6000,
+          }],
+        };
+      }
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    const table = wrapper.find('[data-testid="ar-control-shortfalls"]');
+    expect(table.text()).toContain('Refunded');
+    expect(table.text()).toContain('$40.00');
+    expect(table.text()).toContain('$60.00');
+    expect(wrapper.find('[data-testid="ar-control-shortfall-note"]').text()).toContain('$60.00');
+    expect(wrapper.find('[data-testid="ar-control-era-refunded-note"]').text()).toContain('$40.00');
+  });
+
+  it('still names a fully refunded era excess once the book ties (GDXA-1247)', async () => {
+    apiGet.mockImplementation(async (url) => {
+      if (url.includes('/ar-control')) {
+        return { ...AR, tied: true, era_settlement_refunded_cents: 10000 };
+      }
+      return route(url);
+    });
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="ar-control-shortfalls"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="ar-control-era-refunded-note"]').text()).toContain(
+      '$100.00 of payments dated before the ledger start',
+    );
+  });
+
+  it('says nothing about refunds when no era excess was refunded', async () => {
+    apiGet.mockImplementation(async (url) => (url.includes('/ar-control') ? { ...AR } : route(url)));
+    const wrapper = mount(AccountingLedgerView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="ar-control-era-refunded-note"]').exists()).toBe(false);
+  });
+
   it('says how many shortfalls are listed when the payload is capped (GDXA-1244)', async () => {
     const row = (n, cents) => ({
       invoice_id: `inv${n}`, invoice_number: `INV-${n}`, payment_id: `p${n}`,

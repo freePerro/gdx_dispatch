@@ -275,6 +275,42 @@ def test_partial_allocation_shortfall_in_report(db):
     assert shortfalls[0]["uncovered_cents"] == 3000
 
 
+def test_a_refund_nets_shortfalls_in_allocation_order(db):
+    """GDXA-1247. $150 then $40 late on a $100 anchor: $50 and $40 post
+    nowhere. A $70 refund pays back the earlier-dated excess first, then $20
+    of the later one, leaving $20 uncovered."""
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment
+    from gdx_dispatch.modules.ledger.backfill import (
+        era_settlement_excess,
+        reconciliation_report,
+    )
+    from gdx_dispatch.modules.ledger.rules import post_refund
+
+    inv = _era_invoice(db, total="100.00")
+    _enable(db)
+    post_opening_balance(db, inv, actor="t")
+    p1 = _late_payment(db, inv, amount="150.00", paid_on=date(2026, 6, 10))
+    p2 = _late_payment(db, inv, amount="40.00", paid_on=date(2026, 6, 20))
+    resettle_invoice_payments(db, inv, actor="t")
+    refund = InvoiceAdjustment(
+        id=uuid4(), invoice_id=inv.id, kind="refund", amount=Decimal("70.00"),
+        refund_method="check", created_by="t", company_id=COMPANY,
+    )
+    db.add(refund)
+    db.flush()
+    post_refund(db, refund, inv, actor="t")
+    db.commit()
+
+    assert [
+        (r["payment_id"], r["allocated_cents"], r["refunded_cents"], r["uncovered_cents"])
+        for r in era_settlement_excess(db, COMPANY)
+    ] == [(str(p1.id), 10000, 5000, 0), (str(p2.id), 0, 2000, 2000)]
+    report = reconciliation_report(db, COMPANY)
+    assert [(s["payment_id"], s["uncovered_cents"]) for s in report["era_settlement_shortfalls"]] == [
+        (str(p2.id), 2000)]
+    assert report["totals"]["era_settlement_refunded_cents"] == 7000
+
+
 def test_backfill_cli_prints_the_shortfall_beside_its_checkmark(db, capsys):
     """GDXA-1223: the CLI's ✓ compares two figures that both read 0 for an
     uncovered payment; the shortfall has to be printed next to it."""
