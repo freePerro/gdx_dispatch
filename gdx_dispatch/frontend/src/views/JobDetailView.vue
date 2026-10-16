@@ -2467,7 +2467,7 @@ async function assignTech(change) {
   if (!job.value.id) return;
   // A single assigned_tech_id replaces the whole crew, so on a crew job a
   // pick keeps everyone: a member becomes lead, anyone else is a swap or an
-  // add. Clearing the picker stays an explicit unassign. With the crew
+  // add. Clearing the picker unassigns everyone, after a confirm. With the crew
   // unread (still loading, or the read failed) nothing is sent: a wrong
   // guess here is the crew wipe this guards against.
   if (assignmentsLoading.value || !crewKnown.value) {
@@ -2502,8 +2502,21 @@ async function assignTech(change) {
     }
     return;
   }
+  // The picker's X takes every tech off the job, crew and all, so it asks.
+  if (!techId && crew.length) {
+    const ok = await confirmAsync({
+      header: crew.length > 1 ? "Remove every technician?" : "Remove the technician?",
+      message: `${crew.map((id) => techLabel(id)).join(", ")} will be taken off this job, and it goes back to unassigned.`,
+      acceptLabel: "Remove",
+    });
+    if (!ok) {
+      selectedTech.value = job.value.assigned_to || null;
+      return;
+    }
+  }
   try {
     await api.patch(`/api/jobs/${job.value.id}`, { assigned_tech_id: techId }, { successMessage: techId ? "Technician assigned" : "Technician cleared" });
+    if (!techId) await fetchAssignments();
     await fetchJob();
   } catch {
     selectedTech.value = job.value.assigned_to || null;

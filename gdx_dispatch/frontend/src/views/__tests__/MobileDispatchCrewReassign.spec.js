@@ -39,6 +39,10 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
+const confirmMock = vi.fn().mockResolvedValue(true);
+vi.mock('../../composables/useDestructiveConfirm', () => ({
+  useDestructiveConfirm: () => ({ confirmAsync: (...a) => confirmMock(...a), confirmDestructive: vi.fn() }),
+}));
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
 vi.mock('../../composables/useTenantTimezone', () => ({
   useTenantTimezone: () => ({ tenantTimezone: { value: 'UTC' }, zonedDateKey: localKey }),
@@ -70,7 +74,7 @@ async function reassign(w, job, techId) {
   return { done }; // wrapped: returning the promise itself would wait on the prompt
 }
 
-beforeEach(() => patch.mockClear());
+beforeEach(() => { patch.mockClear(); confirmMock.mockClear(); confirmMock.mockResolvedValue(true); });
 
 describe('mobile dispatch Reassign on a crew job', () => {
   it('saving the lead unchanged sends nothing', async () => {
@@ -116,5 +120,25 @@ describe('mobile dispatch Reassign on a crew job', () => {
     const w = await mountBoard();
     await reassign(w, SOLO_JOB, 't3');
     expect(patch).toHaveBeenCalledWith('/api/jobs/job-2', { assigned_tech_id: 't3', assigned_to: 't3', technician_id: 't3' });
+  });
+});
+
+describe('mobile dispatch Unassign', () => {
+  it('asks first, naming the crew, then takes everyone off', async () => {
+    const w = await mountBoard();
+    await w.vm.$.setupState.unassignJob(CREW_JOB);
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+      header: 'Remove every technician?',
+      message: expect.stringContaining('Mike, Sam'),
+    }));
+    expect(patch).toHaveBeenCalledWith('/api/jobs/job-1', { assigned_tech_id: null, assigned_to: null, technician_id: null });
+  });
+
+  it('saying no sends nothing', async () => {
+    confirmMock.mockResolvedValue(false);
+    const w = await mountBoard();
+    await w.vm.$.setupState.unassignJob(SOLO_JOB);
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ header: 'Remove the technician?' }));
+    expect(patch).not.toHaveBeenCalled();
   });
 });
