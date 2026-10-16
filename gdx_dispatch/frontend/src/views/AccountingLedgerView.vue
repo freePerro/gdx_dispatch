@@ -114,11 +114,27 @@
                 <Column header="On the ledger" class="amount-col">
                   <template #body="{ data }">{{ fmt(data.allocated_cents) }}</template>
                 </Column>
+                <!-- GDXA-1247: excess already refunded to the customer is not missing. -->
+                <Column header="Refunded" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.refunded_cents || 0) }}</template>
+                </Column>
                 <Column header="Uncovered" class="amount-col">
                   <template #body="{ data }">{{ fmt(data.uncovered_cents) }}</template>
                 </Column>
               </DataTable>
             </template>
+            <!-- GDXA-1247: a refunded excess no longer counts against the tie,
+                 but the refund was booked against revenue (the money was never
+                 on customer credit), so it stays named here. -->
+            <p
+              v-if="ar.era_settlement_refunded_cents"
+              class="skip-note"
+              data-testid="ar-control-era-refunded-note"
+            >
+              {{ fmt(ar.era_settlement_refunded_cents) }} of payments dated before the ledger
+              start that posted nowhere was refunded to the customer. The refund was booked
+              against revenue, because the money was never on customer credit.
+            </p>
             <template v-if="ar.drift_invoice_count">
               <p class="skip-note" data-testid="ar-control-drift-note">
                 {{ ar.drift_invoice_count }} invoice(s) disagree with the ledger<span

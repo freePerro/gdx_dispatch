@@ -532,7 +532,10 @@ def ar_control(session: Session, company_id: str) -> dict:
     """
     from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Payment
     from gdx_dispatch.modules.ledger import service as ledger_service
-    from gdx_dispatch.modules.ledger.backfill import era_settlement_shortfalls
+    from gdx_dispatch.modules.ledger.backfill import (
+        era_settlement_excess,
+        era_settlement_shortfalls,
+    )
     from gdx_dispatch.modules.ledger.rules import RECEIVABLE_STATUSES, ar_role_lines
 
     lines = session.execute(ar_role_lines()).all()
@@ -605,8 +608,10 @@ def ar_control(session: Session, company_id: str) -> dict:
     unattributed_cents = sum(unattributed.values())
     # A late era payment larger than its opening anchor posts nothing for the
     # excess, and balance_due floors at zero, so both sides above read 0 for
-    # it. That money is on no ledger line, so the book is not tied (GDXA-1223).
-    shortfalls = era_settlement_shortfalls(session, company_id)
+    # it. That money is on no ledger line, so the book is not tied (GDXA-1223),
+    # until a refund has paid it back out (GDXA-1247).
+    excess = era_settlement_excess(session, company_id)
+    shortfalls = era_settlement_shortfalls(session, company_id, excess)
     shortfall_cents = sum(r["uncovered_cents"] for r in shortfalls)
     shortfalls.sort(
         key=lambda r: (-r["uncovered_cents"], r["invoice_number"] or "", r["payment_id"])
@@ -625,6 +630,7 @@ def ar_control(session: Session, company_id: str) -> dict:
             and shortfall_cents == 0
         ),
         "era_settlement_shortfall_cents": shortfall_cents,
+        "era_settlement_refunded_cents": sum(r["refunded_cents"] for r in excess),
         "era_settlement_shortfall_count": len(shortfalls),
         "era_settlement_shortfalls": shortfalls[:AR_SHORTFALL_ROW_LIMIT],
         "drift_invoice_count": len(drift),

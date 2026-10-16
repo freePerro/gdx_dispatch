@@ -314,26 +314,70 @@ def gl_ar_balance_cents(session: Session, company_id: str) -> int:
     return sum(amount for (_type, _id, amount) in rows)
 
 
-def era_settlement_shortfalls(session: Session, company_id: str) -> list[dict]:
-    """Late-learned era payments the anchor pool couldn't cover, one row per
-    payment with the uncovered cents.
+def _refunded_off_credit_cents(session: Session, invoice) -> int:
+    """Cents this invoice's live refunds paid out beyond 2300 Customer Credits.
 
-    The uncovered part posts NOTHING (post_era_settlement caps at the pool),
-    and balance_due clamps at zero too, so an operational-vs-ledger compare
-    reads both sides as 0. Surface every uncovered cent; silence here would
-    read as "reconciled" when money vanished (2026-08-17 audit). Shared by
-    ``reconciliation_report`` and ``reports.ar_control`` so the two cannot
-    disagree about it (GDXA-1223)."""
+    ``post_refund`` takes the 2300 overpayment credit first, then debits
+    contra-revenue for the rest. Money posted nowhere was never on 2300, so a
+    refund of it lands in the second part; only that part can have returned
+    an uncovered era payment (GDXA-1247). Read from the posted entries, not
+    from the adjustment rows: a refund whose entry was reversed has returned
+    nothing to net, and a refund that never posted is not on the books."""
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment
+    from gdx_dispatch.modules.ledger.models import (
+        ENTRY_STATUS_POSTED,
+        ROLE_CUSTOMER_CREDITS,
+        GlAccount,
+        GlJournalLine,
+    )
+
+    refund_ids = [
+        str(aid)
+        for aid in session.scalars(
+            select(InvoiceAdjustment.id).where(
+                InvoiceAdjustment.invoice_id == invoice.id,
+                InvoiceAdjustment.kind == "refund",
+            )
+        ).all()
+    ]
+    if not refund_ids:
+        return 0
+    debits = session.scalars(
+        select(GlJournalLine.amount_cents)
+        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
+        .join(GlAccount, GlJournalLine.account_id == GlAccount.id)
+        .where(
+            GlJournalEntry.source_type == "adjustment",
+            GlJournalEntry.source_id.in_(refund_ids),
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.reverses_entry_id.is_(None),
+            GlJournalLine.amount_cents > 0,
+            GlAccount.role != ROLE_CUSTOMER_CREDITS,
+        )
+    ).all()
+    return sum(debits)
+
+
+def era_settlement_excess(session: Session, company_id: str) -> list[dict]:
+    """Every late-learned era payment the anchor pool couldn't cover, one row
+    per payment, including those a later refund has since paid back.
+
+    ``refunded_cents`` is the part of the excess returned to the customer:
+    the invoice's refunds that did not come out of 2300, handed to its
+    payments in allocation order and capped at each one's excess.
+    ``uncovered_cents`` is what is left, money in that is still on no ledger
+    line. A fully refunded row reads 0 there; ``era_settlement_shortfalls``
+    keeps only the rows that do not."""
     from gdx_dispatch.models.tenant_models import Payment
     from gdx_dispatch.modules.ledger.rules import (
         _cutover_date,
         _late_era_allocation,
     )
 
-    shortfalls: list[dict] = []
+    rows: list[dict] = []
     cutover = _cutover_date(session, company_id)
     if cutover is None:
-        return shortfalls
+        return rows
     # ar_control runs this on every Ledger page load: one query narrows it to
     # the invoices holding a payment that could be late-era, instead of four
     # per era invoice. A superset on purpose: the day of slack absorbs how
@@ -361,26 +405,55 @@ def era_settlement_shortfalls(session: Session, company_id: str) -> list[dict]:
                 select(Payment).where(Payment.invoice_id == invoice.id)
             ).all()
         }
+        refund_pool = None  # read only for an invoice that has an excess
+        # allocation is built in (payment_date, created_at, id) order, so the
+        # refund pool is handed out the same way on every run.
         for pid, allocated in allocation.items():
             p = by_id.get(pid)
             if p is None or p.voided_at is not None:
                 continue
-            uncovered = to_cents(_dec(p.amount)) - allocated
-            if uncovered > 0:
-                shortfalls.append(
-                    {
-                        "invoice_id": str(invoice.id),
-                        "invoice_number": invoice.invoice_number,
-                        "payment_id": str(pid),
-                        "payment_date": (
-                            p.payment_date.isoformat() if p.payment_date else None
-                        ),
-                        "amount_cents": to_cents(_dec(p.amount)),
-                        "allocated_cents": allocated,
-                        "uncovered_cents": uncovered,
-                    }
-                )
-    return shortfalls
+            excess = to_cents(_dec(p.amount)) - allocated
+            if excess <= 0:
+                continue
+            if refund_pool is None:
+                refund_pool = _refunded_off_credit_cents(session, invoice)
+            refunded = min(excess, refund_pool)
+            refund_pool -= refunded
+            rows.append(
+                {
+                    "invoice_id": str(invoice.id),
+                    "invoice_number": invoice.invoice_number,
+                    "payment_id": str(pid),
+                    "payment_date": (
+                        p.payment_date.isoformat() if p.payment_date else None
+                    ),
+                    "amount_cents": to_cents(_dec(p.amount)),
+                    "allocated_cents": allocated,
+                    "refunded_cents": refunded,
+                    "uncovered_cents": excess - refunded,
+                }
+            )
+    return rows
+
+
+def era_settlement_shortfalls(
+    session: Session, company_id: str, excess: list[dict] | None = None
+) -> list[dict]:
+    """Late-learned era payments the anchor pool couldn't cover and no refund
+    has paid back, one row per payment with the uncovered cents.
+
+    The uncovered part posts NOTHING (post_era_settlement caps at the pool),
+    and balance_due clamps at zero too, so an operational-vs-ledger compare
+    reads both sides as 0. Surface every uncovered cent; silence here would
+    read as "reconciled" when money vanished (2026-08-17 audit). Money that
+    came in on no ledger line and went back out as a refund is no longer
+    missing, so a refund nets it (GDXA-1247). Shared by
+    ``reconciliation_report`` and ``reports.ar_control`` so the two cannot
+    disagree about it (GDXA-1223). Pass ``excess`` when the caller already
+    holds ``era_settlement_excess`` for the same session."""
+    if excess is None:
+        excess = era_settlement_excess(session, company_id)
+    return [r for r in excess if r["uncovered_cents"] > 0]
 
 
 def reconciliation_report(session: Session, company_id: str) -> dict:
@@ -424,13 +497,17 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
                 }
             )
     mismatches = [r for r in rows if r["delta_cents"] != 0]
+    excess = era_settlement_excess(session, company_id)
     return {
         "rows": rows,
         "mismatches": mismatches,
-        "era_settlement_shortfalls": era_settlement_shortfalls(session, company_id),
+        "era_settlement_shortfalls": era_settlement_shortfalls(
+            session, company_id, excess
+        ),
         "totals": {
             "operational_ar_cents": op_total,
             "gl_attributed_ar_cents": gl_attributed,
             "gl_ar_account_cents": gl_ar_balance_cents(session, company_id),
+            "era_settlement_refunded_cents": sum(r["refunded_cents"] for r in excess),
         },
     }
