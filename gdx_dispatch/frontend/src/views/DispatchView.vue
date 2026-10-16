@@ -1006,6 +1006,7 @@ import Card from 'primevue/card';
 import Dialog from 'primevue/dialog';
 import CrewChangeDialog from '../components/CrewChangeDialog.vue';
 import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
 import Drawer from 'primevue/drawer';
@@ -2298,6 +2299,20 @@ function takeDragOrigin() {
 }
 
 const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techName(id));
+const { confirmAsync } = useDestructiveConfirm();
+
+// Dropping a crew job into the queue or a holding area takes every tech off
+// it (the PATCH clears the crew), so a crew of two or more asks first. A
+// one-tech drop is the plain unassign the drag is for.
+async function okToClearCrew(job) {
+  const crew = crewOf(job);
+  if (crew.length < 2) return true;
+  return confirmAsync({
+    header: "Remove every technician?",
+    message: `${crew.map((id) => techName(id)).join(", ")} will be taken off this job, and it goes back to unassigned.`,
+    acceptLabel: "Remove",
+  });
+}
 
 // True when the drop was a crew job and is handled here (moved, re-crewed
 // or cancelled); false sends the caller on to assignJob.
@@ -2880,11 +2895,15 @@ async function moveToHoldingArea(event, areaId) {
     await setPartialHoldingArea(jobId, areaId);
     return;
   }
-  const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
-  if (idx === -1) return;
+  const job = jobs.value.find((j) => String(j.id) === String(jobId));
+  if (!job) return;
   draggingJobId.value = null;
+  if (!(await okToClearCrew(job))) return;
   await withBoardWrite(async () => {
-    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null };
+    // Looked up again: the board can refresh while the confirm is open.
+    const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
+    if (idx === -1) return;
+    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
     try {
       await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
     } catch { await refreshBoard(); }
@@ -2915,10 +2934,14 @@ async function moveToScheduleQueue(event) {
     await setPartialHoldingArea(jobId, areaId);
     return;
   }
-  const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
-  if (idx === -1) return;
+  const job = jobs.value.find((j) => String(j.id) === String(jobId));
+  if (!job) return;
   draggingJobId.value = null;
+  if (!(await okToClearCrew(job))) return;
   await withBoardWrite(async () => {
+    // Looked up again: the board can refresh while the confirm is open.
+    const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
+    if (idx === -1) return;
     jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
     try {
       await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });

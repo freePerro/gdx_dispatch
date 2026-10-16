@@ -15,6 +15,7 @@ const postMock = vi.fn();
 const patchMock = vi.fn();
 const putMock = vi.fn();
 const toastAdd = vi.fn();
+const confirmMock = vi.fn();
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: vi.fn(), back: vi.fn(), replace: vi.fn() }),
@@ -32,7 +33,7 @@ vi.mock("../../composables/useApiWithToast", () => ({
   }),
 }));
 vi.mock("../../composables/useDestructiveConfirm", () => ({
-  useDestructiveConfirm: () => ({ confirmAsync: vi.fn(), confirmDestructive: vi.fn() }),
+  useDestructiveConfirm: () => ({ confirmAsync: confirmMock, confirmDestructive: vi.fn() }),
 }));
 let role = "admin";
 vi.mock("../../stores/auth", () => ({
@@ -180,11 +181,36 @@ describe("job page Technician picker on a crew job", () => {
     expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-1", { assigned_tech_id: "t3" }, expect.anything());
   });
 
-  it("clearing the picker still unassigns", async () => {
+  it("clearing the picker asks first, names the crew, then unassigns", async () => {
     routeGet({ crew: CREW, job: OPEN });
+    confirmMock.mockResolvedValue(true);
     const w = await mountView();
     await (await choose(w, null)).done;
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+      header: "Remove every technician?",
+      message: expect.stringContaining("Mike, Sam"),
+    }));
     expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-1", { assigned_tech_id: null }, expect.anything());
+  });
+
+  it("clearing the picker and saying no sends nothing and puts the picker back", async () => {
+    routeGet({ crew: CREW, job: OPEN });
+    confirmMock.mockResolvedValue(false);
+    const w = await mountView();
+    w.vm.$.setupState.selectedTech = null;
+    await (await choose(w, null)).done;
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(w.vm.$.setupState.selectedTech).toBe("t1");
+  });
+
+  it("clearing a one-tech job asks too", async () => {
+    routeGet({ crew: [CREW[0]], job: OPEN });
+    confirmMock.mockResolvedValue(false);
+    const w = await mountView();
+    await (await choose(w, null)).done;
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ header: "Remove the technician?" }));
+    expect(patchMock).not.toHaveBeenCalled();
   });
 
   it("sends nothing when the crew could not be read", async () => {
