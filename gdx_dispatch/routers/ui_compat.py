@@ -508,10 +508,10 @@ def list_labor_time_entries(
 
     from gdx_dispatch.core.roles import is_dispatch_manager
 
-    # Pass the ROLE, not the whole dict: normalize_role stringifies its arg,
-    # so is_dispatch_manager(dict) is always False (a latent bug the real
-    # labor _require_dispatch shares, hidden because nothing calls it). Read
-    # the role the same way get_current_user stores it.
+    # Pass the ROLE, not the whole dict: core.roles.is_dispatch_manager takes a
+    # role string (normalize_role stringifies its arg, so a dict is always
+    # False). Its namesake core.permissions.is_dispatch_manager takes the actor
+    # dict and unwraps the role itself; labor._require_dispatch uses that one.
     _role = (current_user or {}).get("role") or (current_user or {}).get("user_role") or ""
     if not is_dispatch_manager(_role):
         raise HTTPException(status_code=403, detail="dispatcher or admin role required")
