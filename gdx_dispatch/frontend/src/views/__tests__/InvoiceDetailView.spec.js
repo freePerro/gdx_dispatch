@@ -35,6 +35,7 @@ vi.mock('../../composables/useApiWithToast', () => ({
 vi.mock('../../composables/useAuthedFile', () => ({
   openAuthedFile: vi.fn(),
   createAuthedBlobUrl: vi.fn(),
+  downloadAuthedFile: vi.fn(),
 }));
 vi.mock('primevue/usetoast', () => ({
   useToast: () => ({ add: toastAdd }),
@@ -561,6 +562,35 @@ describe('InvoiceDetailView — composer sends plain text; the SERVER renders th
     // Outlook relay from this path.
     expect(body).not.toContain('<pre');
     expect(body).not.toContain('/api/outlook/send');
+  });
+});
+
+describe('InvoiceDetailView — mail-client fallback attaches a fresh PDF (2026-10-15)', () => {
+  it('downloads the PDF rendered AFTER /send flipped the invoice, not the composer copy', async () => {
+    // The composer's PDF was built when the dialog opened, on a draft with no
+    // pay token, so it read "Draft" with no pay link. By the time the
+    // fallback runs, /send has flipped the row to sent and minted the token.
+    const { downloadAuthedFile } = await import('../../composables/useAuthedFile');
+    downloadAuthedFile.mockReset();
+    mockApi(buildInvoicePayload());
+    apiPost.mockImplementation((url) => {
+      if (url === '/api/invoices/inv-1/send') {
+        return Promise.resolve({ email_sent: false, email_skip_reason: 'no_email_provider_connected' });
+      }
+      return Promise.resolve({});
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('[data-testid="send-invoice-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+
+    expect(downloadAuthedFile).toHaveBeenCalledWith('/api/invoices/inv-1/pdf', 'INV-0001.pdf');
+    const sendIdx = apiPost.mock.calls.findIndex(([u]) => u === '/api/invoices/inv-1/send');
+    expect(sendIdx).toBeGreaterThan(-1);
+    expect(apiPost.mock.invocationCallOrder[sendIdx])
+      .toBeLessThan(downloadAuthedFile.mock.invocationCallOrder[0]);
   });
 });
 
