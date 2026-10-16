@@ -69,6 +69,7 @@ def _try_outlook_graph(
     # One retry on the documented OutlookTransientRetry contract — a 401
     # mid-call after a successful refresh deserves exactly one re-issue.
     from gdx_dispatch.core.database import SessionLocal
+    from gdx_dispatch.modules.outlook.graph_client import RETRY_THROTTLED_ONLY
     from gdx_dispatch.modules.outlook.token_refresh import (
         OutlookReconnectRequired,
         OutlookTransientRetry,
@@ -105,7 +106,10 @@ def _try_outlook_graph(
         # New control_db per attempt — the context manager's tenant_id
         # stash on .info is a per-session artifact, not safe to reuse.
         with SessionLocal() as control_db, with_outlook_client(control_db, tenant_db, user_id, tenant_id) as gc:
-            gc._request("POST", "/me/sendMail", json=body)
+            # Not retried past a 429: a 504 may follow a send Graph already
+            # did. The SMTP fallback below still treats that 504 as a failure
+            # and sends again (deferred, GDXA-1318 close-out).
+            gc._request("POST", "/me/sendMail", json=body, retry_on=RETRY_THROTTLED_ONLY)
 
     # Distinguish "never connected" (the user has no outlook_accounts row)
     # from "expired/needs reconnect" (had tokens but refresh failed). The
