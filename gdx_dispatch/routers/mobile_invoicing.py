@@ -1002,6 +1002,12 @@ def _invoice_customer(db: Session, invoice: Invoice) -> Customer | None:
         ).scalar_one_or_none()
 
 
+def _invoice_email_kind(invoice: Invoice) -> str:
+    """The outbound_emails kind of an invoice email, as the desktop /send
+    names it: a paid invoice's email is its receipt."""
+    return "receipt" if invoice.status == "paid" else "document"
+
+
 def _send_invoice_email(
     db: Session,
     invoice: Invoice,
@@ -1130,6 +1136,12 @@ def _send_invoice_email(
             subject=prep["subject"],
             html_body=html,
             attachments=attachments,
+            # Tagged as the desktop /send tags it, so `recently_sent` (the
+            # double-send guard in `mobile_send_invoice`) can see this send.
+            # Untagged, a truck send was invisible to every guard.
+            kind=_invoice_email_kind(invoice),
+            entity_type="invoice",
+            entity_id=str(invoice.id),
         )
         return bool(sent)
     except Exception:
@@ -1195,6 +1207,22 @@ def mobile_send_invoice(
     # but this path still EMAILED voided invoices to customers. Same guard.
     if invoice.status == "void":
         return _jr({"detail": "invoice is void — it cannot be re-sent"}, 409)
+
+    # Server-side double-send guard, the desktop /send's (GDXA-1278): a
+    # retried request, a second device or a reopened dialog mailed the
+    # customer twice and wrote two audit rows (the button's own loading state
+    # only stops a tap on the same screen; a same-instant pair still passes —
+    # `recently_sent`'s docstring). Kind-scoped as there — a receipt right
+    # after the invoice email is legitimate; on a PAID invoice this email is
+    # itself a receipt and shares that kind, as on the desktop. Nothing was
+    # sent, so nothing is audited.
+    from gdx_dispatch.core.transactional_email import recently_sent
+
+    if recently_sent(db, "invoice", str(invoice.id), kind=_invoice_email_kind(invoice)):
+        dup_payload = _serialize_invoice(invoice, db=db)
+        dup_payload["email_sent"] = False
+        dup_payload["email_skip_reason"] = "duplicate_send_suppressed"
+        return _jr(dup_payload)
 
     # Flip to sent and write the audit row BEFORE the email renders, in one
     # commit, as the desktop /send does: the attached PDF is built from this
@@ -1482,6 +1510,31 @@ def mobile_open_invoices(
 # ---------------------------------------------------------------------------
 
 
+def _receipt_recently_sent(db: Session, invoice_id: str, payment_id: str, *, within_seconds: int = 20) -> bool:
+    """True when the truck delivered a receipt for THIS payment inside the
+    window. Reads the `mobile_invoice_receipt_sent` audit row, which is written
+    only on a delivered receipt and is the one record that names the payment
+    (outbound_emails does not). Same check-then-act limit as `recently_sent`,
+    and it fails open the same way: the guard must never block a legitimate
+    send."""
+    from gdx_dispatch.core.audit import AuditLog, utcnow
+
+    try:
+        with contained_read(db):
+            rows = db.execute(
+                select(AuditLog.details).where(
+                    AuditLog.entity_type == "invoice",
+                    AuditLog.entity_id == invoice_id,
+                    AuditLog.action == "mobile_invoice_receipt_sent",
+                    AuditLog.created_at >= utcnow() - timedelta(seconds=within_seconds),
+                )
+            ).scalars().all()
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — fails open like recently_sent: a broken guard never blocks a receipt; logged
+        log.exception("mobile_receipt_recently_sent_check_failed invoice=%s", invoice_id)
+        return False
+    return any(isinstance(d, dict) and d.get("payment_id") == payment_id for d in rows)
+
+
 @router.post("/invoices/{invoice_id}/send-receipt", response_model=None)
 def mobile_send_receipt(
     invoice_id: str,
@@ -1568,6 +1621,18 @@ def mobile_send_receipt(
     # recipient, Outlook-or-SMTP via send_transactional_email (which also
     # records the attempt in outbound_emails), and the ACTUAL outcome in the
     # response.
+    # Double-send guard (GDXA-1278): a retry or a second device inside the
+    # window would mail the same receipt twice. Keyed on the PAYMENT, not the
+    # invoice — a truck receipt is per payment, and the desktop's per-invoice
+    # `recently_sent` would swallow payment B's receipt sent just after A's.
+    if _receipt_recently_sent(db, str(invoice.id), str(payment_row[0])):
+        return _jr({
+            "sent": False,
+            "skip_reason": "duplicate_send_suppressed",
+            "invoice_id": str(invoice.id),
+            "payment_id": str(payment_row[0]),
+        })
+
     sent = False
     skip_reason: str | None = None
     try:
