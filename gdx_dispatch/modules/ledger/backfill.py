@@ -35,13 +35,16 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.ledger import service as ledger_service
 from gdx_dispatch.modules.ledger.coa import LedgerConfigError
-from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+from gdx_dispatch.modules.ledger.engine import PeriodLockedError, reverse_entry
 from gdx_dispatch.modules.ledger.models import (
+    ENTRY_STATUS_POSTED,
     GlJournalEntry,
     GlPeriodLock,
 )
 from gdx_dispatch.modules.ledger.money import to_cents
 from gdx_dispatch.modules.ledger.rules import (
+    EVENT_OPENING,
+    EVENT_OPENING_PAYMENT_VOID,
     ISSUED_STATUSES,
     ExpenseCompositionError,
     IssuanceCompositionError,
@@ -515,3 +518,220 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
             "era_settlement_refunded_cents": sum(r["refunded_cents"] for r in excess),
         },
     }
+
+
+# (source_type, event) of every one-shot posting: one live entry per source
+# row, ever. ``rules._live_event_entry`` guards them going forward (GDXA-1238);
+# this list is what the repair below looks for in entries posted before it.
+ONE_SHOT_EVENTS = (
+    ("invoice", EVENT_OPENING),
+    ("payment", EVENT_OPENING_PAYMENT_VOID),
+    ("adjustment", "credit_memo"),
+    ("adjustment", "refund"),
+    ("adjustment", "credit_applied"),
+)
+
+
+def duplicate_one_shot_entries(session: Session, company_id: str) -> list[dict]:
+    """One-shot postings with more than one live entry for the same source row.
+
+    Each group keeps its EARLIEST live entry, the one the posting rules now
+    return (``rules._live_event_entry``); every later one is a duplicate a
+    replay or recalc posted because an input of the content key moved.
+    ``ar_cents`` is the net AR the duplicates hold.
+
+    A duplicate's AR is not always still uncorrected: a later entry computed
+    from the invoice's ledger balance absorbed it (``settle_opening_on_void``
+    clears whatever AR the ledger shows, duplicates included), and reversing
+    it then drives the invoice the other way (audit, GDXA-1238). So a group is
+    ``reversible`` only when the invoice's live drift (its ledger AR less what
+    the row owes) still holds at least that AR, the same way round, after the
+    groups ahead of it claimed theirs. Everything else, including a duplicate
+    that holds no AR (its cash or 2300 effect is not something the AR control
+    can prove), is listed with a ``hold_reason`` and left alone. Read-only.
+    """
+    from sqlalchemy import func
+
+    from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Payment
+    from gdx_dispatch.modules.ledger.rules import RECEIVABLE_STATUSES
+
+    wanted = set(ONE_SHOT_EVENTS)
+    groups: dict[tuple[str, str, str], list[GlJournalEntry]] = {}
+    for entry in session.scalars(
+        select(GlJournalEntry)
+        .where(
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.source_type.in_({s for s, _ in ONE_SHOT_EVENTS}),
+        )
+        .order_by(GlJournalEntry.created_at, GlJournalEntry.entry_no, GlJournalEntry.id)
+    ).all():
+        # key = source_type:source_id:event:hash:seq; reversal entries carry
+        # "reversal:<id>" and fall out here.
+        parts = (entry.idempotency_key or "").split(":")
+        if len(parts) != 5 or parts[0] != entry.source_type or parts[1] != entry.source_id:
+            continue
+        if (entry.source_type, parts[2]) not in wanted:
+            continue
+        groups.setdefault((entry.source_type, entry.source_id, parts[2]), []).append(entry)
+
+    def _invoice_id(source_type: str, source_id: str):
+        from uuid import UUID
+
+        try:
+            sid = UUID(source_id)
+        except ValueError:
+            log.warning("one-shot duplicate scan: %s source_id %r is not a UUID", source_type, source_id)
+            return None
+        if source_type == "invoice":
+            return sid
+        model = Payment if source_type == "payment" else InvoiceAdjustment
+        return session.scalar(select(model.invoice_id).where(model.id == sid))
+
+    out = []
+    for (source_type, source_id, event), entries in groups.items():
+        if len(entries) < 2:
+            continue
+        keeper, duplicates = entries[0], entries[1:]
+
+        def _ar(entry) -> int:
+            # Every AR-role account, the one read ar_control shares (GDXA-1231).
+            lines = ar_role_lines().where(GlJournalEntry.id == entry.id).subquery()
+            return int(session.scalar(select(func.coalesce(func.sum(lines.c.amount_cents), 0))))
+
+        ar_cents = sum(_ar(d) for d in duplicates)
+        # "Keep the earliest" is only safe when the earliest is the right one.
+        # An anchor is what was open at cutover; when a later anchor, not the
+        # kept one, matches that figure as the invoice computes it now, which
+        # one is wrong is a judgement, not arithmetic (audit, GDXA-1238).
+        later_matches = False
+        if event == EVENT_OPENING:
+            from uuid import UUID
+
+            from gdx_dispatch.modules.ledger.rules import _cutover_date
+
+            inv = session.get(Invoice, UUID(source_id))
+            cutover = _cutover_date(session, company_id)
+            if inv is not None and cutover is not None:
+                now = opening_balance_cents(session, inv, cutover)
+                later_matches = _ar(keeper) != now and any(_ar(d) == now for d in duplicates)
+        invoice_id = _invoice_id(source_type, source_id)
+        invoice_number = (
+            session.scalar(select(Invoice.invoice_number).where(Invoice.id == invoice_id))
+            if invoice_id is not None
+            else None
+        )
+        out.append(
+            {
+                "source_type": source_type,
+                "source_id": source_id,
+                "event": event,
+                "invoice_id": str(invoice_id) if invoice_id is not None else None,
+                "invoice_number": invoice_number,
+                "keeper_entry_id": str(keeper.id),
+                "keeper_entry_no": keeper.entry_no,
+                "duplicate_entry_ids": [str(d.id) for d in duplicates],
+                "duplicate_entry_nos": [d.entry_no for d in duplicates],
+                "ar_cents": ar_cents,
+                "later_entry_matches": later_matches,
+            }
+        )
+    out.sort(key=lambda r: (-abs(r["ar_cents"]), r["invoice_number"] or ""))
+
+    unclaimed: dict[str, int] = {}  # invoice id -> live drift not yet claimed
+    for row in out:
+        row["reversible"], row["hold_reason"] = False, None
+        if row["ar_cents"] == 0:
+            row["hold_reason"] = "holds no AR; its cash or credit effect needs review by hand"
+            continue
+        if row["invoice_id"] is None:
+            row["hold_reason"] = "no invoice to measure its drift against"
+            continue
+        if row["later_entry_matches"]:
+            row["hold_reason"] = (
+                "a later anchor, not the kept one, matches the opening balance "
+                "the invoice computes now; choose by hand"
+            )
+            continue
+        if row["invoice_id"] not in unclaimed:
+            from uuid import UUID
+
+            inv = session.get(Invoice, UUID(row["invoice_id"]))
+            owed = (
+                to_cents(_dec(inv.balance_due))
+                if inv.status in RECEIVABLE_STATUSES and inv.deleted_at is None
+                else 0
+            )
+            unclaimed[row["invoice_id"]] = invoice_ar_balance_cents(session, inv) - owed
+        drift = unclaimed[row["invoice_id"]]
+        row["invoice_drift_cents"] = drift
+        if (drift > 0) != (row["ar_cents"] > 0) or abs(drift) < abs(row["ar_cents"]):
+            row["hold_reason"] = (
+                f"the invoice's ledger drift ({drift} cents) does not still hold "
+                "this AR; a later entry may have absorbed it"
+            )
+            continue
+        row["reversible"] = True
+        unclaimed[row["invoice_id"]] = drift - row["ar_cents"]
+    return out
+
+
+def reverse_duplicate_one_shot_entries(
+    session: Session,
+    company_id: str,
+    *,
+    actor: str,
+    effective_at: date | None = None,
+) -> PhaseResult:
+    """Reverse every REVERSIBLE duplicate ``duplicate_one_shot_entries``
+    finds; held groups go to ``result.refused``. Never commits; the caller
+    audits and commits.
+
+    Each reversal is dated at its duplicate's own date unless ``effective_at``
+    is given (a closed period: date the correction in the open one). A period
+    lock refusal skips that group into ``result.locked`` and leaves it whole;
+    the rest still reverse. ``result.rows`` names each reversal entry, which is
+    the rollback handle: reversing a reversal restores the duplicate.
+    """
+    if not actor or not actor.strip():
+        raise ValueError("an acting user is required to reverse ledger entries")
+    from uuid import UUID
+
+    from sqlalchemy import func
+
+    lock_date = session.scalar(select(func.max(GlPeriodLock.lock_date)))
+    result = PhaseResult()
+    for group in duplicate_one_shot_entries(session, company_id):
+        label = f"{group['event']} on {group['invoice_number'] or group['source_id']}"
+        if not group["reversible"]:
+            result.refused.append(f"{label}: held, {group['hold_reason']}")
+            result.skipped += 1
+            continue
+        duplicates = [session.get(GlJournalEntry, UUID(i)) for i in group["duplicate_entry_ids"]]
+        # Checked for the whole group before any reversal, so a lock never
+        # leaves a group half reversed (and no savepoint wraps the writer).
+        blocked = [
+            d for d in duplicates
+            if lock_date is not None and (effective_at or d.effective_at) <= lock_date
+        ]
+        if blocked:
+            result.locked.append(
+                f"{label}: period locked through {lock_date}; entry "
+                f"#{blocked[0].entry_no} dated {blocked[0].effective_at} "
+                "(pass an open-period effective date)"
+            )
+            continue
+        reversals = [
+            reverse_entry(session, dup, effective_at=effective_at, created_by=actor)
+            for dup in duplicates
+        ]
+        result.posted += 1
+        result.entries_created += len(reversals)
+        result.rows.append(
+            {
+                **group,
+                "reversal_entry_ids": [str(r.id) for r in reversals],
+                "reversal_entry_nos": [r.entry_no for r in reversals],
+                "reversed_on": str(reversals[0].effective_at),
+            }
+        )
+    return result

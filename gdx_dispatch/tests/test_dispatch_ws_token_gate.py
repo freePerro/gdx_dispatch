@@ -131,8 +131,15 @@ class _BrokenDenylist:
 
 
 def test_denylist_failure_closes_1011_not_admitted(app, dispatcher):
-    """A failing revocation check neither admits the token nor reads as a
-    policy refusal: the socket closes with 1011 (internal error)."""
+    """A failing revocation check does not admit the token, and the handler
+    closes with 1011 (internal error), not the 1008 of a refusal.
+
+    That code difference shows only under TestClient. The close comes before
+    accept, and uvicorn answers every pre-accept close with HTTP 403, so a
+    real client sees the same 403 for a broken denylist as for a revoked
+    token. In production only the server log tells them apart:
+    ``decode_live_access_token``'s denylist traceback, then the handler's
+    ``dispatch_ws_handshake_closed_1011`` warning."""
     app.state.denylist = _BrokenDenylist()
     token, _ = _issue(dispatcher, TENANT, "dispatcher", 600, "access")
     assert _close_code(app, token) == 1011
