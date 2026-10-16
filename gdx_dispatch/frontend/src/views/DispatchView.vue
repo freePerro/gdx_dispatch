@@ -832,11 +832,11 @@
               v-if="item.slot"
               type="button"
               class="week-slot-option"
-              :class="{ 'is-selected': slotPromptChoice === item.index }"
+              :class="{ 'is-selected': slotIsChosen(item) }"
               :data-testid="`week-slot-${item.index}`"
               @click="chooseSlot(item)"
             >
-              <span class="pi" :class="slotPromptChoice === item.index ? 'pi-circle-fill' : 'pi-circle'" />
+              <span class="pi" :class="slotIsChosen(item) ? 'pi-circle-fill' : 'pi-circle'" />
               Put it here — starts {{ clockLabel(item.startMin) }}
             </button>
             <div v-else class="week-slot-job">
@@ -882,11 +882,11 @@
         data-testid="dispatch-duration-prompt"
         @hide="onDurationPromptHide"
       >
-        <p v-if="durationPromptEstimate" style="margin-top:0;" data-testid="dispatch-duration-prompt-from-estimate">
-          <strong>{{ durationPromptJobLabel }}</strong> has no scheduled time yet.
-          The {{ durationPromptEstimate.accepted ? 'accepted' : 'not yet accepted' }}
-          estimate has {{ durationPromptEstimate.manHours }} man-hours; the hours below
-          are that over a crew of {{ durationPromptEstimate.crew }}.
+        <p v-if="durationPromptEstimateNote" style="margin-top:0;" data-testid="dispatch-duration-prompt-from-estimate">
+          <strong>{{ durationPromptJobLabel }}</strong> has no estimated time yet.
+          The {{ durationPromptEstimateNote.accepted ? 'accepted' : 'not yet accepted' }}
+          estimate has {{ durationPromptEstimateNote.manHours }} man-hours; the hours below
+          are that over a crew of {{ durationPromptEstimateNote.crew }}.
           Change them if you know better.
         </p>
         <p v-else style="margin-top:0;">
@@ -1406,8 +1406,15 @@ const durationPromptTechId = ref(null);
 const durationPromptHours = ref('');
 const durationPromptJobLabel = ref('');
 // Set when the hours were prefilled from the job's estimate:
-// { manHours, crew, accepted }. null = blank prompt.
+// { manHours, crew, accepted, hours }. null = blank prompt.
 const durationPromptEstimate = ref(null);
+// The note explains the prefilled figure, so it shows only while the box
+// still holds that figure; once the scheduler changes it, the blank
+// prompt's wording is the true one.
+const durationPromptEstimateNote = computed(() => {
+  const e = durationPromptEstimate.value;
+  return e && Number(durationPromptHours.value) === e.hours ? e : null;
+});
 // Sprint dispatch-timeline (2026-05-21) — carry the timeline-drop target
 // time through the prompt so confirm/skip both reach _doAssignJob with
 // the slot the user clicked, not just the tech they dropped on.
@@ -2288,6 +2295,12 @@ function chooseSlot(item) {
   slotPromptTime.value = toHHMM(item.startMin);
 }
 
+// Only the typed time is saved, so a slot shows as chosen only while the
+// time box still says that slot's start.
+function slotIsChosen(item) {
+  return slotPromptChoice.value === item.index && slotPromptTime.value === toHHMM(item.startMin);
+}
+
 function resolveSlotPrompt(value) {
   const resolve = slotPromptResolve;
   slotPromptResolve = null;
@@ -2538,9 +2551,10 @@ async function prefillDurationFromEstimate(jobId, crewSize) {
   if (seq !== durationPrefillSeq || !durationPromptOpen.value) return;
   if (durationPromptHours.value !== '') return;
   const crew = Math.max(1, Number(crewSize) || 1);
-  durationPromptHours.value = String(Math.max(0.25, Math.ceil((manHours / crew) * 4) / 4));
+  const hours = Math.max(0.25, Math.ceil((manHours / crew) * 4) / 4);
+  durationPromptHours.value = String(hours);
   durationPromptEstimate.value = {
-    manHours, crew, accepted: s.estimate_status === 'accepted',
+    manHours, crew, accepted: s.estimate_status === 'accepted', hours,
   };
 }
 
