@@ -1456,6 +1456,9 @@ function normalizeTech(tech) {
     id: String(tech.id),
     name: tech.name || tech.user_id || `Tech ${tech.id}`,
     skills: normalizeSkills(tech.skills),
+    // assignableTechnicians and the column/row filters read this; dropping it
+    // made every inactive tech pickable (GDXA-1255).
+    active: tech.active !== false,
     // Sprint dispatch-capacity (2026-05-20) — effective shift values
     // (server already resolved user-override → tenant default per-field).
     effective_shift_start: tech.effective_shift_start || null,
