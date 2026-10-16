@@ -244,62 +244,102 @@ describe("DispatchView — crew-safe drops", () => {
     expect(call[1]).toMatchObject({ assigned_tech_id: "tech-3", technician_id: "tech-3" });
   });
 
-  describe("the queue card's assign dropdown on an undated crew job", () => {
-    const UNDATED = { ...CREW, id: "job-9", scheduled_at: null };
+  // Picking a tech for a job with no date books it on the board day, so it
+  // asks hours and crew the way a drop does (Doug, 2026-10-16).
+  describe("the queue card's assign dropdown on an undated job", () => {
+    const UNDATED = { ...CREW, id: "job-9", customer_name: "Lee Park", scheduled_at: null };
     const pick = (w, techId) => w.findAllComponents(stubs.Select)
       .find((c) => c.attributes("data-testid") === "assign-dropdown-job-9")
       .vm.$emit("change", { value: techId });
+    const dialog = (w) => w.find('[data-testid="schedule-drop-prompt"]');
+    const crewPicker = (w) => w.findAllComponents(stubs.MultiSelect)
+      .find((c) => c.attributes("data-testid") === "schedule-drop-techs");
+    const hoursBox = (w) => w.findAllComponents(stubs.InputText)
+      .find((c) => c.attributes("data-testid") === "schedule-drop-hours");
+    const confirm = async (w) => {
+      await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
+      await flushAll();
+      return patchMock.mock.calls.filter(([u]) => u === "/api/jobs/job-9");
+    };
 
-    it("asks before changing the crew, and Add dates it to the board day", async () => {
+    it("asks hours and crew, offering the picked tech as an addition, then books the board day", async () => {
       boardRows = [UNDATED, SOLO];
       const w = await mountBoard();
       pick(w, "tech-3");
       await flushAll();
-      expect(prompt(w).exists()).toBe(true);
+      expect(dialog(w).exists()).toBe(true);
+      expect(dialog(w).text()).toContain("no set time");
+      expect(prompt(w).exists()).toBe(false);
+      expect(crewPicker(w).props("modelValue")).toEqual(["tech-1", "tech-2", "tech-3"]);
+      expect(hoursBox(w).props("modelValue")).toBe("2");
       expect(patchMock).not.toHaveBeenCalled();
-      await w.find('[data-testid="crew-change-add"]').trigger("click");
-      await flushAll();
-      const call = patchMock.mock.calls.find(([u]) => u === "/api/jobs/job-9");
-      expect(call[1]).toMatchObject({ assigned_tech_ids: ["tech-1", "tech-2", "tech-3"], lead_tech_id: "tech-1" });
-      expect(call[1]).not.toHaveProperty("assigned_tech_id");
-      expect(wallOf(call[1].scheduled_at)).toEqual([keyOf(at(0, 0)), 0, 0]);
+      const calls = await confirm(w);
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1]).toMatchObject({ assigned_tech_ids: ["tech-1", "tech-2", "tech-3"], lead_tech_id: "tech-1" });
+      expect(calls[0][1]).not.toHaveProperty("assigned_tech_id");
+      expect(calls[0][1]).not.toHaveProperty("scheduled_duration_hours");
+      expect(wallOf(calls[0][1].scheduled_at)).toEqual([keyOf(at(0, 0)), 0, 0]);
     });
 
-    it("picking a crew member on a job with hours only dates it", async () => {
+    it("picking a crew member keeps the crew and its lead", async () => {
       boardRows = [UNDATED, SOLO];
       const w = await mountBoard();
       pick(w, "tech-2");
       await flushAll();
-      expect(prompt(w).exists()).toBe(false);
-      expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-9", ["scheduled_at"]]]);
+      expect(crewPicker(w).props("modelValue")).toEqual(["tech-1", "tech-2"]);
+      const calls = await confirm(w);
+      expect(calls[0][1]).toMatchObject({ assigned_tech_ids: ["tech-1", "tech-2"], lead_tech_id: "tech-1" });
     });
 
-    it("picking a crew member on a job with no hours asks for them before dating it", async () => {
+    it("a job with no hours gets the hours typed in the same PATCH, with no second question", async () => {
       boardRows = [{ ...UNDATED, scheduled_duration_hours: null, effective_duration_hours: null }, SOLO];
       const w = await mountBoard();
       pick(w, "tech-2");
       await flushAll();
-      expect(w.find('[data-testid="dispatch-duration-prompt"]').exists()).toBe(true);
-      expect(patchMock).not.toHaveBeenCalled();
-      w.vm.$.setupState.durationPromptHours = 2;
+      expect(hoursBox(w).props("modelValue")).toBe("");
+      hoursBox(w).vm.$emit("update:modelValue", "2");
       await flushAll();
-      await w.find('[data-testid="dispatch-duration-prompt-save"]').trigger("click");
-      await flushAll();
-      expect(patchMock).toHaveBeenCalledTimes(1);
-      expect(Object.keys(patchMock.mock.calls[0][1]).sort()).toEqual(["scheduled_at", "scheduled_duration_hours"]);
-      expect(patchMock.mock.calls[0][1].scheduled_duration_hours).toBe(2);
+      const calls = await confirm(w);
+      expect(w.find('[data-testid="dispatch-duration-prompt"]').exists()).toBe(false);
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1].scheduled_duration_hours).toBe(2);
     });
 
-    it("clears the card's picker after a cancelled pick", async () => {
+    it("a one-tech job picked from the Assign dialog asks too, and goes to that tech", async () => {
+      boardRows = [{ ...UNDATED, assigned_to: null, assigned_tech_ids: [], technician_id: null, lead_tech_id: null }, SOLO];
+      const w = await mountBoard();
+      const s = w.vm.$.setupState;
+      s.openReassignDialog(boardRows[0]);
+      s.assignDialogTechId = "tech-3";
+      s.confirmAssign();
+      await flushAll();
+      expect(dialog(w).exists()).toBe(true);
+      expect(crewPicker(w).props("modelValue")).toEqual(["tech-3"]);
+      const calls = await confirm(w);
+      expect(calls[0][1]).toMatchObject({ assigned_tech_ids: ["tech-3"], lead_tech_id: "tech-3" });
+    });
+
+    it("Cancel books nothing and clears the card's picker", async () => {
       boardRows = [UNDATED, SOLO];
       const w = await mountBoard();
       const before = w.vm.$.setupState.queuePickerKey;
       pick(w, "tech-3");
       await flushAll();
-      await w.find('[data-testid="crew-change-cancel"]').trigger("click");
+      await w.find('[data-testid="schedule-drop-cancel"]').trigger("click");
       await flushAll();
       expect(patchMock).not.toHaveBeenCalled();
       expect(w.vm.$.setupState.queuePickerKey).toBe(before + 1);
+    });
+
+    it("a dated crew job reassigned from the Assign dialog still gets the crew question", async () => {
+      const w = await mountBoard();
+      const s = w.vm.$.setupState;
+      s.openReassignDialog(CREW);
+      s.assignDialogTechId = "tech-3";
+      s.confirmAssign();
+      await flushAll();
+      expect(dialog(w).exists()).toBe(false);
+      expect(prompt(w).exists()).toBe(true);
     });
   });
 
