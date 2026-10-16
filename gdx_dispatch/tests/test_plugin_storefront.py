@@ -276,6 +276,66 @@ def test_a_redirect_loop_terminates(monkeypatch):
         store.download_wheel(_entry())
 
 
+# ── catalog fetch ────────────────────────────────────────────────────────────
+
+CATALOG_URL = "https://plugins.gdxdispatch.com/catalog.json"
+
+
+def _catalog_redirecting_to(target: str):
+    import json as _json
+
+    def _handler(request):
+        import httpx as _h
+        if str(request.url) == target:
+            return _h.Response(200, content=_json.dumps(_catalog()).encode())
+        return _h.Response(301, headers={"location": target})
+    return _handler
+
+
+def test_a_catalog_redirect_to_plain_http_is_refused_and_never_requested(monkeypatch):
+    """The catalog publishes every wheel's URL and sha256. Read in plaintext, an
+    on-path attacker swaps both and the digest check vouches for their wheel."""
+    monkeypatch.setenv("GDX_PLUGIN_CATALOG_URL", CATALOG_URL)
+    downgrade = "http://plugins.example/catalog.json"
+    requested = _patch_stream(monkeypatch, _catalog_redirecting_to(downgrade))
+
+    with pytest.raises(store.StorefrontError, match="non-https") as exc:
+        store.fetch_catalog(force=True)
+
+    assert requested == [CATALOG_URL]
+    assert "plugins.example" not in exc.value.owner_message
+
+
+def test_a_catalog_redirect_within_https_is_followed(monkeypatch):
+    monkeypatch.setenv("GDX_PLUGIN_CATALOG_URL", CATALOG_URL)
+    moved = "https://cdn.plugins.example/catalog.json"
+    requested = _patch_stream(monkeypatch, _catalog_redirecting_to(moved))
+
+    entries = store.fetch_catalog(force=True)
+
+    assert [e["key"] for e in entries] == ["n8n"]
+    assert requested == [CATALOG_URL, moved]
+
+
+def test_a_catalog_redirect_loop_terminates(monkeypatch):
+    monkeypatch.setenv("GDX_PLUGIN_CATALOG_URL", CATALOG_URL)
+
+    def _loop(request):
+        import httpx as _h
+        return _h.Response(302, headers={"location": str(request.url)})
+
+    _patch_stream(monkeypatch, _loop)
+    with pytest.raises(store.StorefrontError, match="too many times"):
+        store.fetch_catalog(force=True)
+
+
+def test_an_oversized_catalog_is_still_cut_off(monkeypatch):
+    monkeypatch.setenv("GDX_PLUGIN_CATALOG_URL", CATALOG_URL)
+    _patch_stream(monkeypatch, _ok(b"x" * (store._MAX_CATALOG_BYTES + 1)))
+    with pytest.raises(store.StorefrontError, match="implausibly large"):
+        store.fetch_catalog(force=True)
+
+
 def test_a_download_failure_is_reported_without_echoing_the_upstream(monkeypatch):
     """The failure text is rendered in the owner's browser, so it must not
     repeat an arbitrary upstream response back to them."""
