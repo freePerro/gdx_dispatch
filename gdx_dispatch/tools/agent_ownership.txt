@@ -324,6 +324,7 @@ gdx_dispatch/core/invoice_delivery.py                        money-billing
 gdx_dispatch/core/invoice_sms.py                             money-billing
 gdx_dispatch/core/estimate_sms.py                            estimates-pricing
 gdx_dispatch/core/link_sms.py                                comms-email-phone
+gdx_dispatch/core/on_my_way_sms.py                           comms-email-phone
 gdx_dispatch/frontend/src/components/SmsLinkDialog.vue       comms-email-phone
 gdx_dispatch/frontend/src/components/SendLaterPanel.vue      comms-email-phone
 gdx_dispatch/frontend/src/components/ScheduledTextsList.vue  comms-email-phone

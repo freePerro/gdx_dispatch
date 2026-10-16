@@ -83,6 +83,12 @@ class AppSettings(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
     automation_sender_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # GDXA-1201 — text the customer when a tech sets off (core/on_my_way_sms).
+    # An OPTION, default OFF: before it existed nothing was texted, so turning
+    # it on is a deliberate act on the Phone.com settings card. Migration 128.
+    on_my_way_sms_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # Phone.com per-tenant integration. voip_id is the Phone.com account ID
     # (not a secret — appears in every API URL). default_extension_id chooses
     # which extension sends outbound SMS by default; default_caller_id is the
