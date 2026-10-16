@@ -81,6 +81,9 @@ _TECH_ACTIONS = {ACTION_TECH_INVOICE, ACTION_TECH_ESTIMATE}
 
 _PENDING = ("scheduled", "sending")
 _NOT_SENT = ("failed", "unknown", "skipped")
+# An on-my-way text overtaken by the arrival: nothing for the office to do,
+# so it is audited but does not ring the bell.
+_ARRIVED_BEFORE_SEND = "arrived_before_send"
 
 
 class ScheduleLinkSmsIn(BaseModel):
@@ -418,7 +421,7 @@ def _finish(db: Session, row: ScheduledSms, status: str, *, code: str | None = N
         "unknown": "scheduled_sms_unknown",
     }[status]
     _audit(db, row, action, user_id=row.created_by_user_id)
-    if status in _NOT_SENT:
+    if status in _NOT_SENT and code != _ARRIVED_BEFORE_SEND:
         _alert_office(db, row)
 
 
@@ -554,6 +557,17 @@ def _send_message_row(db: Session, row: ScheduledSms) -> None:
             _finish(db, row, "skipped", code="on_my_way_disabled",
                     message="On-my-way texts were turned off before this one sent.")
             return
+        # A tap made with no signal is replayed later, often just before the
+        # queued "I'm here" (GDXA-1202): "on the way" must not reach a
+        # customer whose tech is already in the driveway.
+        if row.job_id is not None:
+            from gdx_dispatch.models.tenant_models import Job
+
+            job_status = db.execute(select(Job.dispatch_status).where(Job.id == row.job_id)).scalar_one_or_none()
+            if job_status in ("on_site", "done"):
+                _finish(db, row, "skipped", code=_ARRIVED_BEFORE_SEND,
+                        message="The tech had already arrived when this on-my-way text was due.")
+                return
     if row.customer_id:
         customer = active_customer(db, row.customer_id)
         if customer is not None and customer.sms_opt_out:
