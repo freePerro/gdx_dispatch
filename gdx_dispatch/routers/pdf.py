@@ -237,12 +237,13 @@ def _estimate_tiers_for_pdf(
     return None, [_option(tier) for tier in tiers]
 
 
-def _job_title(db: Session | None, job_id: Any) -> str:
-    """Title of a live job, or "" — best-effort, the PDF must always render."""
+def _live_job_text(db: Session | None, job_id: Any, column: Any = Job.title) -> str:
+    """Title (or another text column) of a live job, or "" — best-effort,
+    the PDF must always render."""
     if db is None or job_id is None:
         return ""
     title = db.execute(
-        select(Job.title).where(Job.id == job_id, Job.deleted_at.is_(None))
+        select(column).where(Job.id == job_id, Job.deleted_at.is_(None))
     ).scalar_one_or_none()
     return (title or "").strip()
 
@@ -252,7 +253,7 @@ def _estimate_job_name(estimate: Any, db: Session | None) -> str:
     (estimate.label) — the same order the estimate email's subject uses
     (routers/estimates.py `label_or_job`), so the email and its attached PDF
     can never name the job differently."""
-    title = _job_title(db, getattr(estimate, "job_id", None))
+    title = _live_job_text(db, getattr(estimate, "job_id", None))
     return title or (getattr(estimate, "label", None) or "").strip()
 
 
@@ -263,15 +264,47 @@ def _invoice_job_name(invoice: Any, job: Job | None, db: Session | None) -> str:
     title = ((job.title if job is not None else "") or "").strip()
     if title or db is None:
         return title
+    return _source_estimate_text(invoice, db, Estimate.label)
+
+
+def _source_estimate_text(invoice: Any, db: Session | None, column: Any) -> str:
+    """A text field of the live estimate the invoice came from (estimate_id,
+    then source_estimate_id), or ""."""
+    if db is None:
+        return ""
     for est_id in (getattr(invoice, "estimate_id", None), getattr(invoice, "source_estimate_id", None)):
         if est_id is None:
             continue
-        label = db.execute(
-            select(Estimate.label).where(Estimate.id == est_id, Estimate.deleted_at.is_(None))
+        value = db.execute(
+            select(column).where(Estimate.id == est_id, Estimate.deleted_at.is_(None))
         ).scalar_one_or_none()
-        if (label or "").strip():
-            return label.strip()
+        if (value or "").strip():
+            return value.strip()
     return ""
+
+
+def _invoice_payment_terms(invoice: Any) -> str:
+    """The payment terms in words, read off the invoice's OWN dates, so the
+    Terms line can never disagree with the Due Date printed in the header.
+
+    This restates the stored due date; it does not know how that date was
+    chosen. The office create route resolves billing_terms (customer →
+    pricing class → tenant default), but the truck invoice and the closeout
+    autodraft hardcode 30 days — their PDFs say "Net 30" because their due
+    date says so. Re-resolving billing_terms here instead would print today's
+    terms beside a due date set under other terms. No stored invoice_date
+    (legacy rows) → "": the created_at fallback is a UTC day and could
+    misstate N by one."""
+    invoice_date = getattr(invoice, "invoice_date", None)
+    due_date = getattr(invoice, "due_date", None)
+    if invoice_date is None or due_date is None:
+        return ""
+    days = (due_date - invoice_date).days
+    if days < 0:
+        return ""
+    if days == 0:
+        return "Due on receipt"
+    return f"Net {days}, due {due_date.isoformat()}"
 
 
 def _invoice_jobsite(job: Job | None, customer: Customer | None, db: Session | None) -> str:
@@ -290,9 +323,33 @@ def _invoice_jobsite(job: Job | None, customer: Customer | None, db: Session | N
     if not full:
         return ""
     billing = normalize_address(customer.address if customer is not None else "")
-    if billing and billing in (normalize_address(site.address), normalize_address(full)):
+    if _billing_covers_site(billing, normalize_address(site.address), full):
         return ""
     return full
+
+
+def _billing_covers_site(billing: str, street: str, full: str) -> bool:
+    """Is the (normalized) free-text billing address the job site, written shorter?
+
+    Equal to the site's street or full address, or a whole-word prefix of the
+    full address that covers at least its first two comma parts whole — street
+    and town ("123 Main St, Anytown" against "123 Main St, Anytown, MN 55555").
+    `full` is the composed display address, so the parts are the same whether
+    the row splits its town into columns or keeps it all in `address`, as the
+    estimate-conversion bind does. Part of the town ("123 Main St, Other"
+    against "Other City") is another place, so that site prints."""
+    from gdx_dispatch.core.job_site import normalize_address  # noqa: PLC0415
+
+    if not billing:
+        return False
+    parts = [p for p in (normalize_address(s) for s in full.split(",")) if p]
+    whole = " ".join(parts)
+    if billing in (street, whole):
+        return True
+    if len(parts) < 2:
+        return False
+    head = " ".join(parts[:2])
+    return (billing == head or billing.startswith(head + " ")) and whole.startswith(billing + " ")
 
 
 # Customer words for the invoice's EFFECTIVE status (routers/invoices
@@ -371,6 +428,7 @@ def _estimate_payload(
         "estimate_number": estimate.estimate_number,
         "customer": _customer_payload(customer),
         "job_name": _estimate_job_name(estimate, db),
+        "job_number": _live_job_text(db, getattr(estimate, "job_id", None), Job.job_number),
         "jobsite_address": getattr(estimate, "jobsite_address", None) or "",
         "description": getattr(estimate, "description", None) or "",
         "valid_until": valid_until.date().isoformat() if valid_until else "",
@@ -577,7 +635,12 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None, db: Session | 
         "invoice_number": invoice.invoice_number,
         "customer": _customer_payload(customer),
         "job_name": _invoice_job_name(invoice, job, db),
+        "job_number": ((job.job_number if job is not None else "") or "").strip(),
         "jobsite_address": _invoice_jobsite(job, customer, db),
+        # The source estimate's "Description of Work" — text the customer has
+        # already seen on the estimate PDF. NOT job.description: that is
+        # office intake text (staff routes only) and never customer-facing.
+        "description": _source_estimate_text(invoice, db, Estimate.description),
         "invoice_date": invoice_date.isoformat() if invoice_date else "",
         "paid_to_date": paid_to_date,
         "credits_applied": credits_applied,
@@ -623,6 +686,8 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None, db: Session | 
         # shipped as "terms" and printed under a "Terms" heading (mislabel,
         # Phase 3 fix). The template's Notes block owns it now.
         "notes": invoice.notes or "",
+        # The Terms block: payment terms in words ("Net 30, due …").
+        "terms": _invoice_payment_terms(invoice),
         # "Total-only" display — hides per-line prices + Subtotal/Tax rows,
         # keeping Total + Balance Due. Snapshotted from the source estimate.
         "hide_line_prices": bool(getattr(invoice, "hide_line_prices", False)),

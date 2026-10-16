@@ -555,6 +555,76 @@ def test_invoice_omits_jobsite_equal_to_billing(pdf_app: FastAPI):
     assert payload["jobsite_address"] == ""
 
 
+def _jobsite_with_billing(pdf_app: FastAPI, monkeypatch, billing: str, address: str = "123 Main St",
+                          city: str | None = "Anytown") -> tuple[str, str]:
+    """Seed a job at a location row (`address`, `city`, MN 55555 — or the whole
+    address in `address` with no city columns, as the estimate-conversion bind
+    writes it) for a customer billed at `billing`; return (payload jobsite,
+    rendered invoice HTML)."""
+    from gdx_dispatch.models.tenant_models import CustomerLocation
+
+    split = city is not None
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Partial billing")
+        cust.address = billing
+        loc = CustomerLocation(customer_id=str(cust.id), address=address, city=city,
+                               state="MN" if split else None, zip="55555" if split else None,
+                               company_id="tenant-test")
+        db.add(loc)
+        db.flush()
+        job.location_id = loc.id
+        db.flush()
+        payload = pdf_router._invoice_payload(_invoice_for(db, job, cust), cust, db)
+    finally:
+        db.close()
+    return payload["jobsite_address"], _render_html(monkeypatch, "invoice", payload)
+
+
+@pytest.mark.parametrize("billing", ["123 Main St, Anytown", "123 Main St Anytown MN"])
+@pytest.mark.parametrize("row", ["split", "whole"])
+def test_invoice_omits_jobsite_when_billing_is_a_shorter_form_of_it(pdf_app: FastAPI, monkeypatch, billing, row):
+    """GDXA-1281: a billing address missing the state/zip is still the job site;
+    the Jobsite block must not repeat it — for a row with city columns and for
+    one holding the whole address in `address`."""
+    kw = {} if row == "split" else {"address": "123 Main St, Anytown, MN 55555", "city": None}
+    jobsite, html = _jobsite_with_billing(pdf_app, monkeypatch, billing, **kw)
+    assert jobsite == ""
+    assert "Jobsite" not in html
+
+
+@pytest.mark.parametrize("billing", ["123 Main St, Anytown", "123 Main St, Other"])
+def test_invoice_prints_jobsite_in_another_city_with_the_same_street(pdf_app: FastAPI, monkeypatch, billing):
+    """The control: same street, billed in another town (or only part of the
+    site's town name) — the site is NOT the billing address and must print."""
+    jobsite, html = _jobsite_with_billing(pdf_app, monkeypatch, billing, city="Other City")
+    assert jobsite == "123 Main St, Other City, MN 55555"
+    assert html.index("Jobsite") < html.index("123 Main St, Other City, MN 55555")
+
+
+@pytest.mark.parametrize(
+    ("billing", "street", "full", "covered"),
+    [
+        ("123 main st anytown mn 55555", "123 main st", "123 Main St, Anytown, MN 55555", True),  # = full
+        ("123 main st", "123 main st", "123 Main St, Anytown, MN 55555", True),  # = street
+        ("123 main st anytown", "123 main st", "123 Main St, Anytown, MN 55555", True),  # street + town
+        ("123 main st anytown mn", "123 main st", "123 Main St, Anytown, MN 55555", True),
+        # the whole address in the street field (estimate-conversion rows)
+        ("123 main st anytown", "123 main st anytown mn 55555", "123 Main St, Anytown, MN 55555", True),
+        ("123 main st anytown mn 5555", "123 main st", "123 Main St, Anytown, MN 55555", False),  # part word
+        ("123 main", "123 main st", "123 Main St, Anytown, MN 55555", False),  # short of the street
+        ("123 main st othertown", "123 main st", "123 Main St, Anytown, MN 55555", False),  # another town
+        ("123 main st mn 55555", "123 main st", "123 Main St, Anytown, MN 55555", False),  # skips the town
+        # a street named like the town is not the town
+        ("100 anoka falls rd anoka", "100 anoka falls rd", "100 Anoka Falls Rd, Anoka Falls, MN 55303", False),
+        ("123 main st anytown", "123 main st", "123 Main St", False),  # site has no town to match
+        ("", "123 main st", "123 Main St, Anytown, MN 55555", False),
+    ],
+)
+def test_billing_covers_site(billing, street, full, covered):
+    assert pdf_router._billing_covers_site(billing, street, full) is covered
+
+
 @pytest.mark.parametrize(
     ("status", "balance", "settled", "label"),
     [
@@ -626,3 +696,98 @@ def test_past_due_invoice_prints_past_due(pdf_app: FastAPI):
         assert pdf_router._invoice_payload(not_yet, None, db)["status_label"] == "Unpaid"
     finally:
         db.close()
+
+
+# ── Job #, description of work, payment terms (GDXA-1291) ────────────────────
+
+
+def test_invoice_prints_job_number_description_and_terms(pdf_app: FastAPI, monkeypatch):
+    from datetime import date
+
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring replacement")
+        job.job_number = "JOB-2026-042"
+        job.description = "gate code 4411, dog in yard"  # office intake text
+        est = Estimate(estimate_number="EST-DW-1", description="Replace both torsion springs",
+                       customer_id=cust.id, job_id=job.id, total=Decimal("0"), status="accepted",
+                       public_token=uuid4().hex, company_id="tenant-test")
+        db.add(est)
+        db.flush()
+        inv = _invoice_for(db, job, cust, estimate_id=est.id,
+                           invoice_date=date(2026, 10, 1), due_date=date(2026, 10, 31))
+        payload = pdf_router._invoice_payload(inv, cust, db)
+    finally:
+        db.close()
+    assert payload["job_number"] == "JOB-2026-042"
+    assert payload["description"] == "Replace both torsion springs"
+    assert payload["terms"] == "Net 30, due 2026-10-31"
+    html = _render_html(monkeypatch, "invoice", payload)
+    assert "Job #: JOB-2026-042" in html
+    assert html.index("Description of Work") < html.index("Replace both torsion springs")
+    assert "gate code" not in html
+    assert html.index("<strong>Terms</strong>") < html.index("Net 30, due 2026-10-31")
+
+
+def test_invoice_blank_when_job_number_description_terms_absent(pdf_app: FastAPI, monkeypatch):
+    """Legacy job with no number, no source estimate, no stored invoice_date:
+    no empty "Job #", "Description of Work" or "Terms" heading."""
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring")
+        payload = pdf_router._invoice_payload(_invoice_for(db, job, cust), cust, db)
+    finally:
+        db.close()
+    assert (payload["job_number"], payload["description"], payload["terms"]) == ("", "", "")
+    html = _render_html(monkeypatch, "invoice", payload)
+    for heading in ("Job #", "Description of Work", "<strong>Terms</strong>"):
+        assert heading not in html
+
+
+def test_invoice_job_description_never_printed(pdf_app: FastAPI):
+    """job.description is office intake text, not customer-facing."""
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring")
+        job.description = "gate code 4411, dog in yard"
+        payload = pdf_router._invoice_payload(_invoice_for(db, job, cust), cust, db)
+    finally:
+        db.close()
+    assert "gate code" not in repr(payload)
+
+
+@pytest.mark.parametrize(
+    ("days", "words"),
+    [(0, "Due on receipt"), (15, "Net 15, due 2026-10-16"), (-3, "")],
+)
+def test_invoice_payment_terms_words(days, words):
+    from datetime import date, timedelta
+    from types import SimpleNamespace
+
+    inv = SimpleNamespace(invoice_date=date(2026, 10, 1), due_date=date(2026, 10, 1) + timedelta(days=days))
+    assert pdf_router._invoice_payment_terms(inv) == words
+    assert pdf_router._invoice_payment_terms(SimpleNamespace(invoice_date=None, due_date=date(2026, 10, 1))) == ""
+
+
+def test_estimate_prints_linked_job_number(pdf_app: FastAPI, monkeypatch):
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Dock doors")
+        job.job_number = "JOB-2026-077"
+        est = Estimate(estimate_number="EST-JNUM-1", job_id=job.id, customer_id=cust.id,
+                       total=Decimal("0"), status="draft", public_token=uuid4().hex,
+                       company_id="tenant-test")
+        db.add(est)
+        db.flush()
+        payload = pdf_router._estimate_payload(est, cust, db=db)
+        unlinked = Estimate(estimate_number="EST-JNUM-2", customer_id=cust.id, total=Decimal("0"),
+                            status="draft", public_token=uuid4().hex, company_id="tenant-test")
+        db.add(unlinked)
+        db.flush()
+        bare = pdf_router._estimate_payload(unlinked, cust, db=db)
+    finally:
+        db.close()
+    assert payload["job_number"] == "JOB-2026-077"
+    assert "Job #: JOB-2026-077" in _render_html(monkeypatch, "estimate", payload)
+    assert bare["job_number"] == ""
+    assert "Job #" not in _render_html(monkeypatch, "estimate", bare)

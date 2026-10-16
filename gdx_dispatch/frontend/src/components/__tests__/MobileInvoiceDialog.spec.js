@@ -315,3 +315,45 @@ describe('MobileInvoiceDialog — Text button placement (2026-09-28)', () => {
     expect(w.find('[data-testid="mid-text-invoice"]').exists()).toBe(false);
   });
 });
+
+/**
+ * Re-send and receipt read the delivery result (GDXA-1278). The server now
+ * suppresses a second send inside its window; a toast that ignored that
+ * would tell the tech "re-sent" when nothing went out.
+ */
+describe('MobileInvoiceDialog — send outcomes', () => {
+  const VERIFIED = {
+    ...SUMMARY,
+    invoices: [{ id: 'inv-1', invoice_number: '1001', status: 'sent', total: 500, balance_due: 500, verified_at: '2026-10-16T00:00:00Z' }],
+  };
+
+  async function clickLabel(w, label) {
+    await w.get(`[data-label="${label}"]`).trigger('click');
+    await flushPromises();
+  }
+
+  it.each([
+    [{ email_sent: true }, 'success', 'Invoice re-sent'],
+    [{ email_sent: false, email_skip_reason: 'duplicate_send_suppressed' }, 'info', 'Already sent'],
+    [{ email_sent: false }, 'warn', 'Email not delivered'],
+  ])('re-send %j toasts %s', async (resp, severity, summary) => {
+    apiGet.mockResolvedValue(VERIFIED);
+    apiPost.mockResolvedValueOnce(resp);
+    const w = mountDialog();
+    await flushPromises();
+    await clickLabel(w, 'Re-send');
+    expect(apiPost.mock.calls[0][0]).toBe('/api/mobile/invoices/inv-1/send');
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity, summary }));
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it('a suppressed duplicate receipt is "Already sent", not an error', async () => {
+    apiGet.mockResolvedValue(VERIFIED);
+    apiPost.mockResolvedValueOnce({ sent: false, skip_reason: 'duplicate_send_suppressed' });
+    const w = mountDialog();
+    await flushPromises();
+    await clickLabel(w, 'Send receipt');
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'info', summary: 'Already sent' }));
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ severity: 'error' }));
+  });
+});
