@@ -67,6 +67,9 @@
     </div>
     <div class="meta-grid">
       <div>Invoice #: {{ data.invoice_number or '' }}</div>
+      {% if data.job_number %}
+      <div>Job #: {{ data.job_number }}</div>
+      {% endif %}
       {% if data.invoice_date %}
       <div>Invoice Date: {{ data.invoice_date }}</div>
       {% endif %}
@@ -93,6 +96,13 @@
   <div class="section">
     <strong>Jobsite</strong><br>
     {{ data.jobsite_address }}
+  </div>
+  {% endif %}
+
+  {% if data.description %}
+  <div class="section">
+    <strong>Description of Work</strong>
+    <div style="white-space: pre-line">{{ data.description }}</div>
   </div>
   {% endif %}
 
@@ -138,11 +148,20 @@
   </div>
   {% endif %}
 
+    {% elif block.type == 'terms' %}
+  {# Payment terms in words, read off the invoice's own invoice/due dates
+     (routers/pdf._invoice_payment_terms). There is no free-text invoice
+     terms setting; estimates have one (default_terms). #}
+  {% if data.terms %}
+  <div class="section"{% if block.style %} style="{{ block.style }}"{% endif %}>
+    <strong>Terms</strong>
+    <div style="white-space: pre-line">{{ data.terms }}</div>
+  </div>
+  {% endif %}
+
     {% elif block.type == 'notes' %}
   {# invoice.notes used to print under a "Terms" heading (mislabel) — it's
-     operator-typed per-invoice text, so it belongs to the Notes block. The
-     terms block renders nothing for invoices until a tenant-wide default
-     terms text exists for billing (estimates already have one). #}
+     operator-typed per-invoice text, so it belongs to the Notes block. #}
   {% if data.notes %}
   <div class="section"{% if block.style %} style="{{ block.style }}"{% endif %}>
     <strong>Notes</strong>
