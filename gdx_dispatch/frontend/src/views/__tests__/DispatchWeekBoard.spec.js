@@ -19,6 +19,13 @@
  *  6. A visit card dropped on a cell is the visit route with that day and its time.
  *  7. The "No tech" row refuses a job that has a tech, and moves nothing.
  *  8. Clicking a day header opens that day in day view.
+ *  9. The "To schedule" strip is drawn when empty and takes a drop: the job
+ *     loses its tech AND its date, back to intake (Doug, 2026-10-16).
+ * 10. Holding areas are on the week board: a parked job is in its lane, not
+ *     on the "No tech" row, and a drop on a lane parks the job there.
+ * 11. The strip refuses finished and under-way work, and a chip let go over
+ *     the strip or lane it came from writes nothing (/audit, 2026-10-16: it
+ *     took a self-assigned tech off an undated job).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -103,6 +110,7 @@ const INTAKE = {
 
 let boardRows = [];
 let visitItems = [];
+let areas = [];
 
 async function mountBoard() {
   getMock.mockImplementation((url) => {
@@ -114,7 +122,7 @@ async function mountBoard() {
       { id: "tech-1", name: "Mike", active: true, effective_shift_start: "08:00", effective_shift_end: "17:00" },
       { id: "tech-2", name: "Ana", active: true, effective_shift_start: "07:30", effective_shift_end: "16:00" },
     ]);
-    if (u.includes("/api/holding-areas")) return Promise.resolve([]);
+    if (u.includes("/api/holding-areas")) return Promise.resolve(areas);
     if (u.includes("/api/jobs")) return Promise.resolve(boardRows);
     return Promise.resolve([]);
   });
@@ -139,7 +147,7 @@ describe("DispatchView — week board", () => {
     getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset();
     patchMock.mockResolvedValue({});
     granted = new Set(["jobs.read_all"]);
-    boardRows = [JOB, INTAKE]; visitItems = [];
+    boardRows = [JOB, INTAKE]; visitItems = []; areas = [];
   });
 
   it("steps a week at a time in week view and a day in day view", async () => {
@@ -270,5 +278,128 @@ describe("DispatchView — week board", () => {
     await w.find(`[data-testid="week-day-head-${OTHER_DAY}"]`).trigger("click");
     expect(w.vm.$.setupState.viewMode).toBe("day");
     expect(keyOf(new Date(w.vm.$.setupState.selectedDate))).toBe(OTHER_DAY);
+  });
+
+  it("takes a job off the schedule when dropped on the To schedule strip, even an empty one", async () => {
+    areas = [{ id: "area-ready", name: "Ready to Schedule", color: "#888888" }];
+    boardRows = [JOB];
+    const w = await mountBoard();
+    const strip = w.find('[data-testid="week-queue"]');
+    expect(strip.exists()).toBe(true);
+    w.vm.onDragStart(JOB, null);
+    await strip.trigger("drop");
+    await flushAll();
+    expect(patchMock).toHaveBeenCalledWith(
+      "/api/jobs/job-1",
+      { assigned_to: null, holding_area_id: "area-ready", scheduled_at: null },
+    );
+    expect(w.find('[data-testid="week-queue-job-1"]').exists()).toBe(true);
+    expect(cell(w, "tech-1", TODAY).text()).not.toContain("Lee Park");
+  });
+
+  it("shows the holding areas, with a parked job in its lane and not on the No tech row", async () => {
+    areas = [{ id: "area-parts", name: "Needs Parts", color: "#f59e0b" }];
+    const PARKED = {
+      ...INTAKE, id: "job-3", customer_name: "Kim Roe",
+      scheduled_at: at(OTHER, 9).toISOString(), holding_area_id: "area-parts",
+    };
+    boardRows = [JOB, INTAKE, PARKED];
+    const w = await mountBoard();
+    const lane = w.find('[data-testid="week-area-area-parts"]');
+    expect(lane.exists()).toBe(true);
+    expect(lane.find('[data-testid="week-area-job-area-parts-job-3"]').exists()).toBe(true);
+    expect(cell(w, "unassigned", OTHER_DAY).text()).not.toContain("Kim Roe");
+
+    w.vm.onDragStart(JOB, null);
+    await lane.trigger("drop");
+    await flushAll();
+    expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-1", { assigned_to: null, holding_area_id: "area-parts" });
+  });
+
+  it.each([
+    // The jobs list sends stage labels, not enum values (walk, 2026-10-16).
+    ["completed", { lifecycle_stage: "Completed", status: "Completed" }],
+    ["in progress", { lifecycle_stage: "In Progress", status: "In Progress" }],
+  ])("refuses to take a %s job off the schedule", async (_label, stage) => {
+    const STARTED = { ...JOB, ...stage };
+    boardRows = [STARTED];
+    const w = await mountBoard();
+    w.vm.onDragStart(STARTED, null);
+    await w.find('[data-testid="week-queue"]').trigger("drop");
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: "Nothing was moved" }));
+  });
+
+  it("writes nothing when a chip is let go over the strip it came from", async () => {
+    const SELF = { ...INTAKE, id: "job-9", assigned_to: "tech-1", technician_id: "tech-1", assigned_tech_ids: ["tech-1"] };
+    boardRows = [JOB, SELF];
+    const w = await mountBoard();
+    expect(w.find('[data-testid="week-queue-job-9"]').exists()).toBe(true);
+    w.vm.onDragStart(SELF, null, null, "week-queue");
+    await w.find('[data-testid="week-queue"]').trigger("drop");
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when a chip is let go over the lane it came from", async () => {
+    areas = [{ id: "area-parts", name: "Needs Parts", color: "#f59e0b" }];
+    const PARKED = { ...INTAKE, id: "job-3", holding_area_id: "area-parts", scheduled_at: at(OTHER, 9).toISOString() };
+    boardRows = [PARKED];
+    const w = await mountBoard();
+    w.vm.onDragStart(PARKED, null, null, "area:area-parts");
+    await w.find('[data-testid="week-area-area-parts"]').trigger("drop");
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("takes the tech off a parked job dragged from its tech's row onto its own lane", async () => {
+    areas = [{ id: "area-parts", name: "Needs Parts", color: "#f59e0b" }];
+    const PARKED_TECH = { ...JOB, id: "job-4", customer_name: "Ray Fox", holding_area_id: "area-parts" };
+    boardRows = [PARKED_TECH];
+    const w = await mountBoard();
+    expect(cell(w, "tech-1", TODAY).text()).toContain("Ray Fox");
+    expect(w.find('[data-testid="week-area-job-area-parts-job-4"]').exists()).toBe(true);
+    w.vm.onDragStart(PARKED_TECH, null, "tech-1");
+    await w.find('[data-testid="week-area-area-parts"]').trigger("drop");
+    await flushAll();
+    expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-4", { assigned_to: null, holding_area_id: "area-parts" });
+  });
+
+  it("re-reads the board when the server refuses the unschedule", async () => {
+    boardRows = [JOB];
+    const w = await mountBoard();
+    patchMock.mockRejectedValueOnce(new Error("409"));
+    const jobReads = () => getMock.mock.calls.filter(([u]) => String(u).startsWith("/api/jobs")).length;
+    const before = jobReads();
+    w.vm.onDragStart(JOB, null);
+    await w.find('[data-testid="week-queue"]').trigger("drop");
+    await flushAll();
+    expect(patchMock).toHaveBeenCalledTimes(1);
+    expect(jobReads()).toBeGreaterThan(before);
+    expect(cell(w, "tech-1", TODAY).text()).toContain("Lee Park");
+  });
+
+  it("knows where a chip was picked up from the chip's own dragstart", async () => {
+    areas = [{ id: "area-parts", name: "Needs Parts", color: "#f59e0b" }];
+    const PARKED = { ...INTAKE, id: "job-3", holding_area_id: "area-parts", scheduled_at: at(OTHER, 9).toISOString() };
+    boardRows = [INTAKE, PARKED];
+    const w = await mountBoard();
+    const dataTransfer = { setData: () => {}, getData: () => "", effectAllowed: "" };
+    const strip = w.find('[data-testid="week-queue"]');
+    const lane = w.find('[data-testid="week-area-area-parts"]');
+
+    await w.find('[data-testid="week-queue-job-2"]').trigger("dragstart", { dataTransfer });
+    await strip.trigger("drop");
+    await w.find('[data-testid="week-area-job-area-parts-job-3"]').trigger("dragstart", { dataTransfer });
+    await lane.trigger("drop");
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+
+    // Picked up from the strip, let go over a lane: that is a real move.
+    await w.find('[data-testid="week-queue-job-2"]').trigger("dragstart", { dataTransfer });
+    await lane.trigger("drop");
+    await flushAll();
+    expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-2", { assigned_to: null, holding_area_id: "area-parts" });
   });
 });

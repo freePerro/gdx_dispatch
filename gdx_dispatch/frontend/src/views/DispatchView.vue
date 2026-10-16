@@ -349,7 +349,7 @@
                 :data-testid="`unassigned-job-${job.card_key || job.id}`"
                 draggable="true"
                 style="cursor:pointer"
-                @dragstart="onDragStart(job, $event)"
+                @dragstart="onDragStart(job, $event, null, 'day-queue')"
                 @dragend="draggingJobId = null"
                 @click="openJobDrawer(job)"
               >
@@ -623,30 +623,79 @@
            already had, with that tech. The arrows step a whole week here.
            Same shape as ServiceTitan's Weekly Dispatch Board. -->
       <template v-if="viewMode === 'week'">
-        <!-- Drag sources for the week: jobs with no date yet, and partial
-             jobs waiting on their next day. One line each, so the grid stays
-             on screen (you cannot scroll mid-drag). -->
-        <div v-if="weekQueueJobs.length" class="week-queue" data-testid="week-queue">
-          <span class="week-queue-label">
-            <i class="pi pi-inbox"></i> To schedule
-            <Badge :value="weekQueueJobs.length" severity="danger" />
-          </span>
-          <div class="week-queue-chips">
+        <!-- Drag sources and drop targets for the week: jobs with no date
+             yet, partial jobs waiting on their next day, and the holding
+             areas. Compact strips above the grid, because you cannot scroll
+             mid-drag. Always drawn: an empty strip is still where a job goes
+             back to (Doug, 2026-10-16 — the strip only rendered when it had
+             cards and took no drop, and the holding areas were not on the
+             week board at all). -->
+        <div class="week-lanes">
           <div
-            v-for="job in weekQueueJobs"
-            :key="job.card_key || job.id"
-            class="week-chip week-queue-chip"
-            :class="{ 'week-chip--partial': partialJobIds.has(String(job.id)) }"
-            :data-testid="`week-queue-${job.card_key || job.id}`"
-            draggable="true"
-            v-tooltip.bottom="weekChipTooltip(job)"
-            @dragstart="onDragStart(job, $event)"
-            @dragend="draggingJobId = null"
-            @click="openJobDrawer(job)"
+            class="week-queue"
+            :class="{ 'drag-over': dragOverTechId === 'unassigned-queue' }"
+            data-testid="week-queue"
+            @dragover.prevent="onDragOver('unassigned-queue')"
+            @dragleave="onWeekCellLeave"
+            @drop.prevent="moveToScheduleQueue($event)"
           >
-            <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
-            <span class="week-chip-meta">{{ partialJobIds.has(String(job.id)) ? 'next day' : formatDurationHours(job.effective_duration_hours) }}</span>
+            <span class="week-queue-label">
+              <i class="pi pi-inbox"></i> To schedule
+              <Badge v-if="weekQueueJobs.length" :value="weekQueueJobs.length" severity="danger" />
+            </span>
+            <div class="week-queue-chips">
+              <div
+                v-for="job in weekQueueJobs"
+                :key="job.card_key || job.id"
+                class="week-chip week-queue-chip"
+                :class="{ 'week-chip--partial': partialJobIds.has(String(job.id)) }"
+                :data-testid="`week-queue-${job.card_key || job.id}`"
+                draggable="true"
+                v-tooltip.bottom="weekChipTooltip(job)"
+                @dragstart="onDragStart(job, $event, null, 'week-queue')"
+                @dragend="draggingJobId = null"
+                @click="openJobDrawer(job)"
+              >
+                <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
+                <span class="week-chip-meta">{{ partialJobIds.has(String(job.id)) ? 'next day' : formatDurationHours(job.effective_duration_hours) }}</span>
+              </div>
+              <span v-if="!weekQueueJobs.length" class="week-cell-note">Drop a job here to take it off the schedule</span>
+            </div>
           </div>
+          <div v-if="parkingHoldingAreas.length" class="week-areas">
+            <div
+              v-for="area in parkingHoldingAreas"
+              :key="area.id"
+              class="week-queue week-area"
+              :class="{ 'drag-over': dragOverTechId === area.id }"
+              :style="{ borderLeft: '3px solid ' + area.color }"
+              :data-testid="`week-area-${area.id}`"
+              @dragover.prevent="onDragOver(area.id)"
+              @dragleave="onWeekCellLeave"
+              @drop.prevent="moveToHoldingArea($event, area.id)"
+            >
+              <span class="week-queue-label" :style="{ color: area.color }">
+                {{ area.name }}
+                <Badge v-if="getHoldingAreaJobs(area.id).length" :value="getHoldingAreaJobs(area.id).length" severity="info" />
+              </span>
+              <div class="week-queue-chips">
+                <div
+                  v-for="job in getHoldingAreaJobs(area.id)"
+                  :key="job.card_key || job.id"
+                  class="week-chip week-queue-chip"
+                  :data-testid="`week-area-job-${area.id}-${job.id}`"
+                  :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
+                  v-tooltip.bottom="weekChipTooltip(job)"
+                  @dragstart="onDragStart(job, $event, null, `area:${area.id}`)"
+                  @dragend="draggingJobId = null"
+                  @click="openJobDrawer(job)"
+                >
+                  <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
+                  <span v-if="job.scheduled_at" class="week-chip-meta">{{ formatScheduled(job.scheduled_at) }}</span>
+                </div>
+                <span v-if="!getHoldingAreaJobs(area.id).length" class="week-cell-note">Drop jobs here</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1626,6 +1675,14 @@ const knownHoldingAreaIds = computed(
   () => new Set((holdingAreas.value || []).map((a) => String(a.id))),
 );
 
+// Parked = in a holding area the board draws a lane for, other than the
+// intake queue ("Ready to Schedule" is the queue, not a parking lot).
+function isParked(job) {
+  if (!job?.holding_area_id) return false;
+  const areaId = String(job.holding_area_id);
+  return areaId !== readyToScheduleAreaId.value && knownHoldingAreaIds.value.has(areaId);
+}
+
 // A partial job parked in a holding area (Needs Parts, …) waits there, not
 // in this queue — the same rule "New Jobs" applies below.
 const visiblePartialJobs = computed(() =>
@@ -1790,7 +1847,9 @@ const weekRows = computed(() => {
     cells: weekDays.value.map((day) => ({
       date: day.date,
       isToday: day.isToday,
-      jobs: day.jobs.filter((j) => !(j.assigned_tech_ids || []).some(Boolean)),
+      // A job parked in a holding area is in that area's lane above, as on
+      // the day board — not here as well.
+      jobs: day.jobs.filter((j) => !(j.assigned_tech_ids || []).some(Boolean) && !isParked(j)),
       isOff: false,
       isOver: false,
       hoursLabel: '',
@@ -2007,8 +2066,11 @@ const draggingCard = ref(null);
 // The tech row or column the card was picked up from, when it came from one:
 // a crew job dropped on a tech outside the crew offers to swap this tech first.
 let draggingFromTechId = null;
+// The week strip or lane the card was picked up from ('week-queue',
+// 'area:<id>'): let go over that same one, the drag was cancelled.
+let draggingFromLane = null;
 
-function onDragStart(job, event, fromTechId = null) {
+function onDragStart(job, event, fromTechId = null, fromLane = null) {
   // A day that has started or closed stays where it was worked.
   if (job?.visit_id && !job.visit_movable) {
     event?.preventDefault?.();
@@ -2017,6 +2079,7 @@ function onDragStart(job, event, fromTechId = null) {
   draggingCard.value = job?.visit_id ? job : null;
   draggingJobId.value = job.id;
   draggingFromTechId = fromTechId ? String(fromTechId) : null;
+  draggingFromLane = fromLane;
   if (event?.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', String(job.id));
@@ -2843,11 +2906,18 @@ function formatBoardDay(iso) {
   return formatDateTime(iso, { options });
 }
 
+// The week board's lanes hold the whole week's parked work, not one day's.
+// Computed, so the per-job timezone date check runs once per data change and
+// not on every re-render a drag-over causes (/audit, 2026-10-16).
+const holdingAreaSourceJobs = computed(() => (viewMode.value === 'week'
+  ? rangeFilteredJobs.value.filter((j) => weekDays.value.some((d) => matchesDate(j, d.date)))
+  : dayJobs.value));
+
 function getHoldingAreaJobs(areaId) {
   // A lane lists a job once: a multi-day job parked here has a card per day
   // on the board, and the lane total is the job's hours, not one day's.
   const seenJobs = new Set();
-  const here = dayJobs.value.filter((j) => {
+  const here = holdingAreaSourceJobs.value.filter((j) => {
     if (j.holding_area_id !== areaId || seenJobs.has(String(j.id))) return false;
     seenJobs.add(String(j.id));
     return true;
@@ -2884,6 +2954,17 @@ async function moveToHoldingArea(event, areaId) {
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
+  // Let go over the lane it came from: a cancelled drag, not an edit. Keyed
+  // on where the drag started, not on the lane listing the job — a parked
+  // job with a tech is in its tech's row too, and dragging it from there
+  // onto its lane is how its tech comes off (/audit, 2026-10-16).
+  const fromLane = draggingFromLane;
+  draggingFromLane = null;
+  if (fromLane === `area:${areaId}`) {
+    draggingJobId.value = null;
+    draggingCard.value = null;
+    return;
+  }
   const card = takeDraggedVisit(jobId);
   if (card) {
     draggingJobId.value = null;
@@ -2914,12 +2995,24 @@ async function moveToHoldingArea(event, areaId) {
 // drag onto the "Ready to Schedule" holding-area column; that column no longer
 // renders separately (its jobs ARE this queue), so the queue takes the drop.
 // Routes the job back to the intake area and clears the tech, mirroring
-// moveToHoldingArea.
+// moveToHoldingArea. A drop here takes the job off the schedule, so it also
+// clears the date: left dated, it stayed booked on the day it was dragged off
+// with nobody on it — on the week board's "No tech" row and in this queue as
+// "needs a tech" (Doug, 2026-10-16).
 async function moveToScheduleQueue(event) {
   dragOverTechId.value = null;
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
+  // Let go over the queue it came from: a cancelled drag, not an edit — it
+  // would otherwise clear the date of a queued "needs a tech" job.
+  const fromLane = draggingFromLane;
+  draggingFromLane = null;
+  if (fromLane === 'week-queue' || fromLane === 'day-queue') {
+    draggingJobId.value = null;
+    draggingCard.value = null;
+    return;
+  }
   const areaId = readyToScheduleAreaId.value || null;
   const card = takeDraggedVisit(jobId);
   if (card) {
@@ -2937,14 +3030,29 @@ async function moveToScheduleQueue(event) {
   const job = jobs.value.find((j) => String(j.id) === String(jobId));
   if (!job) return;
   draggingJobId.value = null;
+  // Work that is finished or under way keeps the day it was worked. The
+  // jobs list sends the stage as a label ("In Progress"), not the enum.
+  const stage = String(job.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (isTerminalJob(job) || stage === 'in_progress') {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was moved',
+      detail: 'A job that is finished or under way keeps its date and crew. Change it on the job page.',
+      life: 6000,
+    });
+    return;
+  }
   if (!(await okToClearCrew(job))) return;
   await withBoardWrite(async () => {
     // Looked up again: the board can refresh while the confirm is open.
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     if (idx === -1) return;
-    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
+    const patch = { assigned_to: null, holding_area_id: areaId, scheduled_at: null };
+    jobs.value[idx] = {
+      ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [], scheduled_at: null,
+    };
     try {
-      await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
+      await api.patch(`/api/jobs/${jobId}`, patch);
     } catch { await refreshBoard(); }
   });
 }
@@ -3571,6 +3679,22 @@ defineExpose({
   margin-right: 0.25rem;
 }
 .week-queue-chip { max-width: 16rem; }
+.week-lanes { margin-bottom: 0.5rem; }
+.week-lanes .week-queue.drag-over {
+  background: color-mix(in srgb, var(--p-primary-color) 18%, transparent);
+  box-shadow: inset 0 0 0 2px var(--p-primary-color);
+}
+/* Holding areas sit side by side in one row so the grid stays on screen. */
+.week-areas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.week-area {
+  flex: 1 1 14rem;
+  min-width: 0;
+  margin-bottom: 0;
+}
 /* A long intake list scrolls inside two rows instead of pushing the grid
    down (scroll the strip first, then drag). */
 .week-queue-chips {
