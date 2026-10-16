@@ -35,6 +35,7 @@ from gdx_dispatch.modules.door_listings import service as _listing_service
 from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+from gdx_dispatch.routers.auth.core import ALG, SIGN_KEY, VERIFY_KEY
 from gdx_dispatch.routers.pdf import _invoice_settlement, invoice_pdf_bytes, line_category_mode_for
 
 log = logging.getLogger(__name__)
@@ -57,9 +58,17 @@ CUSTOMER_VISIBLE_ESTIMATE_STATUSES = ("sent", "rejected", "accepted", "declined"
 # (tech iPhone photos) but Chrome/Firefox can't decode those — advertising
 # them to the portal would show broken thumbnails.
 PORTAL_RENDERABLE_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
-ALG = "HS256"
-SIGN_KEY = os.getenv("JWT_SECRET", "dev-secret")
-VERIFY_KEY = SIGN_KEY
+# Portal tokens are signed with the key routers/auth/core.py validated at boot
+# (GDXA-1309). In an RS256 deployment, where JWT_SECRET may be unset, a local
+# JWT_SECRET read with a hard-coded default signed with a public string, or,
+# when JWT_SECRET was set empty, failed every portal request.
+# Staff and portal tokens share that key, so a portal token carries its own
+# audience. Every staff decode passes no audience, and PyJWT refuses a token
+# with an aud claim then, so a portal token is refused on its claims by every
+# staff path, including those that skip the users-row check (TenantMiddleware's
+# bypass prefixes, the AUTH_DB_VERIFY_ENABLED valve). The MCP tokens are kept
+# out the same way.
+PORTAL_AUDIENCE = "gdx-customer-portal"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/portal/login")
 router = APIRouter(
@@ -234,6 +243,7 @@ def issue_customer_access_token(customer_user: CustomerUser, *, remember: bool =
         "role": "customer",
         "customer_id": str(customer_user.customer_id),
         "typ": "access",
+        "aud": PORTAL_AUDIENCE,
         "exp": int((_now_utc() + timedelta(seconds=ttl)).timestamp()),
     }
     return jwt.encode(claims, SIGN_KEY, algorithm=ALG)
@@ -296,8 +306,8 @@ def get_current_portal_customer(
     db: Session = Depends(get_db),
 ) -> PortalPrincipal:
     try:
-        claims = jwt.decode(token, VERIFY_KEY, algorithms=[ALG])
-        if claims.get("role") != "customer":
+        claims = jwt.decode(token, VERIFY_KEY, algorithms=[ALG], audience=PORTAL_AUDIENCE)
+        if claims.get("role") != "customer" or claims.get("typ") != "access":
             raise HTTPException(status_code=401, detail="Invalid customer token")
         user_id = UUID(str(claims["sub"]))
         customer_id = UUID(str(claims["customer_id"]))
