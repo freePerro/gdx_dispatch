@@ -21,7 +21,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -138,4 +138,5 @@ def test_staff_decode_paths_refuse_the_ticket(real_ticket):
         asyncio.run(get_current_user(request=None, token=real_ticket))
     assert exc.value.status_code == 401
     assert decode_live_access_token(real_ticket, None) == {}
-    assert _decode_to_principal(real_ticket) is None
+    stamp_request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    assert _decode_to_principal(stamp_request, real_ticket) is None
