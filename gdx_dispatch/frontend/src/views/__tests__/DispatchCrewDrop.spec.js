@@ -413,4 +413,38 @@ describe("dropping a crew job off the board", () => {
     expect(confirmRequire).not.toHaveBeenCalled();
     expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-4", expect.objectContaining({ assigned_to: null }));
   });
+
+  // Doug, 2026-10-16: dropped into the queue, a job stayed booked on the day it
+  // was dragged off, with nobody on it.
+  it("takes the date off too, so the job is not left booked with no tech", async () => {
+    boardRows = [SOLO];
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.get('[data-testid="unassigned-section"]').trigger("drop", { dataTransfer: { getData: () => "job-4" } });
+    await flushAll();
+    expect(patchMock.mock.calls).toEqual([["/api/jobs/job-4", expect.objectContaining({ assigned_to: null, scheduled_at: null })]]);
+    expect(w.vm.$.setupState.jobs.find((j) => j.id === "job-4").scheduled_at).toBeNull();
+  });
+
+  it("refuses a job that is under way and writes nothing", async () => {
+    boardRows = [{ ...SOLO, lifecycle_stage: "In Progress" }];
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.get('[data-testid="unassigned-section"]').trigger("drop", { dataTransfer: { getData: () => "job-4" } });
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: "Nothing was moved" }));
+  });
+
+  it("a queued 'needs a tech' card let go over the queue keeps its date", async () => {
+    const NO_TECH = { ...SOLO, id: "job-5", assigned_to: null, assigned_tech_ids: [], technician_id: null, lead_tech_id: null };
+    boardRows = [NO_TECH];
+    const w = await mountBoard();
+    patchMock.mockClear();
+    const dt = { setData() {}, getData: () => "", effectAllowed: "" };
+    await w.get('[data-testid="unassigned-job-job-5"]').trigger("dragstart", { dataTransfer: dt });
+    await w.get('[data-testid="unassigned-section"]').trigger("drop", { dataTransfer: dt });
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+  });
 });

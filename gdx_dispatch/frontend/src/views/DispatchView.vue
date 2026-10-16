@@ -349,7 +349,7 @@
                 :data-testid="`unassigned-job-${job.card_key || job.id}`"
                 draggable="true"
                 style="cursor:pointer"
-                @dragstart="onDragStart(job, $event)"
+                @dragstart="onDragStart(job, $event, null, 'day-queue')"
                 @dragend="draggingJobId = null"
                 @click="openJobDrawer(job)"
               >
@@ -637,7 +637,7 @@
             data-testid="week-queue"
             @dragover.prevent="onDragOver('unassigned-queue')"
             @dragleave="onWeekCellLeave"
-            @drop.prevent="moveToScheduleQueue($event, { unschedule: true })"
+            @drop.prevent="moveToScheduleQueue($event)"
           >
             <span class="week-queue-label">
               <i class="pi pi-inbox"></i> To schedule
@@ -2995,20 +2995,20 @@ async function moveToHoldingArea(event, areaId) {
 // drag onto the "Ready to Schedule" holding-area column; that column no longer
 // renders separately (its jobs ARE this queue), so the queue takes the drop.
 // Routes the job back to the intake area and clears the tech, mirroring
-// moveToHoldingArea. The week board's "To schedule" strip holds undated jobs
-// only — a dated job with no tech is on its "No tech" row — so a drop there
-// also clears the date (`unschedule`), or the card would land on that row
-// instead of where it was dropped (Doug, 2026-10-16).
-async function moveToScheduleQueue(event, { unschedule = false } = {}) {
+// moveToHoldingArea. A drop here takes the job off the schedule, so it also
+// clears the date: left dated, it stayed booked on the day it was dragged off
+// with nobody on it — on the week board's "No tech" row and in this queue as
+// "needs a tech" (Doug, 2026-10-16).
+async function moveToScheduleQueue(event) {
   dragOverTechId.value = null;
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
-  // Let go over the strip it came from: a cancelled drag, not an edit —
-  // it would otherwise take a self-assigned tech off an undated job.
+  // Let go over the queue it came from: a cancelled drag, not an edit — it
+  // would otherwise clear the date of a queued "needs a tech" job.
   const fromLane = draggingFromLane;
   draggingFromLane = null;
-  if (unschedule && fromLane === 'week-queue') {
+  if (fromLane === 'week-queue' || fromLane === 'day-queue') {
     draggingJobId.value = null;
     draggingCard.value = null;
     return;
@@ -3030,30 +3030,26 @@ async function moveToScheduleQueue(event, { unschedule = false } = {}) {
   const job = jobs.value.find((j) => String(j.id) === String(jobId));
   if (!job) return;
   draggingJobId.value = null;
-  if (unschedule) {
-    // Work that is finished or under way keeps the day it was worked. The
-    // jobs list sends the stage as a label ("In Progress"), not the enum.
-    const stage = String(job.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-    if (isTerminalJob(job) || stage === 'in_progress') {
-      toast.add({
-        severity: 'warn',
-        summary: 'Nothing was moved',
-        detail: 'A job that is finished or under way keeps its date and crew. Change it on the job page.',
-        life: 6000,
-      });
-      return;
-    }
+  // Work that is finished or under way keeps the day it was worked. The
+  // jobs list sends the stage as a label ("In Progress"), not the enum.
+  const stage = String(job.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (isTerminalJob(job) || stage === 'in_progress') {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was moved',
+      detail: 'A job that is finished or under way keeps its date and crew. Change it on the job page.',
+      life: 6000,
+    });
+    return;
   }
   if (!(await okToClearCrew(job))) return;
   await withBoardWrite(async () => {
     // Looked up again: the board can refresh while the confirm is open.
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     if (idx === -1) return;
-    const patch = { assigned_to: null, holding_area_id: areaId };
-    if (unschedule) patch.scheduled_at = null;
+    const patch = { assigned_to: null, holding_area_id: areaId, scheduled_at: null };
     jobs.value[idx] = {
-      ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [],
-      ...(unschedule ? { scheduled_at: null } : {}),
+      ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [], scheduled_at: null,
     };
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
