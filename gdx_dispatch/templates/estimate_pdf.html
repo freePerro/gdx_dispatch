@@ -68,6 +68,9 @@
       {% endif %}
     </div>
     <div class="meta">Estimate #: {{ data.estimate_number or '' }}</div>
+    {% if data.job_number %}
+    <div class="meta">Job #: {{ data.job_number }}</div>
+    {% endif %}
     {% if data.valid_until %}
     <div class="meta">Valid until: {{ data.valid_until }}</div>
     {% endif %}
