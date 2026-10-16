@@ -145,6 +145,8 @@ async function dayDrop(w, job, fromTech, toTech, hour = 13) {
 describe("DispatchView — crew-safe drops", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    // Day/Week is remembered in storage; a week test must not open the next in Week.
+    window.localStorage.clear();
     getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset();
     patchMock.mockResolvedValue({});
     granted = new Set(["jobs.read_all"]);
@@ -350,6 +352,8 @@ describe("dropping a crew job off the board", () => {
   const drop = { dataTransfer: { getData: () => "job-1" } };
   beforeEach(() => {
     setActivePinia(createPinia());
+    // Day/Week is remembered in storage; a week test must not open the next in Week.
+    window.localStorage.clear();
     getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset(); confirmRequire.mockReset();
     patchMock.mockResolvedValue({});
     granted = new Set(["jobs.read_all"]);
