@@ -21,6 +21,8 @@
  *     sends the crew without hours; closing the question moves nothing.
  *  7. The queue card's assign dropdown on an undated crew job asks the same
  *     question, and dates the job to the board day as a one-tech pick does.
+ *  8. Dropping a crew job into the New Jobs queue or a holding area takes
+ *     every tech off it, so it asks first; a one-tech drop does not ask.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -37,7 +39,8 @@ vi.mock("vue-router", () => ({
   useRoute: () => ({ query: {}, path: "/dispatch" }),
 }));
 vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: toastAdd }) }));
-vi.mock("primevue/useconfirm", () => ({ useConfirm: () => ({ require: vi.fn() }) }));
+const confirmRequire = vi.fn();
+vi.mock("primevue/useconfirm", () => ({ useConfirm: () => ({ require: confirmRequire }) }));
 vi.mock("../../composables/useApiWithToast", () => ({
   useApiWithToast: () => ({ get: getMock, post: vi.fn(), patch: patchMock, del: vi.fn() }),
 }));
@@ -340,5 +343,74 @@ describe("DispatchView — crew-safe drops", () => {
       await flushAll();
       expect(patchMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("dropping a crew job off the board", () => {
+  const drop = { dataTransfer: { getData: () => "job-1" } };
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset(); confirmRequire.mockReset();
+    patchMock.mockResolvedValue({});
+    granted = new Set(["jobs.read_all"]);
+  });
+
+  it("into the New Jobs queue asks first, naming the crew, then clears it", async () => {
+    boardRows = [CREW];
+    confirmRequire.mockImplementation((o) => o.accept());
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.vm.$.setupState.moveToScheduleQueue(drop);
+    await flushAll();
+    expect(confirmRequire).toHaveBeenCalledWith(expect.objectContaining({
+      header: "Remove every technician?",
+      message: expect.stringContaining("Mike, Ana"),
+    }));
+    expect(jobPatches()).toEqual([["/api/jobs/job-1", expect.objectContaining({ assigned_to: null })]]);
+  });
+
+  it("into the New Jobs queue, saying no sends nothing", async () => {
+    boardRows = [CREW];
+    confirmRequire.mockImplementation((o) => o.reject());
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.vm.$.setupState.moveToScheduleQueue(drop);
+    await flushAll();
+    expect(confirmRequire).toHaveBeenCalledTimes(1);
+    expect(jobPatches()).toEqual([]);
+  });
+
+  it("into a holding area, saying no sends nothing", async () => {
+    boardRows = [CREW];
+    confirmRequire.mockImplementation((o) => o.reject());
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.vm.$.setupState.moveToHoldingArea(drop, "ha-1");
+    await flushAll();
+    expect(confirmRequire).toHaveBeenCalledTimes(1);
+    expect(jobPatches()).toEqual([]);
+  });
+
+  it("into a holding area, yes clears the crew on the card too, so it is not asked about again", async () => {
+    boardRows = [CREW];
+    confirmRequire.mockImplementation((o) => o.accept());
+    patchMock.mockImplementation(() => new Promise(() => {})); // the board shows the drop before the server answers
+    const w = await mountBoard();
+    patchMock.mockClear();
+    w.vm.$.setupState.moveToHoldingArea(drop, "ha-1");
+    await flushAll();
+    expect(jobPatches()).toEqual([["/api/jobs/job-1", { assigned_to: null, holding_area_id: "ha-1" }]]);
+    const card = w.vm.$.setupState.jobs.find((j) => j.id === "job-1");
+    expect(card.assigned_tech_ids).toEqual([]);
+  });
+
+  it("a one-tech job drops into the queue without asking", async () => {
+    boardRows = [SOLO];
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.vm.$.setupState.moveToScheduleQueue({ dataTransfer: { getData: () => "job-4" } });
+    await flushAll();
+    expect(confirmRequire).not.toHaveBeenCalled();
+    expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-4", expect.objectContaining({ assigned_to: null }));
   });
 });

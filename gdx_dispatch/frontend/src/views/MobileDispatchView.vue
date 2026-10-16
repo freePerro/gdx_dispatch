@@ -19,12 +19,14 @@ import Tag from 'primevue/tag'
 import { useApi } from '../composables/useApi'
 import { useTenantTimezone } from '../composables/useTenantTimezone'
 import { useToast } from 'primevue/usetoast'
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
 import CrewChangeDialog from '../components/CrewChangeDialog.vue'
 import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange'
 
 const api = useApi()
 const toast = useToast()
+const { confirmAsync } = useDestructiveConfirm()
 const route = useRoute()
 const router = useRouter()
 // Office display timezone — the board buckets jobs into the selected day in
@@ -313,7 +315,17 @@ async function confirmAssign() {
   }
 }
 
+// One tap takes every tech off the job, crew and all, so it asks first.
 async function unassignJob(job) {
+  const crew = crewOf(job)
+  if (crew.length) {
+    const ok = await confirmAsync({
+      header: crew.length > 1 ? 'Remove every technician?' : 'Remove the technician?',
+      message: `${crew.map(techNameFor).join(', ')} will be taken off this job, and it goes back to unassigned.`,
+      acceptLabel: 'Remove',
+    })
+    if (!ok) return
+  }
   try {
     await api.patch(`/api/jobs/${job.id}`, {
       assigned_tech_id: null,
