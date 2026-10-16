@@ -146,6 +146,8 @@ const cardOf = (w, key) => w.vm.boardJobs.find((j) => j.card_key === key);
 describe("DispatchView — visit cards", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    // Day/Week is remembered in storage; a week test must not open the next in Week.
+    window.localStorage.clear();
     getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset();
     granted = new Set(["jobs.read_all"]);
     boardRows = [ROW]; visitItems = [visit()]; holdingAreas = []; partialRows = []; settings = {};

@@ -1,3 +1,20 @@
+"""Job labor: the per-job hours in `time_entries`.
+
+Two clocks, two tables, two purposes (Doug, 2026-10-15). The time clock a
+tech punches for PAYROLL is `timeclock_entries_router` (routers/timeclock.py,
+TimesheetsView). JOB TRACKING, meaning how long was spent on which job, is
+`time_entries`: written here, by mobile arrival and by closeout and day close,
+and read by job costing, the tech's invoicing screen and labor billing. This
+router never touches the payroll clock, and nothing written here is meant to
+change a paycheck. Do not join or reconcile the two.
+
+What keeps that true in code today is `user_id`, not the table: rows written
+here carry `tech_id` and leave `user_id` NULL, and routers/payroll.py
+`_fetch_tech_hours` still sums `time_entries` grouped by `user_id` (people-
+time's code, which contradicts the rule above and is theirs to retire). So a
+row with a `user_id` is the tech's own time and is never editable here
+(_refuse_if_locked).
+"""
 from __future__ import annotations
 
 import contextlib
@@ -9,7 +26,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -65,18 +82,25 @@ def _cost_rate_fallback(db: Session) -> float:
         with contextlib.suppress(SQLAlchemyError):
             db.rollback()
     return DEFAULT_COST_RATE
+# No entry_type on either model: rows written here are always office-entered
+# ("manual"). A caller that could set "job" would mint a tech timer day close
+# attests and billing claims (services/day_close.is_candidate), or a row
+# _refuse_if_locked then refuses to edit. extra="forbid" answers 422 to a
+# request that still sends it, rather than dropping it silently.
 class TimeEntryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tech_id: str = Field(min_length=1)
     clock_in: datetime
     clock_out: datetime
-    entry_type: str = Field(default="manual", min_length=1)
 
 
 class TimeEntryPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tech_id: str | None = None
     clock_in: datetime | None = None
     clock_out: datetime | None = None
-    entry_type: str | None = None
 
 
 async def _current_user_dependency(request: Request) -> dict[str, Any]:
@@ -177,6 +201,8 @@ def _entry_to_dict(
         "id": str(entry.id),
         "job_id": str(entry.job_id),
         "tech_id": entry.tech_id,
+        # A row with a user_id is the tech's own time; the job page locks it.
+        "user_id": entry.user_id or None,
         # Plan §3: the Tech column was blank because this key never existed.
         "tech_name": name or entry.tech_name or None,
         "clock_in": entry.clock_in.isoformat() if entry.clock_in else None,
@@ -188,7 +214,68 @@ def _entry_to_dict(
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
         "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
         "deleted_at": entry.deleted_at.isoformat() if entry.deleted_at else None,
+        # GDXA-1065: the job page's edit/delete actions lock a billed,
+        # day-closed or timer row and say why; the server refuses it anyway.
+        "day_closed_at": entry.day_closed_at.isoformat() if entry.day_closed_at else None,
+        "billed_invoice_id": str(entry.billed_invoice_id) if entry.billed_invoice_id else None,
     }
+
+
+def _audit_fields(entry: TimeEntry) -> dict[str, Any]:
+    """What an audit row records about a time entry: the fields a write can
+    change, so a before/after pair answers "what changed" (GDXA-1065)."""
+    return {
+        "tech_id": entry.tech_id,
+        "clock_in": entry.clock_in.isoformat() if entry.clock_in else None,
+        "clock_out": entry.clock_out.isoformat() if entry.clock_out else None,
+        "duration_minutes": entry.duration_minutes,
+        "entry_type": entry.entry_type,
+        "hourly_rate": _to_float(entry.hourly_rate) if entry.hourly_rate is not None else None,
+    }
+
+
+def _refuse_if_locked(row: TimeEntry) -> None:
+    """A day row an invoice has claimed is that invoice's labor evidence
+    (core/closeout_billing.py). Editing or deleting it would leave the invoice
+    billing hours the record no longer shows, so refuse until the invoice
+    releases it (void, delete, or removing its attested labor line).
+
+    A day-closed row is refused too, billed or not: day close attests it, and
+    billing reads exactly those rows (day_row_clauses). Editing one would
+    change attested hours, and giving minutes to the 0-minute timer day close
+    shut unvouched would bill labor already recorded on that day's own row.
+
+    Every other row that is not office-entered ("manual", the only type this
+    router writes) is refused as well. A job timer belongs to the tech's clock
+    and day close (services/day_close.is_candidate reads exactly these rows):
+    giving it a clock_out or minutes here makes that tech's day close refuse
+    them as having no open time. A final closeout with no arrival timer writes
+    its attested row as "work" (routers/jobs.py, CLOSEOUT_LABOR_NOTE): that
+    day bills from the closeout record, so an edit here would split job
+    costing from the invoice, and the next re-closeout rewrites the row in
+    place anyway. The column DEFAULTS to "manual" (tenant_models), so the type
+    alone fails open for a writer that omits it, or an old row whose type was
+    rewritten: a row carrying a user_id is a tech's own time (payroll's summary
+    and jobs.py's user-less-row rule both key on it), and this router never
+    sets one, so that row is refused whatever its type. Day close and the
+    invoice claim stamp only non-manual rows, so the billed and day-closed
+    checks are a backstop and no check-then-commit race remains to lock
+    against."""
+    if row.billed_invoice_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This time entry is billed on an invoice; void or edit the invoice first.",
+        )
+    if row.day_closed_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This time entry was closed by day close; its hours are that day's attested labor.",
+        )
+    if row.entry_type != "manual" or row.user_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This is the tech's own time (clock or closeout); correct it through their closeout, not here.",
+        )
 
 
 def _get_job_or_404(db: Session, job_id: UUID) -> Job:
@@ -289,7 +376,7 @@ def create_job_time_entry(
         clock_in=payload_clock_in,
         clock_out=payload_clock_out,
         duration_minutes=_duration_minutes(payload_clock_in, payload_clock_out),
-        entry_type=payload.entry_type.strip(),
+        entry_type="manual",
         hourly_rate=_resolve_hourly_rate(db, payload.tech_id.strip()),
     )
     db.add(row)
@@ -312,7 +399,7 @@ def create_job_time_entry(
                 action="create_job_time_entry",
                 entity_type="job_time_entry",
                 entity_id=str(job_id),
-                details={},
+                details={"time_entry_id": str(row.id), "after": _audit_fields(row)},
                 request=_audit_req,
             )
             _audit_db.commit()
@@ -333,8 +420,15 @@ def update_time_entry(
     row = db.get(TimeEntry, entry_id)
     if not row or row.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Time entry not found")
+    _refuse_if_locked(row)
+    before = _audit_fields(row)
 
     updates = payload.model_dump(exclude_unset=True)
+    if "clock_in" in updates and updates["clock_in"] is None:
+        raise HTTPException(status_code=422, detail="clock_in cannot be empty")
+    if "clock_out" in updates and updates["clock_out"] is None:
+        # An open row is a running timer; office-entered hours always close.
+        raise HTTPException(status_code=422, detail="clock_out cannot be empty")
     clock_in = _as_utc(updates.get("clock_in", row.clock_in))
     clock_out = _as_utc(updates.get("clock_out", row.clock_out))
     if clock_in and clock_out and clock_out <= clock_in:
@@ -350,11 +444,6 @@ def update_time_entry(
         row.clock_in = _as_utc(updates["clock_in"])
     if "clock_out" in updates:
         row.clock_out = _as_utc(updates["clock_out"])
-    if "entry_type" in updates:
-        entry_type = (updates["entry_type"] or "").strip()
-        if not entry_type:
-            raise HTTPException(status_code=422, detail="entry_type cannot be empty")
-        row.entry_type = entry_type
 
     row.duration_minutes = _duration_minutes(row.clock_in, row.clock_out)
     row.updated_at = datetime.now(UTC)
@@ -376,7 +465,7 @@ def update_time_entry(
                 action="update_time_entry",
                 entity_type="time_entry",
                 entity_id=str(entry_id),
-                details={},
+                details={"job_id": str(row.job_id), "before": before, "after": _audit_fields(row)},
                 request=_audit_req,
             )
             _audit_db.commit()
@@ -396,6 +485,7 @@ def delete_time_entry(
     row = db.get(TimeEntry, entry_id)
     if not row or row.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Time entry not found")
+    _refuse_if_locked(row)
     now = datetime.now(UTC)
     row.deleted_at = now
     row.updated_at = now
@@ -416,7 +506,7 @@ def delete_time_entry(
                 action="delete_time_entry",
                 entity_type="time_entry",
                 entity_id=str(entry_id),
-                details={},
+                details={"job_id": str(row.job_id), "before": _audit_fields(row)},
                 request=_audit_req,
             )
             _audit_db.commit()

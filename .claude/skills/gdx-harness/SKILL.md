@@ -21,8 +21,16 @@ Moved here from `CLAUDE.md` on 2026-10-11 so it loads when a session needs it, n
   while the `pull_request` trigger has none, so a docs-only PR runs the full
   suite and a docs-only push to main does not. Verified against
   `.github/workflows/ci.yml` 2026-09-01.
-- Main is merge-protected; `--admin` merge is the sanctioned path, but only
-  after enumerating every check's result by name.
+- **The merge path is the ruleset plus auto-merge, not a hand merge.** Ruleset
+  18005412 ("Branch Safety", active) requires 12 status checks on `main`, and
+  `.github/workflows/auto-merge.yml` turns on squash auto-merge for every
+  same-repo PR the moment it is opened or marked ready for review, so GitHub
+  merges it once those checks are green. Marking a PR ready is the approval
+  step. The ruleset does not require the branch to be up to date. `--admin` skips
+  that gate (repository-role bypass is `always`), so it is kept only for when
+  auto-merge cannot act: a fork PR, or a required check that is broken
+  independently of the PR. Even then, use it only after enumerating every
+  check's result by name. Ruleset and workflow read 2026-10-14.
 - **Run the matrix with `gdx_dispatch/tools/run_tests_split.sh` (N=7), and
   never with `--network host`** — the host network breaks ~15 tests. The cost
   of leaving it off is that the Postgres arm goes **silently SKIPped** (102

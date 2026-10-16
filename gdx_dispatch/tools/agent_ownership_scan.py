@@ -91,6 +91,9 @@ COVERED_ROOTS = (
     # The area rules load into every agent's context when it touches a file in
     # that area, so they rot like any present-tense doc (GDXA-966).
     ".claude/rules/",
+    # The skills carry the harness facts (merge path, matrix runner) the agents
+    # act on; gdx-harness/SKILL.md sat UNOWNED until GDXA-1054.
+    ".claude/skills/",
 )
 
 # Repo-root files where every match must have an owner. The root cannot be a

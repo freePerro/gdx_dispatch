@@ -882,7 +882,14 @@
         data-testid="dispatch-duration-prompt"
         @hide="onDurationPromptHide"
       >
-        <p style="margin-top:0;">
+        <p v-if="durationPromptEstimate" style="margin-top:0;" data-testid="dispatch-duration-prompt-from-estimate">
+          <strong>{{ durationPromptJobLabel }}</strong> has no scheduled time yet.
+          The {{ durationPromptEstimate.accepted ? 'accepted' : 'not yet accepted' }}
+          estimate has {{ durationPromptEstimate.manHours }} man-hours; the hours below
+          are that over a crew of {{ durationPromptEstimate.crew }}.
+          Change them if you know better.
+        </p>
+        <p v-else style="margin-top:0;">
           <strong>{{ durationPromptJobLabel }}</strong> has no estimated time yet.
           A quick guess keeps the day's total accurate.
         </p>
@@ -1319,7 +1326,18 @@ watch(closeoutOpen, async (v) => {
 });
 
 const selectedDate = ref(new Date());
-const viewMode = ref('day');
+// Day or Week survives a reload, as the compact toggle does (COMPACT_KEY).
+const VIEW_MODE_KEY = 'gdx.dispatch.viewMode';
+function readViewMode() {
+  try {
+    const v = window.localStorage.getItem(VIEW_MODE_KEY);
+    return v === 'week' ? 'week' : 'day';
+  } catch { return 'day'; }
+}
+const viewMode = ref(readViewMode());
+watch(viewMode, (v) => {
+  try { window.localStorage.setItem(VIEW_MODE_KEY, v); } catch { /* private mode */ }
+});
 const viewOptions = [
   { label: 'Day', value: 'day' },
   { label: 'Week', value: 'week' },
@@ -1387,6 +1405,9 @@ const durationPromptJobId = ref(null);
 const durationPromptTechId = ref(null);
 const durationPromptHours = ref('');
 const durationPromptJobLabel = ref('');
+// Set when the hours were prefilled from the job's estimate:
+// { manHours, crew, accepted }. null = blank prompt.
+const durationPromptEstimate = ref(null);
 // Sprint dispatch-timeline (2026-05-21) — carry the timeline-drop target
 // time through the prompt so confirm/skip both reach _doAssignJob with
 // the slot the user clicked, not just the tech they dropped on.
@@ -1456,6 +1477,9 @@ function normalizeTech(tech) {
     id: String(tech.id),
     name: tech.name || tech.user_id || `Tech ${tech.id}`,
     skills: normalizeSkills(tech.skills),
+    // assignableTechnicians and the column/row filters read this; dropping it
+    // made every inactive tech pickable (GDXA-1255).
+    active: tech.active !== false,
     // Sprint dispatch-capacity (2026-05-20) — effective shift values
     // (server already resolved user-override → tenant default per-field).
     effective_shift_start: tech.effective_shift_start || null,
@@ -2330,9 +2354,19 @@ async function onWeekCellDrop(event, techId, dayStr) {
   if (source?.technician_id && !crew.includes(String(source.technician_id))) crew.push(String(source.technician_id));
   const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
   if (source && onCrew) {
+    const datePatch = { scheduled_at: iso };
+    // An undated job with no hours gets the hours question placeCrewJob asks,
+    // or it lands in the tech's day uncounted in capacity; closing it moves
+    // nothing. The "No tech" row has no capacity, so it is exempt, as
+    // _needsDurationPrompt exempts techId=null.
+    if (techId && !source.scheduled_at && !jobHasDuration(source)) {
+      const hours = await askDurationFor(source);
+      if (hours === null) return;
+      if (hours > 0) datePatch.scheduled_duration_hours = hours;
+    }
     await withBoardWrite(async () => {
       try {
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso });
+        await api.patch(`/api/jobs/${jobId}`, datePatch);
       } catch { /* api composable already toasts */ }
       await fetchJobs();
     });
@@ -2392,7 +2426,7 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
     // An undated job landing in its crew's day for the first time gets the
     // hours question a one-tech pick gets; a time move of a dated job doesn't.
     if (!job.scheduled_at && !jobHasDuration(job)) {
-      const hours = await askDurationFor(job);
+      const hours = await askDurationFor(job, crew.length);
       if (hours === null) return true;
       if (hours > 0) datePatch.scheduled_duration_hours = hours;
     }
@@ -2413,7 +2447,7 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
   // A swap or add puts the job in a new tech's day, so it gets the same
   // duration question a one-tech drop does (assignJob); closing it cancels.
   if (!jobHasDuration(job)) {
-    const hours = await askDurationFor(job);
+    const hours = await askDurationFor(job, choice.tech_ids?.length);
     if (hours === null) return true;
     if (hours > 0) patch.scheduled_duration_hours = hours;
   }
@@ -2467,7 +2501,8 @@ function jobHasDuration(job) {
 // its own crew PATCH: it waits on this instead of the prompt assigning.
 // Resolves the hours, 0 for Skip, or null when the dialog is closed.
 let durationPromptAfter = null;
-function askDurationFor(job) {
+// crewSize = how many techs the job will have once this drop saves.
+function askDurationFor(job, crewSize) {
   if (durationPromptAfter) durationPromptAfter(null);
   durationPromptJobId.value = job.id;
   durationPromptTechId.value = null;
@@ -2475,7 +2510,38 @@ function askDurationFor(job) {
   durationPromptHours.value = '';
   durationPromptJobLabel.value = job.customer_name || job.title || 'Job';
   durationPromptOpen.value = true;
+  prefillDurationFromEstimate(job.id, crewSize);
   return new Promise((resolve) => { durationPromptAfter = resolve; });
+}
+
+// The list endpoint leaves estimate man-hours out (N+1 on the board's hot
+// path), so ask for this one job when its prompt opens. A suggestion only:
+// nothing is written until Save. The hours are the estimate's man-hours over
+// the crew this drop creates, not the endpoint's duration_minutes: the prompt
+// opens before the assignment saves, so the server would divide by the crew
+// as it stands (or the labor row's default crew), not by who is being placed.
+// A failed or empty answer leaves the prompt blank, and a late answer never
+// overwrites what the scheduler typed or a prompt opened since.
+let durationPrefillSeq = 0;
+async function prefillDurationFromEstimate(jobId, crewSize) {
+  const seq = ++durationPrefillSeq;
+  durationPromptEstimate.value = null;
+  let s;
+  try {
+    s = await api.get(`/api/jobs/${encodeURIComponent(jobId)}/suggested-duration`,
+      { suppressErrorToast: true });
+  } catch (_e) {
+    return;
+  }
+  const manHours = Number(s?.man_hours);
+  if (!(manHours > 0)) return;
+  if (seq !== durationPrefillSeq || !durationPromptOpen.value) return;
+  if (durationPromptHours.value !== '') return;
+  const crew = Math.max(1, Number(crewSize) || 1);
+  durationPromptHours.value = String(Math.max(0.25, Math.ceil((manHours / crew) * 4) / 4));
+  durationPromptEstimate.value = {
+    manHours, crew, accepted: s.estimate_status === 'accepted',
+  };
 }
 
 function onDurationPromptHide() {
@@ -2540,6 +2606,8 @@ async function assignJob(jobId, techId, scheduledAt = null) {
       || jobNeedingDuration.title
       || 'Job';
     durationPromptOpen.value = true;
+    // A one-tech assignment: the dropped tech does the hours alone.
+    prefillDurationFromEstimate(jobId, 1);
     return;
   }
   await _doAssignJob(jobId, techId, scheduledAt);
@@ -3256,6 +3324,8 @@ defineExpose({
   durationPromptJobId,
   durationPromptTechId,
   durationPromptScheduledAt,
+  durationPromptHours,
+  durationPromptEstimate,
 });
 </script>
 
