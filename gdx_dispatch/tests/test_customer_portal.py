@@ -133,7 +133,7 @@ def _get_user(db, user_id):
 
 
 def _decode_portal_jwt(token: str) -> dict:
-    return jwt.decode(token, portal_router.VERIFY_KEY, algorithms=[portal_router.ALG])
+    return jwt.decode(token, portal_router.VERIFY_KEY, algorithms=[portal_router.ALG], audience=portal_router.PORTAL_AUDIENCE)
 
 
 def test_module_gate_requires_customer_portal():
@@ -181,7 +181,7 @@ def test_verify_valid_token_returns_jwt(tenant_db_session):
 
     payload = portal_router.portal_verify(token="valid-token", request=_mock_request(), db=tenant_db_session)
     assert payload["token_type"] == "bearer"
-    claims = jwt.decode(payload["access_token"], portal_router.VERIFY_KEY, algorithms=[portal_router.ALG])
+    claims = jwt.decode(payload["access_token"], portal_router.VERIFY_KEY, algorithms=[portal_router.ALG], audience=portal_router.PORTAL_AUDIENCE)
     assert claims["role"] == "customer"
     assert claims["customer_id"] == str(seeded["customer_a_id"])
 
