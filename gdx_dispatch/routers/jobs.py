@@ -809,11 +809,13 @@ def list_jobs(
     # LIST endpoint is the scheduler-entered hours only. We DELIBERATELY
     # do NOT call compute_man_hour_duration_minutes here — that helper
     # runs 2-3 queries per job and the list endpoint is the dispatch
-    # board's hot path. Estimate-derived fallback lives on the per-job
-    # detail endpoint (`/api/jobs/{id}/duration`) when a single job's
-    # value is needed. "?h" on the board is correct: it means "scheduler
-    # hasn't put a number on this yet", which is the signal the drop
-    # prompt + create dialog are built to capture. /audit 2026-05-21 — N+1.
+    # board's hot path. The estimate-derived figure is per job, from
+    # `/api/jobs/{id}/suggested-duration` (routers/appointments.py): the
+    # board's drop prompt fetches it to prefill its hours (GDXA-1262).
+    # (`/api/jobs/{id}/duration` is time actually worked, not this.) "?h"
+    # on the board is correct: it means "scheduler hasn't put a number on
+    # this yet", which is the signal the drop prompt + create dialog are
+    # built to capture. /audit 2026-05-21 — N+1.
 
     # Effective jobsite per row (core/job_site.py, one batch — no N+1 on
     # the dispatch-board hot path). The raw SELECT's location_label/

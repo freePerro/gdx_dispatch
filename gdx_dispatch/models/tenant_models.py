@@ -450,8 +450,10 @@ class Job(Base):
     signed_by: Mapped[str] = mapped_column(String(200), nullable=True)
     # Sprint dispatch-capacity (2026-05-20) — the scheduler's expected
     # duration in decimal hours. Distinct from estimate-derived duration
-    # (compute_man_hour_duration_minutes). The dispatch board prefers this
-    # when set; falls back to estimate-derived; surfaces "?h" if both NULL.
+    # (compute_man_hour_duration_minutes). The dispatch board shows only
+    # this (or "?h" when NULL); the estimate-derived figure is offered as a
+    # prefill in the board's drop prompt, and is written here only when
+    # the scheduler saves it.
     # Tracked against JobCloseout.hours_worked for the per-tech efficiency
     # report (foundation for bonus structure).
     scheduled_duration_hours: Mapped[Decimal | None] = mapped_column(

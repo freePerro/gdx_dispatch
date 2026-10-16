@@ -301,6 +301,94 @@ describe("DispatchView — duration prompt gate", () => {
     expect(patchMock).not.toHaveBeenCalled();
   });
 
+  // GDXA-1262 — the prompt prefills from the estimate's man-hours via the
+  // one-job suggested-duration endpoint; nothing is written until Save.
+  function withSuggestion(answer) {
+    const base = getMock.getMockImplementation();
+    getMock.mockImplementation((url) => {
+      if (String(url).includes('/suggested-duration')) {
+        return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+      }
+      return base(url);
+    });
+  }
+
+  it("prefills one tech's day with the estimate's full man-hours and says so", async () => {
+    setupBoard({ scheduled_duration_hours: null, effective_duration_hours: null });
+    // duration_minutes is the server's figure over the labor row's default
+    // crew (2 here); a one-tech drop must not take half of it.
+    withSuggestion({ job_id: "101", estimate_status: "accepted", man_hours: 6, crew_size: 1, duration_minutes: 180 });
+    const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });
+    await flushAll();
+    await wrapper.vm.assignJob(101, "tech-1");
+    await flushAll();
+    expect(getMock).toHaveBeenCalledWith("/api/jobs/101/suggested-duration", { suppressErrorToast: true });
+    expect(wrapper.vm.durationPromptOpen).toBe(true);
+    expect(wrapper.vm.durationPromptHours).toBe("6");
+    const note = wrapper.find('[data-testid="dispatch-duration-prompt-from-estimate"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain("accepted estimate has 6 man-hours");
+    expect(note.text()).not.toContain("not yet accepted");
+    expect(note.text()).toContain("crew of 1");
+    expect(patchMock).not.toHaveBeenCalled();
+    await wrapper.vm.confirmDurationPrompt(false);
+    await flushAll();
+    expect(patchMock.mock.calls[0]).toEqual(["/api/jobs/101", { scheduled_duration_hours: 6 }]);
+  });
+
+  it("rounds up to the quarter hour and names an estimate that is not yet accepted", async () => {
+    setupBoard({ scheduled_duration_hours: null, effective_duration_hours: null });
+    withSuggestion({ job_id: "101", estimate_status: "sent", man_hours: 1.1, crew_size: 1, duration_minutes: 75 });
+    const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });
+    await flushAll();
+    await wrapper.vm.assignJob(101, "tech-1");
+    await flushAll();
+    expect(wrapper.vm.durationPromptHours).toBe("1.25");
+    expect(wrapper.find('[data-testid="dispatch-duration-prompt-from-estimate"]').text()).toContain("not yet accepted");
+  });
+
+  it("leaves the prompt blank when the job has no estimate", async () => {
+    setupBoard({ scheduled_duration_hours: null, effective_duration_hours: null });
+    withSuggestion({ job_id: "101", estimate_id: null, man_hours: null, crew_size: 1, duration_minutes: null });
+    const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });
+    await flushAll();
+    await wrapper.vm.assignJob(101, "tech-1");
+    await flushAll();
+    expect(wrapper.vm.durationPromptOpen).toBe(true);
+    expect(wrapper.vm.durationPromptHours).toBe("");
+    expect(wrapper.vm.durationPromptEstimate).toBe(null);
+    expect(wrapper.find('[data-testid="dispatch-duration-prompt-from-estimate"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("has no estimated time yet");
+  });
+
+  it("leaves the prompt blank when the suggestion request fails", async () => {
+    setupBoard({ scheduled_duration_hours: null, effective_duration_hours: null });
+    withSuggestion(new Error("500"));
+    const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });
+    await flushAll();
+    await wrapper.vm.assignJob(101, "tech-1");
+    await flushAll();
+    expect(wrapper.vm.durationPromptOpen).toBe(true);
+    expect(wrapper.vm.durationPromptHours).toBe("");
+  });
+
+  it("a late suggestion never overwrites hours the scheduler already typed", async () => {
+    setupBoard({ scheduled_duration_hours: null, effective_duration_hours: null });
+    let release;
+    const base = getMock.getMockImplementation();
+    getMock.mockImplementation((url) => (String(url).includes('/suggested-duration')
+      ? new Promise((r) => { release = () => r({ man_hours: 6, duration_minutes: 180 }); })
+      : base(url)));
+    const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });
+    await flushAll();
+    await wrapper.vm.assignJob(101, "tech-1");
+    wrapper.vm.durationPromptHours = "1.5";
+    release();
+    await flushAll();
+    expect(wrapper.vm.durationPromptHours).toBe("1.5");
+    expect(wrapper.vm.durationPromptEstimate).toBe(null);
+  });
+
   it("bypasses the duration prompt when scheduled_duration_hours is set", async () => {
     setupBoard({ scheduled_duration_hours: 2.0 });
     const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });

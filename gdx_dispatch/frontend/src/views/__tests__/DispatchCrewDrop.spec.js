@@ -333,6 +333,38 @@ describe("DispatchView — crew-safe drops", () => {
       expect(body).not.toHaveProperty("scheduled_duration_hours");
     });
 
+    // GDXA-1262 — the prefill is the estimate's man-hours over the crew the
+    // drop creates, not the crew as it stood before the answer.
+    function withEstimate(manHours) {
+      const base = getMock.getMockImplementation();
+      getMock.mockImplementation((url) => (String(url).includes("/suggested-duration")
+        ? Promise.resolve({ man_hours: manHours, estimate_status: "accepted", crew_size: 2, duration_minutes: 180 })
+        : base(url)));
+    }
+
+    it("prefills the estimate's man-hours over the new crew: Add makes three", async () => {
+      boardRows = [NO_EST, SOLO];
+      const w = await mountBoard();
+      withEstimate(6);
+      await dayDrop(w, NO_EST, "tech-2", "tech-3");
+      await w.find('[data-testid="crew-change-add"]').trigger("click");
+      await flushAll();
+      expect(w.vm.$.setupState.durationPromptHours).toBe("2");
+      expect(w.find('[data-testid="dispatch-duration-prompt-from-estimate"]').text()).toContain("crew of 3");
+      expect(patchMock).not.toHaveBeenCalled();
+    });
+
+    it("prefills the estimate's man-hours over the new crew: Swap keeps two", async () => {
+      boardRows = [NO_EST, SOLO];
+      const w = await mountBoard();
+      withEstimate(6);
+      await swapIn(w);
+      expect(w.vm.$.setupState.durationPromptHours).toBe("3");
+      await w.find('[data-testid="dispatch-duration-prompt-save"]').trigger("click");
+      await flushAll();
+      expect(jobPatches()[0][1]).toMatchObject({ scheduled_duration_hours: 3 });
+    });
+
     it("moves nothing when the duration question is closed", async () => {
       boardRows = [NO_EST, SOLO];
       const w = await mountBoard();
