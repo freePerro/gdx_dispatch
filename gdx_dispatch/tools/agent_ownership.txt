@@ -573,6 +573,7 @@ gdx_dispatch/routers/push.py                                 comms-email-phone
 gdx_dispatch/routers/messages.py                             comms-email-phone
 gdx_dispatch/routers/inbound_comms.py                        comms-email-phone
 gdx_dispatch/routers/outbound_emails.py                      comms-email-phone
+gdx_dispatch/routers/email_attachments.py                    comms-email-phone
 gdx_dispatch/routers/email_settings.py                       comms-email-phone
 gdx_dispatch/routers/outlook_oauth.py                        comms-email-phone
 gdx_dispatch/routers/phone_com_settings.py                   comms-email-phone
@@ -583,6 +584,7 @@ gdx_dispatch/core/email_norm.py                              comms-email-phone
 gdx_dispatch/core/email_recipients.py                        comms-email-phone
 gdx_dispatch/core/email_sender.py                            comms-email-phone
 gdx_dispatch/core/transactional_email.py                     comms-email-phone
+gdx_dispatch/core/email_attachments.py                       comms-email-phone
 gdx_dispatch/core/inbound_email_auth.py                      comms-email-phone
 gdx_dispatch/core/office_notifications.py                    comms-email-phone
 gdx_dispatch/core/push_notifications.py                      comms-email-phone
@@ -602,6 +604,7 @@ gdx_dispatch/frontend/src/composables/useSmsPhotos.js       comms-email-phone
 gdx_dispatch/frontend/src/views/OutboundEmailLogView.vue     comms-email-phone
 gdx_dispatch/frontend/src/views/admin/OutlookSettingsView.vue comms-email-phone
 gdx_dispatch/frontend/src/components/EmailAttachments.vue    comms-email-phone
+gdx_dispatch/frontend/src/components/EmailAttachmentPicker.vue comms-email-phone
 gdx_dispatch/frontend/src/components/EmailBodyFrame.vue      comms-email-phone
 gdx_dispatch/frontend/src/components/EmailTimeline.vue       comms-email-phone
 gdx_dispatch/frontend/src/components/OutlookConnectButton.vue comms-email-phone

@@ -10,6 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
+const toastAdd = vi.fn();
+vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAdd }) }));
+
 import InboxView from '../InboxView.vue';
 import { useAuthStore } from '../../stores/auth';
 
@@ -229,6 +232,27 @@ describe('InboxView — reply-all + forward (1.4)', () => {
     const fwd = calls.find((c) => c.url.includes('/forward'));
     expect(fwd.method).toBe('POST');
     expect(fwd.body.to).toEqual(['sub@vendor.com']);
+  });
+});
+
+describe('InboxView — a forward Outlook did not confirm', () => {
+  it('shows the reason inside the dialog, with no generic "try again" toast', async () => {
+    const UNCONFIRMED = "Outlook didn't confirm the forward — check Sent Items before trying again, it may already have gone.";
+    const wrapper = await mountAndOpen();
+    await wrapper.find('[data-test="inbox-forward"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-test="forward-to"]').setValue('sub@vendor.com');
+    const base = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url, init) => (url.includes('/forward')
+      ? mkResponse({ detail: UNCONFIRMED }, { ok: false, status: 502 })
+      : base(url, init)));
+    toastAdd.mockClear();
+    await wrapper.find('[data-test="forward-send"]').trigger('click');
+    await flushPromises();
+    // Inside the dialog, not on the page line behind the modal.
+    expect(wrapper.find('[data-test="forward-error"]').text()).toBe(UNCONFIRMED);
+    expect(wrapper.find('.status-error:not([data-test])').exists()).toBe(false);
+    expect(toastAdd).not.toHaveBeenCalled();
   });
 });
 

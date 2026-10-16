@@ -253,6 +253,7 @@ GET /api/documents/{document_id}
 GET /api/documents/{document_id}/download
 GET /api/door-listings
 GET /api/door-listings/{listing_id}
+GET /api/email-attachments/sources
 GET /api/estimates
 GET /api/estimates-features
 GET /api/estimates/analytics/conversion-rate

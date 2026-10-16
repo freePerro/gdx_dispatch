@@ -17,7 +17,8 @@ const apiPatch = vi.fn();
 vi.mock('../../composables/useApi', () => ({
   useApi: () => ({ get: apiGet, post: apiPost, patch: apiPatch, put: vi.fn(), del: vi.fn() }),
 }));
-vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
+const toastAdd = vi.fn();
+vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAdd }) }));
 // The lead-intake button's permission check; these specs don't mount Pinia.
 vi.mock('../../composables/usePermission', () => ({ usePermission: () => ({ hasPermission: () => false }) }));
 
@@ -330,6 +331,22 @@ describe('MobileInboxView P1/P2 surfaces', () => {
     expect(body.to).toEqual(['sub@vendor.com']);
   });
 
+  it('a forward that loses the connection says it may have gone, with no generic toast', async () => {
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-test="mi-msg-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-test="mi-forward-open"]').trigger('click');
+    await typeInto(w, 'mi-forward-to', 'sub@vendor.com');
+    apiPost.mockClear().mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    toastAdd.mockClear();
+    await w.find('[data-test="mi-forward-send"]').trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls[0][2].suppressErrorToast({ status: 502 })).toBe(true);
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+    expect(toastAdd.mock.calls[0][0].detail).toContain('Check Sent Items');
+  });
+
   it('create task posts to create-task for the open message', async () => {
     const w = mountView();
     await flushPromises();
@@ -353,5 +370,159 @@ describe('MobileInboxView P1/P2 surfaces', () => {
     const body = w.find('[data-test="mi-reply-body"]').element.value;
     expect(body.startsWith('We can be there Tuesday.')).toBe(true);
     expect(body).toContain('alice@example.com wrote:');
+  });
+});
+
+describe('MobileInboxView attachments', () => {
+  // The picker is its own spec; here it is a stub that reports the context it
+  // was given and hands back one estimate and one device file when tapped.
+  const PICKED = [
+    { kind: 'estimate_pdf', id: 'e-1', name: 'Estimate E-1' },
+    { kind: 'upload', name: 'door.jpg', content_type: 'image/jpeg', content_base64: 'QQ==', size_bytes: 1 },
+  ];
+  const Picker = {
+    props: ['modelValue', 'jobId', 'customerId', 'disabled'],
+    emits: ['update:modelValue'],
+    template: '<button data-test="pick" :data-job="jobId" :data-customer="customerId" @click="$emit(\'update:modelValue\', items)">pick</button>',
+    data: () => ({ items: PICKED }),
+  };
+  const MSG = {
+    id: 'm-1', subject: 'Quote', from_address: 'alice@example.com', received_at: '2026-10-01T00:00:00Z',
+    body_preview: 'hi', is_read: true, linked_customer_id: 'c-1', linked_job_id: 'j-1', viewer_is_owner: true,
+  };
+  const REFS = [
+    { kind: 'estimate_pdf', id: 'e-1' },
+    { kind: 'upload', name: 'door.jpg', content_type: 'image/jpeg', content_base64: 'QQ==' },
+  ];
+
+  function mountWithPicker() {
+    return mount(MobileInboxView, { global: { stubs: { ...stubs, EmailAttachmentPicker: Picker }, directives: { tooltip: {} } } });
+  }
+
+  async function openMessage(w) {
+    await flushPromises();
+    await w.find('[data-test="mi-msg-row"]').trigger('click');
+    await flushPromises();
+  }
+
+  beforeEach(() => {
+    apiGet.mockReset().mockImplementation(async (url) => {
+      if (url.includes('/thread')) return [MSG];
+      if (url.includes('/body')) return { fetched: true, content_type: 'text', body_html: 'hi' };
+      if (url.includes('/api/outlook/messages?')) return { items: [MSG], has_more: false, next_offset: 1 };
+      return MSG;
+    });
+    apiPost.mockReset().mockResolvedValue({ ok: true });
+  });
+
+  it('a new message sends its picks as attachment_refs', async () => {
+    const w = mountWithPicker();
+    await flushPromises();
+    await w.find('[data-test="mi-compose"]').trigger('click');
+    await typeInto(w, 'mi-compose-to', 'a@x.com');
+    await typeInto(w, 'mi-compose-subject', 'Options');
+    await typeInto(w, 'mi-compose-body', 'Both quotes attached');
+    await w.find('[data-test="pick"]').trigger('click');
+    await w.find('[data-test="mi-compose-send"]').trigger('click');
+    await flushPromises();
+    const [url, payload] = apiPost.mock.calls[0];
+    expect(url).toBe('/api/outlook/send');
+    expect(payload.attachment_refs).toEqual(REFS);
+  });
+
+  it('a reply scopes the picker to the linked job and customer and sends the picks', async () => {
+    const w = mountWithPicker();
+    await openMessage(w);
+    await w.find('[data-test="mi-reply-open"]').trigger('click');
+    const pick = w.find('[data-test="pick"]');
+    expect(pick.attributes('data-job')).toBe('j-1');
+    expect(pick.attributes('data-customer')).toBe('c-1');
+    await pick.trigger('click');
+    await w.find('[data-test="mi-reply-send"]').trigger('click');
+    await flushPromises();
+    const [, payload] = apiPost.mock.calls[0];
+    expect(payload.in_reply_to).toBe('m-1');
+    expect(payload.attachment_refs).toEqual(REFS);
+  });
+
+  it('a forward carries added files alongside the originals', async () => {
+    const w = mountWithPicker();
+    await openMessage(w);
+    await w.find('[data-test="mi-forward-open"]').trigger('click');
+    await typeInto(w, 'mi-forward-to', 'sub@vendor.com');
+    await w.find('[data-test="pick"]').trigger('click');
+    expect(w.text()).toContain('plus the files added here');
+    await w.find('[data-test="mi-forward-send"]').trigger('click');
+    await flushPromises();
+    const [url, payload] = apiPost.mock.calls[0];
+    expect(url).toBe('/api/outlook/messages/m-1/forward');
+    expect(payload.attachment_refs).toEqual(REFS);
+  });
+
+  it('send is blocked while the picks are over the email limit', async () => {
+    const w = mountWithPicker();
+    await flushPromises();
+    await w.find('[data-test="mi-compose"]').trigger('click');
+    await typeInto(w, 'mi-compose-to', 'a@x.com');
+    await typeInto(w, 'mi-compose-subject', 'Big');
+    await typeInto(w, 'mi-compose-body', 'x');
+    w.findComponent(Picker).vm.$emit('update:modelValue', [{ kind: 'upload', name: 'big', size_bytes: 19_000_000 }]);
+    await flushPromises();
+    expect(w.find('[data-test="mi-compose-send"]').attributes('disabled')).toBeDefined();
+  });
+});
+
+
+describe('MobileInboxView send that Outlook did not confirm', () => {
+  const UNCONFIRMED = "Outlook didn't confirm the send — check Sent Items before trying again, it may already have gone.";
+
+  beforeEach(() => {
+    apiGet.mockReset().mockResolvedValue([]);
+    apiPost.mockReset().mockRejectedValue(Object.assign(new Error(UNCONFIRMED), { status: 502 }));
+    toastAdd.mockReset();
+  });
+
+  it('shows the server reason and no generic "try again" toast', async () => {
+    // A generic "Please try again" beside "it may already have gone" invites
+    // the duplicate send; the call opts out of it and shows the reason itself.
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-test="mi-compose"]').trigger('click');
+    await typeInto(w, 'mi-compose-to', 'a@x.com');
+    await typeInto(w, 'mi-compose-subject', 'Hi');
+    await typeInto(w, 'mi-compose-body', 'body');
+    await w.find('[data-test="mi-compose-send"]').trigger('click');
+    await flushPromises();
+
+    const { suppressErrorToast } = apiPost.mock.calls[0][2];
+    expect(suppressErrorToast({ status: 502 })).toBe(true);
+    expect(suppressErrorToast({ status: 401 })).toBe(false); // expired session still reaches login
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+    const shown = toastAdd.mock.calls[0][0];
+    expect(shown.detail).toBe(UNCONFIRMED);
+    expect(shown.summary).not.toMatch(/failed/i);
+  });
+
+  it('a reply opts out of the generic toast too', async () => {
+    apiGet.mockImplementation((url) => {
+      if (url.includes('/sync-health')) return Promise.resolve({ status: 'healthy', problems: [] });
+      if (url.includes('/messages/m1/body')) return Promise.resolve({ fetched: false, reason: 'graph_error' });
+      if (url.includes('/messages/m1')) {
+        return Promise.resolve({ id: 'm1', subject: 'Quote', from_address: 'cust@x.com', is_read: true, body_preview: 'hi' });
+      }
+      return Promise.resolve([{ id: 'm1', subject: 'Quote', from_address: 'cust@x.com', is_read: true }]);
+    });
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-test="mi-msg-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-test="mi-reply-open"]').trigger('click');
+    await typeInto(w, 'mi-reply-body', 'my reply');
+    await w.find('[data-test="mi-reply-send"]').trigger('click');
+    await flushPromises();
+
+    const sendCall = apiPost.mock.calls.find((c) => c[0] === '/api/outlook/send');
+    expect(sendCall[2].suppressErrorToast({ status: 504 })).toBe(true);
+    expect(toastAdd.mock.calls.at(-1)[0].detail).toBe(UNCONFIRMED);
   });
 });
