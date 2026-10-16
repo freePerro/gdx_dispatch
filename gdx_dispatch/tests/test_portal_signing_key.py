@@ -218,7 +218,12 @@ def test_portal_token_is_refused_by_staff_gates(path, tenant):
 
 def test_portal_token_stamps_no_principal():
     token = portal.issue_customer_access_token(SimpleNamespace(id=uuid4(), customer_id=uuid4()))
-    assert _decode_to_principal(token) is None
+    # The stamp's own decode passes no audience, so it refuses the portal
+    # token before any gate runs; the None below is that refusal.
+    with pytest.raises(jwt.InvalidAudienceError):
+        jwt.decode(token, auth_core.VERIFY_KEY, algorithms=[auth_core.ALG])
+    stamp_request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    assert _decode_to_principal(stamp_request, token) is None
 
 
 # ── a staff-key token that is not a portal access token is refused by the portal ─
