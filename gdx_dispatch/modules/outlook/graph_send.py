@@ -13,7 +13,9 @@ inline budget this module takes the route Microsoft documents for big files:
 3. ``POST /me/messages/{draft}/send``.
 
 If anything fails after the draft exists, the draft is deleted so a failed
-send does not leave a half-built message in the sender's Drafts folder.
+send does not leave a half-built message in the sender's Drafts folder. When
+the failure is our token expiring (a 401), the delete is deferred to
+``with_outlook_client``, which runs it on the refreshed token (GDXA-1321).
 
 Read 2026-10-15:
 - https://learn.microsoft.com/en-us/graph/outlook-large-attachments (updated 2025-08-06)
@@ -173,12 +175,27 @@ def _send_draft(gc: Any, create_path: str, create_body: dict[str, Any] | None,
     draft_id = (resp.json() or {}).get("id")
     if not draft_id:
         raise OutlookGraphAPIError(502, "draft create returned no id", endpoint=create_path)
+    draft_path = f"/me/messages/{draft_id}"
+
+    def _delete_draft(client: Any) -> None:
+        client._request("DELETE", draft_path)
+
     try:
         for att in attachments:
             _attach(gc, draft_id, att)
-    except Exception:
+    except Exception as exc:
+        # A 401 means this client's token is dead, and a DELETE with it would
+        # 401 too: the delete waits for with_outlook_client's refresh instead.
+        if isinstance(exc, OutlookGraphAPIError) and exc.status_code == 401:
+            gc.defer_until_reauth(_delete_draft)
+            raise
         try:
-            gc._request("DELETE", f"/me/messages/{draft_id}")
+            _delete_draft(gc)
+        except OutlookGraphAPIError as del_exc:
+            if del_exc.status_code == 401:
+                gc.defer_until_reauth(_delete_draft)
+            else:
+                log.warning("graph_send: could not delete failed draft %s", draft_id, exc_info=True)
         except Exception:  # noqa: BLE001 — the attach error is the one to surface
             log.warning("graph_send: could not delete failed draft %s", draft_id, exc_info=True)
         raise

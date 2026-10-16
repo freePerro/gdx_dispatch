@@ -9,7 +9,7 @@ the context manager handles proactive refresh + 401-retry transparently.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -173,20 +173,57 @@ def with_outlook_client(
     client = OutlookGraphClient(access_token)
     try:
         yield client
-    except OutlookGraphAPIError as exc:
-        if exc.status_code != 401:
+    except Exception as exc:
+        if not (isinstance(exc, OutlookGraphAPIError) and exc.status_code == 401):
+            # The body failed for another reason, but a cleanup it ran on the
+            # way out may still have hit a 401 and been deferred.
+            if cleanups := client.take_deferred_cleanups():
+                try:
+                    fresh = refresh_user_tokens(control_db, tenant_db, user_id)
+                except Exception:  # noqa: BLE001 — the body's error is the one to surface
+                    log.warning("with_outlook_client: refresh for deferred cleanup failed for %s",
+                                user_id, exc_info=True)
+                    _abandon_deferred(cleanups)
+                else:
+                    _run_deferred(cleanups, fresh)
             raise
         # 401 mid-call: the access token JUST expired. Refresh succeeded ⇒
         # raise OutlookTransientRetry so the caller retries ONCE. If the
         # refresh itself fails, refresh_user_tokens raises
         # OutlookReconnectRequired (terminal — user must reconnect).
         client.close()
+        cleanups = client.take_deferred_cleanups()
         try:
-            refresh_user_tokens(control_db, tenant_db, user_id)
-        except OutlookReconnectRequired:
-            raise  # terminal — caller must surface "reconnect" to user
+            fresh = refresh_user_tokens(control_db, tenant_db, user_id)
+        except Exception:
+            # Reconnect (terminal — caller must surface "reconnect" to user)
+            # or the token endpoint unreachable: either way no usable token.
+            _abandon_deferred(cleanups)
+            raise
+        _run_deferred(cleanups, fresh)
         raise OutlookTransientRetry(
             "access_token expired mid-call; tokens refreshed — retry once"
         ) from exc
     finally:
         client.close()
+
+
+def _run_deferred(cleanups: list[Callable[[OutlookGraphClient], None]], access_token: str) -> None:
+    """Run the cleanups a 401 stopped (graph_send's orphan-draft delete) on a
+    client holding the refreshed token. Best-effort: each failure is logged,
+    and none replaces the error the caller is about to see. One short retry
+    at most, so a throttled cleanup cannot hold the request for minutes."""
+    if not cleanups:
+        return
+    with OutlookGraphClient(access_token, max_retries=1, retry_max_delay_s=5.0) as fresh:
+        for cleanup in cleanups:
+            try:
+                cleanup(fresh)
+            except Exception:  # noqa: BLE001
+                log.warning("with_outlook_client: deferred cleanup failed", exc_info=True)
+
+
+def _abandon_deferred(cleanups: list[Callable[[OutlookGraphClient], None]]) -> None:
+    if cleanups:
+        log.warning("with_outlook_client: no usable token; %d deferred cleanup(s) not run "
+                    "(an orphan draft may remain in Drafts)", len(cleanups))

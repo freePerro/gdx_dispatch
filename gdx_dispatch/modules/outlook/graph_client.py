@@ -80,6 +80,17 @@ class OutlookGraphClient:
         self._max_retries = max_retries
         self._retry_max_delay_s = retry_max_delay_s
         self._sleep = sleep or time.sleep  # injectable for tests
+        # Cleanups a 401 stopped: run by with_outlook_client with a client on
+        # the refreshed token, since this one's token is fixed and dead.
+        self._deferred_cleanups: list[Callable[[OutlookGraphClient], None]] = []
+
+    def defer_until_reauth(self, cleanup: Callable[[OutlookGraphClient], None]) -> None:
+        """Queue ``cleanup(fresh_client)`` to run once the token is refreshed."""
+        self._deferred_cleanups.append(cleanup)
+
+    def take_deferred_cleanups(self) -> list[Callable[[OutlookGraphClient], None]]:
+        cleanups, self._deferred_cleanups = self._deferred_cleanups, []
+        return cleanups
 
     def close(self) -> None:
         self._client.close()
