@@ -161,9 +161,9 @@ def _put_chunk(gc: Any, upload_url: str, chunk: bytes, content_range: str) -> No
     not carry our token. A chunk names its own byte range, so re-sending one
     cannot add a byte twice. What the session answers to a range it already
     holds is undocumented; any error there deletes the draft with nothing
-    sent. A connection that never opened is retried; a read or write timeout
-    is not, because each already cost the full client timeout and stacking
-    them would outlast the proxy in front of the send."""
+    sent. A refused connection fails at once and is retried; no timeout is,
+    connect included, because each already cost the full client timeout and
+    stacking them would outlast the proxy in front of the send."""
     attempt = 0
     while True:
         try:
@@ -173,7 +173,7 @@ def _put_chunk(gc: Any, upload_url: str, chunk: bytes, content_range: str) -> No
                 headers={"Content-Type": "application/octet-stream", "Content-Range": content_range},
             )
         except httpx.HTTPError as exc:
-            if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) and attempt < gc._max_retries:
+            if isinstance(exc, httpx.ConnectError) and attempt < gc._max_retries:
                 delay = min(2.0 ** attempt, gc._retry_max_delay_s)
                 log.warning("graph_send: upload chunk %s failed (%r), retry %d after %.1fs",
                             content_range, exc, attempt + 1, delay)

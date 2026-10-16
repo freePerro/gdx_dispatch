@@ -96,8 +96,9 @@ def _post_sites() -> list[tuple[str, int, bool]]:
     return out
 
 
-def test_no_graph_write_goes_round_the_client_except_the_upload_chunk():
-    # ``_client.put`` in graph_send._put_chunk is the one raw write: the
+def test_no_raw_client_post_put_patch_except_the_upload_chunk():
+    # Sees ``_client.post/put/patch`` only, not ``_client.request`` or an
+    # aliased client. ``_client.put`` in graph_send._put_chunk is the one raw write: the
     # pre-authenticated uploadUrl must not carry our token, and it carries
     # its own retry (test_outlook_graph_send).
     raw = [

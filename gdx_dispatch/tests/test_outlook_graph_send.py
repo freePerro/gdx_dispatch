@@ -270,8 +270,8 @@ def test_a_chunk_put_is_retried_on_the_same_range(answer):
     assert delays == ([7.0] if answer == 429 else [1.0])  # Retry-After honoured
 
 
-def test_a_chunk_put_that_keeps_timing_out_is_a_graph_error_and_the_draft_goes():
-    graph = _ChunkAnswers(*[httpx.ConnectTimeout("down") for _ in range(4)])
+def test_a_chunk_put_that_keeps_being_refused_is_a_graph_error_and_the_draft_goes():
+    graph = _ChunkAnswers(*[httpx.ConnectError("refused") for _ in range(4)])
     with pytest.raises(OutlookGraphAPIError) as caught:
         graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
     assert caught.value.status_code == 504 and caught.value.endpoint == "uploadSession"
@@ -280,10 +280,11 @@ def test_a_chunk_put_that_keeps_timing_out_is_a_graph_error_and_the_draft_goes()
     assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
 
 
-def test_a_chunk_put_read_timeout_is_not_retried():
-    # Each read timeout already cost the full client timeout; four in a row
-    # would outlast the proxy while the worker went on to /send.
-    graph = _ChunkAnswers(httpx.ReadTimeout("slow"))
+@pytest.mark.parametrize("timeout", [httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow")])
+def test_a_chunk_put_timeout_is_not_retried(timeout):
+    # Each timeout already cost the full client timeout; four in a row would
+    # outlast the proxy while the worker went on to /send.
+    graph = _ChunkAnswers(timeout)
     with pytest.raises(OutlookGraphAPIError) as caught:
         graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
     assert caught.value.status_code == 504
