@@ -31,14 +31,14 @@ import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.core.quantities import recorded_quantity, zero_quantity_verdict
-from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobCloseout, JobPartNeeded
+from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, InvoiceLine, Job, JobCloseout, JobPartNeeded
 from gdx_dispatch.modules.proposals.models import Estimate
 
 log = logging.getLogger(__name__)
@@ -205,6 +205,254 @@ def closeout_hours_holder(db: Session, closeout) -> _uuid.UUID | None:
     ).scalar_one_or_none()
 
 
+def closeout_man_hours(closeout) -> Decimal:
+    """``closeout``'s final-day man-hours as billed: hours rounded up to the
+    half hour, times the crew. 0 without a closeout or hours."""
+    from gdx_dispatch.core.billing_lanes import roundup_to_half  # noqa: PLC0415
+
+    hours = Decimal(str(getattr(closeout, "hours_worked", 0) or 0)) if closeout is not None else Decimal(0)
+    if hours <= 0:
+        return Decimal(0)
+    techs = max(1, int(getattr(closeout, "techs_on_site", 1) or 1))
+    return Decimal(str(roundup_to_half(hours))) * techs
+
+
+def closeout_hours_billed_before(db: Session, closeout) -> Decimal:
+    """Man-hours of ``closeout``'s final day that the closeouts it restates
+    already billed (GDXA-890; Doug, 2026-10-13: a restatement bills only the
+    delta while the job stays completed).
+
+    A restatement (``is_restatement``, written while the job was still
+    completed) re-attests the same work, so its hours are a new TOTAL, not new
+    work: 2 h billed and re-closed at 3 h leaves 1 h to bill. The run walks back
+    through ``supersedes_id`` while each row restates the one before it
+    (``_restates``), and stops at the first that does not — a closeout after
+    an uncomplete/reopen is new work, and what was billed before it stays
+    billed and is not netted. The run has
+    billed the SUM of what each row's claim billed (``man_hours_billed``) over
+    the rows a live, non-void invoice still holds; a row nobody holds (never
+    invoiced, or its invoice voided) billed nothing, so voiding one invoice in
+    the run gives back exactly what it billed. 0 for a closeout that restates
+    nothing."""
+    return sum(
+        (_claim_man_hours(db, prior) for prior in _restated_run(db, closeout)
+         if closeout_hours_holder(db, prior) is not None),
+        Decimal(0),
+    )
+
+
+def _restated_run(db: Session, closeout) -> list:
+    """The closeouts ``closeout`` restates, newest first: back through
+    ``supersedes_id`` while each row restates the one before it."""
+    run: list = []
+    seen: set = set()
+    cur = closeout
+    while (
+        cur is not None
+        and getattr(cur, "supersedes_id", None) is not None
+        and cur.supersedes_id not in seen
+    ):
+        prior = db.get(JobCloseout, cur.supersedes_id)
+        if prior is None or not _restates(db, cur, prior):
+            break
+        seen.add(cur.supersedes_id)
+        run.append(prior)
+        cur = prior
+    return run
+
+
+def restatement_credit_targets(db: Session, closeout) -> list[dict]:
+    """Where to credit the hours a restatement lowered below what is already
+    invoiced (GDXA-1184), newest invoice first. Empty when nothing is
+    over-billed, or when it has all been credited already.
+
+    Crediting stays manual (Doug, 2026-10-15): this only says which earlier
+    invoices hold the excess and what a credit for it would be, so the office
+    can open the credit-memo dialog pre-filled. Nothing is written here.
+
+    * The excess is what the run billed less the restated man-hours, but the
+      job keeps its first hour: a service job bills at least 1 h
+      (``billing_lanes.job_labor_lines``), counted over every labor hour the
+      job's live invoices bill, so a 3 h bill restated to 0.5 h credits 2 h,
+      while the same restatement on a job with 4 h billed on another day
+      credits 2.5 h.
+    * Each invoice takes at most what its claims billed, and never more labor
+      than the invoice itself still bills (an office edit that cut the line
+      already took those hours off), priced at the hourly rate on that
+      invoice's own labor line (the lowest one, so an edited line never
+      over-credits), or the shop's rate when it has none.
+    * Every credit memo or refund already on the invoice is taken off, whatever
+      it was issued for, so the offer never comes back once the invoice has
+      been credited; a credit for something else only makes the offer smaller.
+    * ``amount`` is capped at the invoice's balance due, because a credit memo
+      cannot exceed it; ``creditable`` is False when the invoice has no open
+      balance or is not issued, and the excess then needs a refund."""
+    if closeout is None:
+        return []
+    # holder invoice id -> man-hours its claims billed, newest first. Only an
+    # issued invoice has billed anything: a draft holding claims is fixed by
+    # editing it, and it is left out here exactly as it is left out of the
+    # first-hour count below, so both sides of ``elsewhere`` agree.
+    held: dict = {}
+    for prior in _restated_run(db, closeout):
+        holder = closeout_hours_holder(db, prior)
+        if holder is not None and db.get(Invoice, holder).status in _ISSUED:
+            held[holder] = held.get(holder, Decimal(0)) + _claim_man_hours(db, prior)
+    if not held:
+        return []
+    held = {inv_id: min(hours, _invoice_labor_hours(db, inv_id)) for inv_id, hours in held.items()}
+    billed = sum(held.values(), Decimal(0))
+    elsewhere = max(Decimal(0), _job_labor_hours_billed(db, closeout.job_id) - billed)
+    floor = max(Decimal(0), Decimal(1) - elsewhere)
+    excess = billed - max(closeout_man_hours(closeout), floor)
+    targets: list[dict] = []
+    for inv_id, hours in held.items():
+        if excess <= 0:
+            break
+        take = min(excess, hours)
+        if take <= 0:
+            continue
+        excess -= take
+        inv = db.get(Invoice, inv_id)
+        rate = _billed_hourly_rate(db, inv)
+        owed = max(Decimal(0), _money(take * rate) - _credited_on(db, inv.id))
+        if owed <= 0:
+            continue
+        balance = _money(inv.balance_due or 0)
+        creditable = inv.status in ("sent", "overdue") and balance > 0
+        targets.append({
+            "invoice_id": str(inv.id),
+            "invoice_number": inv.invoice_number,
+            "status": inv.status,
+            "closeout_id": str(closeout.id),
+            "man_hours": float(take),
+            "hourly_rate": float(rate),
+            "credit_value": float(owed),
+            "balance_due": float(balance),
+            "amount": float(min(owed, balance)) if creditable else 0.0,
+            "creditable": creditable,
+        })
+    return targets
+
+
+_ISSUED = ("sent", "overdue", "paid")
+
+
+def _labor_hours_where(*where):
+    return select(func.sum(InvoiceLine.quantity)).where(
+        InvoiceLine.deleted_at.is_(None), InvoiceLine.category == "Labor", *where
+    )
+
+
+def _invoice_labor_hours(db: Session, invoice_id) -> Decimal:
+    """Labor quantity ``invoice_id`` bills now, first-hour line included."""
+    total = db.execute(_labor_hours_where(InvoiceLine.invoice_id == invoice_id)).scalar_one_or_none()
+    return Decimal(str(total or 0))
+
+
+def _job_labor_hours_billed(db: Session, job_id) -> Decimal:
+    """Labor quantity on every issued invoice of the job. A draft is not
+    billed yet, and can still be deleted: counted, it would let the first
+    hour be credited (GDXA-1184 audit 4)."""
+    total = db.execute(
+        _labor_hours_where(
+            Invoice.job_id == job_id,
+            Invoice.id.in_(_live_invoice_ids()),
+            Invoice.status.in_(_ISSUED),
+        )
+        .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+    ).scalar_one_or_none()
+    return Decimal(str(total or 0))
+
+
+def _billed_hourly_rate(db: Session, inv) -> Decimal:
+    """The hourly rate ``inv`` billed labor at: the lowest unit price on its
+    live labor lines other than the first-hour line, else the shop's rate."""
+    from gdx_dispatch.core.billing_lanes import FIRST_HOUR_DESCRIPTION, service_rates  # noqa: PLC0415
+
+    rate = db.execute(
+        select(func.min(InvoiceLine.unit_price)).where(
+            InvoiceLine.invoice_id == inv.id,
+            InvoiceLine.deleted_at.is_(None),
+            InvoiceLine.category == "Labor",
+            InvoiceLine.description != FIRST_HOUR_DESCRIPTION,
+            InvoiceLine.quantity > 0,
+            InvoiceLine.unit_price > 0,
+        )
+    ).scalar_one_or_none()
+    return _money(rate) if rate is not None else service_rates(db)[1]
+
+
+def _credited_on(db: Session, invoice_id) -> Decimal:
+    """Every credit memo and refund already on ``invoice_id``, for any reason."""
+    total = db.execute(
+        select(func.sum(InvoiceAdjustment.amount)).where(
+            InvoiceAdjustment.invoice_id == invoice_id,
+            InvoiceAdjustment.kind.in_(("credit_memo", "refund")),
+        )
+    ).scalar_one_or_none()
+    return _money(total or 0)
+
+
+def _restates(db: Session, closeout, prior) -> bool:
+    """Whether ``closeout`` restates ``prior`` (the row it supersedes).
+
+    ``is_restatement`` answers for every row ``closeout_job`` has written
+    since migration 127. A row from before 127 reads NULL; for it the audit
+    trail answers the same question — the job was still completed at the
+    re-closeout unless a ``job_uncompleted`` row falls between the two
+    closeouts. Reading NULL as "new work" would bill a pre-127 re-closeout's
+    full hours on top of what ``prior`` already billed."""
+    flag = getattr(closeout, "is_restatement", None)
+    if flag is not None:
+        return bool(flag)
+    from gdx_dispatch.core.audit import AuditLog  # noqa: PLC0415
+
+    after, until = getattr(prior, "closed_at", None), getattr(closeout, "closed_at", None)
+    if after is None or until is None:
+        return False
+    reopened = db.execute(
+        select(AuditLog.id).where(
+            AuditLog.action == "job_uncompleted",
+            AuditLog.entity_type == "job",
+            AuditLog.entity_id == str(closeout.job_id),
+            AuditLog.created_at > after,
+            AuditLog.created_at <= until,
+        ).limit(1)
+    ).first()
+    return reopened is None
+
+
+def _claim_man_hours(db: Session, closeout) -> Decimal:
+    """What the claim that stamped ``closeout`` billed, read from the row
+    (the claim's UPDATE does not refresh a loaded object). NULL — every claim
+    before migration 127 — billed the full final day."""
+    billed = db.execute(
+        select(JobCloseout.man_hours_billed).where(JobCloseout.id == closeout.id)
+    ).scalar_one_or_none()
+    return Decimal(str(billed)) if billed is not None else closeout_man_hours(closeout)
+
+
+def closeout_man_hours_to_bill(db: Session, closeout) -> Decimal:
+    """``closeout``'s final-day man-hours less what the closeouts it restates
+    already billed, never below 0. A restatement that LOWERS the hours under
+    what was billed bills 0 here; the excess already on an invoice stays there
+    for the office to credit (``closeout_job`` reports it and audits it)."""
+    return max(Decimal(0), closeout_man_hours(closeout) - closeout_hours_billed_before(db, closeout))
+
+
+def closeout_man_hours_left_unbilled(db: Session, closeout) -> Decimal:
+    """Attested man-hours that no live invoice bills, although ``closeout``
+    itself is billed: its invoice billed a restatement's delta, and an earlier
+    invoice in the run was voided since. The closeout's stamp is taken, so no
+    line can claim them; restating the closeout again offers them, because
+    the new row nets only what live invoices hold. 0 when nothing is
+    stranded, or when the closeout is not billed."""
+    if closeout is None or closeout_hours_holder(db, closeout) is None:
+        return Decimal(0)
+    return max(Decimal(0), closeout_man_hours_to_bill(db, closeout) - _claim_man_hours(db, closeout))
+
+
 def _stage_labor_audit(
     db: Session, invoice, *, actor: str | None, action: str, details: dict, request=None
 ) -> None:
@@ -242,10 +490,12 @@ def claim_closeout_hours(
 ) -> bool:
     """Stamp ``closeout``'s final-day hours as billed by ``invoice`` when no
     live invoice holds them, and stage the audit row. True when this call
-    stamped them. A closeout attesting no hours has nothing to bill and is
+    stamped them. A closeout with nothing left to bill — no hours, or a
+    restatement no higher than what its run already billed (GDXA-890) — is
     never stamped. The caller commits."""
     cid = _job_uuid(getattr(closeout, "id", None)) if closeout is not None else None
-    if cid is None or not Decimal(str(getattr(closeout, "hours_worked", 0) or 0)) > 0:
+    to_bill = closeout_man_hours_to_bill(db, closeout) if cid is not None else Decimal(0)
+    if cid is None or not to_bill > 0:
         return False
     # Take the row lock first. On Postgres the UPDATE below then runs on a
     # fresh READ COMMITTED snapshot, in which a concurrent winner's invoice
@@ -262,13 +512,15 @@ def claim_closeout_hours(
                 JobCloseout.billed_invoice_id.not_in(_live_invoice_ids()),
             ),
         )
-        .values(billed_invoice_id=invoice.id)
+        # What this claim bills (GDXA-890): the run's later netting sums it.
+        .values(billed_invoice_id=invoice.id, man_hours_billed=to_bill)
         .execution_options(synchronize_session=False)
     ).rowcount or 0)
     if stamped:
         _stage_labor_audit(
             db, invoice, actor=actor, action="labor_closeout_claimed", request=request,
-            details={"closeout_id": str(cid), "hours_worked": str(closeout.hours_worked)},
+            details={"closeout_id": str(cid), "hours_worked": str(closeout.hours_worked),
+                     "man_hours_billed": str(to_bill)},
         )
     return bool(stamped)
 

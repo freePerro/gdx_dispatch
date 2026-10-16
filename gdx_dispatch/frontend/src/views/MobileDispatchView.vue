@@ -19,10 +19,14 @@ import Tag from 'primevue/tag'
 import { useApi } from '../composables/useApi'
 import { useTenantTimezone } from '../composables/useTenantTimezone'
 import { useToast } from 'primevue/usetoast'
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
+import CrewChangeDialog from '../components/CrewChangeDialog.vue'
+import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange'
 
 const api = useApi()
 const toast = useToast()
+const { confirmAsync } = useDestructiveConfirm()
 const route = useRoute()
 const router = useRouter()
 // Office display timezone — the board buckets jobs into the selected day in
@@ -81,12 +85,16 @@ const dateLabel = computed(() => {
 // client-side filter remains the PRECISE cut and must stay. A dated job
 // matches when its OFFICE-local day equals the selected day; undated jobs
 // (leads with no time yet) surface on today's board only, so they don't
-// duplicate across every day or vanish entirely.
+// duplicate across every day or vanish entirely. A finished job that was
+// never scheduled is not a lead: it sits on the day it was completed, or on
+// no day (2026-10-15 — it used to fill today's tech columns every day).
 const dayJobs = computed(() => {
   const key = selectedDateStr.value
-  return jobs.value.filter((j) =>
-    j.scheduled_at ? zonedDateKey(j.scheduled_at) === key : isToday.value,
-  )
+  return jobs.value.filter((j) => {
+    if (j.scheduled_at) return zonedDateKey(j.scheduled_at) === key
+    if (isTerminal(j)) return Boolean(j.completed_at) && zonedDateKey(j.completed_at) === key
+    return isToday.value
+  })
 })
 
 const unassignedJobs = computed(() =>
@@ -169,6 +177,8 @@ const TERMINAL_STATUSES = new Set(['done', 'complete', 'completed', 'paid', 'can
 
 function isTerminal(job) {
   if (!job) return false
+  const stage = String(job.lifecycle_stage || '').toLowerCase()
+  if (stage === 'completed' || stage === 'cancelled') return true
   return TERMINAL_STATUSES.has(String(job.status || '').toLowerCase().trim())
 }
 
@@ -242,16 +252,47 @@ function openAssignDialog(job) {
   assignDialogVisible.value = true
 }
 
+const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt(
+  (id) => (technicians.value.find((t) => String(t.id) === String(id)) || {}).name || 'Tech',
+)
+
+function closeAssignDialog() {
+  assignDialogVisible.value = false
+  assignDialogJob.value = null
+  assignDialogTechId.value = null
+}
+
 async function confirmAssign() {
   const job = assignDialogJob.value
   if (!job || !assignDialogTechId.value) {
     assignDialogVisible.value = false
     return
   }
+  const techId = String(assignDialogTechId.value)
+  // A single assigned_tech_id replaces the whole crew. On a crew job the pick
+  // keeps everyone: the lead is a no-op, another member becomes lead, anyone
+  // else is a swap or an add, asked here; Cancel changes nothing.
+  const crew = crewOf(job)
+  let patch = { assigned_tech_id: techId, assigned_to: techId, technician_id: techId }
+  if (crew.length >= 2) {
+    if (techId === crew[0]) {
+      closeAssignDialog()
+      return
+    }
+    if (crew.includes(techId)) {
+      patch = { assigned_tech_ids: crew, lead_tech_id: techId }
+    } else {
+      assignDialogVisible.value = false
+      const choice = await askCrew({ crew, techId, jobLabel: displayCustomer(job) })
+      if (!choice) {
+        closeAssignDialog()
+        return
+      }
+      patch = crewPatch(choice)
+    }
+  }
   assignDialogSaving.value = true
   try {
-    const techId = assignDialogTechId.value
-    const patch = { assigned_tech_id: techId, assigned_to: techId, technician_id: techId }
     if (!job.scheduled_at) {
       const d = new Date(selectedDate.value)
       d.setHours(9, 0, 0, 0)
@@ -265,9 +306,7 @@ async function confirmAssign() {
       detail: `${displayCustomer(job)} → ${techName}`,
       life: 3000,
     })
-    assignDialogVisible.value = false
-    assignDialogJob.value = null
-    assignDialogTechId.value = null
+    closeAssignDialog()
     await refreshBoard()
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Assignment failed', detail: e.message, life: 4000 })
@@ -276,7 +315,17 @@ async function confirmAssign() {
   }
 }
 
+// One tap takes every tech off the job, crew and all, so it asks first.
 async function unassignJob(job) {
+  const crew = crewOf(job)
+  if (crew.length) {
+    const ok = await confirmAsync({
+      header: crew.length > 1 ? 'Remove every technician?' : 'Remove the technician?',
+      message: `${crew.map(techNameFor).join(', ')} will be taken off this job, and it goes back to unassigned.`,
+      acceptLabel: 'Remove',
+    })
+    if (!ok) return
+  }
   try {
     await api.patch(`/api/jobs/${job.id}`, {
       assigned_tech_id: null,
@@ -802,6 +851,7 @@ onUnmounted(() => {
           />
         </template>
       </Dialog>
+      <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
     </section>
     <MobileChatDialog v-model:visible="chatOpen" :job="chatJob" mark-read @read="loadThreads" />
 </template>

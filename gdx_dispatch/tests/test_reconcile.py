@@ -147,7 +147,7 @@ def test_reconcile_installs_each_desired(monkeypatch):
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
     monkeypatch.setattr(rec, "desired_packages", lambda db: [("foo", "1.0"), ("bar", None)])
     calls = []
-    monkeypatch.setattr(rec, "pip_install", lambda spec: calls.append(spec) or True)
+    monkeypatch.setattr(rec, "pip_install", lambda spec, target=None: calls.append(spec) or True)
     out = rec.reconcile(db=object())
     assert out.installed == ["foo==1.0", "bar"]  # pinned vs unpinned spec built correctly
     assert out.failed == []
@@ -163,7 +163,7 @@ def test_reconcile_skips_already_installed_package_without_pip(monkeypatch):
     monkeypatch.setattr(rec, "desired_packages", lambda db: [("chi", "0.1.2")])
     monkeypatch.setattr(rec, "is_installed", lambda pkg, ver, *a, **k: True)
     called = []
-    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    monkeypatch.setattr(rec, "pip_install", lambda spec, target=None: called.append(spec) or True)
     out = rec.reconcile(db=object())
     assert called == []  # no pip invocation → no network reach
     assert out.installed == [] and out.failed == []
@@ -182,7 +182,7 @@ def test_reconcile_skips_filename_row_when_already_installed(monkeypatch):
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: True)
     monkeypatch.setattr(rec, "prune_other_versions", lambda *a, **k: [])
     called = []
-    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    monkeypatch.setattr(rec, "pip_install", lambda spec, target=None: called.append(spec) or True)
     out = rec.reconcile(db=object())
     assert called == []                       # never pip-installed a bare filename
     assert out.installed == [] and out.failed == []  # not reported as a failed spec
@@ -202,7 +202,7 @@ def test_reconcile_filename_row_not_installed_is_skipped_not_failed(monkeypatch)
     monkeypatch.setattr(rec, "desired_packages", lambda db: [(fn, "")])
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
     called = []
-    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    monkeypatch.setattr(rec, "pip_install", lambda spec, target=None: called.append(spec) or True)
     out = rec.reconcile(db=object())
     assert called == []
     assert out.failed == []
@@ -219,7 +219,7 @@ def test_reconcile_filename_row_version_mismatch_is_skipped_not_pip(monkeypatch)
     monkeypatch.setattr(rec, "desired_packages", lambda db: [(fn, "")])
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
     called = []
-    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    monkeypatch.setattr(rec, "pip_install", lambda spec, target=None: called.append(spec) or True)
     out = rec.reconcile(db=object())
     assert called == [] and out.failed == []
 
@@ -236,7 +236,7 @@ def test_reconcile_filename_bypasses_are_caught(monkeypatch):
     monkeypatch.setattr(rec, "desired_packages", lambda db: [(r, "") for r in rows])
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
     called = []
-    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    monkeypatch.setattr(rec, "pip_install", lambda spec, target=None: called.append(spec) or True)
     out = rec.reconcile(db=object())
     assert called == []       # not one bare filename reached pip
     assert out.failed == []
@@ -258,7 +258,7 @@ def test_reconcile_reports_failed_specs(monkeypatch):
     monkeypatch.setattr(rec, "desired_artifacts", lambda db: [])
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
     monkeypatch.setattr(rec, "desired_packages", lambda db: [("good", None), ("bad", None)])
-    monkeypatch.setattr(rec, "pip_install", lambda spec: spec == "good")
+    monkeypatch.setattr(rec, "pip_install", lambda spec, target=None: spec == "good")
     out = rec.reconcile(db=object())
     assert out.installed == ["good"]
     assert out.failed == ["bad"]  # surfaced, not silently dropped
@@ -808,3 +808,52 @@ def test_a_spent_old_unregister_does_not_widen_a_fresh_single_file_deletion(tmp_
     }})
     assert out.removed == ("demoplug",)
     assert sorted(p.name for p in staged.iterdir()) == ["demoplug-0.9-py3-none-any.whl"]
+
+
+def test_reconcile_installs_into_an_overridden_install_dir(monkeypatch, tmp_path):
+    """GDXA-1122: reconcile() called pip_install and install_artifact with no
+    target, so their `target=INSTALL_DIR` defaults — bound once at import — kept
+    sending installs to /plugins after INSTALL_DIR was overridden, while removals
+    (passed INSTALL_DIR explicitly) followed the override. Only pip itself is
+    faked here: the real install path must hand pip the overridden directory and
+    stage the artifact inside it."""
+    import hashlib
+    import sys
+
+    monkeypatch.setattr(rec, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rec, "db_is_the_apps", lambda db: False)
+    monkeypatch.setattr(rec, "desired_packages", lambda db: [("gdx-plugin-reg", "1.0")])
+    whl, content = "gdx_plugin_art-2.0-py3-none-any.whl", b"not really a wheel"
+    monkeypatch.setattr(rec, "desired_artifacts",
+                        lambda db: [(whl, hashlib.sha256(content).hexdigest(), content)])
+    cmds = []
+    monkeypatch.setattr(rec.subprocess, "run", lambda cmd, **k: cmds.append(cmd) or _R(0))
+
+    out = rec.reconcile(db=object())
+
+    assert out.failed == []
+    assert sorted(out.installed) == sorted(["gdx-plugin-reg==1.0", whl])
+    assert len(cmds) == 2
+    for cmd in cmds:
+        assert cmd[cmd.index("--target") + 1] == str(tmp_path), cmd
+    assert (tmp_path / "_artifacts" / whl).read_bytes() == content
+
+
+def test_no_reconcile_function_binds_its_target_at_import():
+    """The class behind GDXA-1122: a `target=INSTALL_DIR` default is frozen at
+    def time, so any caller that omits target silently ignores an overridden
+    INSTALL_DIR. Every `target` parameter must default to None (resolved at call
+    time) or have no default at all."""
+    import inspect
+
+    frozen = []
+    for name, fn in vars(rec).items():
+        if not inspect.isfunction(fn) or fn.__module__ != rec.__name__:
+            continue
+        param = inspect.signature(fn).parameters.get("target")
+        if param is not None and param.default not in (None, inspect.Parameter.empty):
+            frozen.append(f"{name}(target={param.default!r})")
+    assert frozen == []

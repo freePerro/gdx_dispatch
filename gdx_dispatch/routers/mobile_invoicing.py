@@ -1002,6 +1002,12 @@ def _invoice_customer(db: Session, invoice: Invoice) -> Customer | None:
         ).scalar_one_or_none()
 
 
+def _invoice_email_kind(invoice: Invoice) -> str:
+    """The outbound_emails kind of an invoice email, as the desktop /send
+    names it: a paid invoice's email is its receipt."""
+    return "receipt" if invoice.status == "paid" else "document"
+
+
 def _send_invoice_email(
     db: Session,
     invoice: Invoice,
@@ -1025,18 +1031,19 @@ def _send_invoice_email(
     WRITES its outbound-email row — a commit released inside a SAVEPOINT and a
     write under `contained_read` are rule-2/rule-5 misuse, worse than the gap.
     So if either fails on Postgres, `return False` still reads to the caller as
-    "no email", and `mobile_send_invoice` then runs `transition_invoice_status`
-    (a GL posting) and `db.commit()` into an aborted transaction: 500, no
-    `sent_at`, no GL transition, no audit row. Closing it means restructuring
-    this function around the commit, which is money-billing's call, not a
-    containment change (GDXA-156 audit, round 2).
+    "no email" on a dead transaction. Since 2026-10-15 `mobile_send_invoice`
+    commits the draft→sent flip and its audit row BEFORE calling this, and
+    its tail rolls back a dead transaction (the desktop /send's GDXA-673
+    shape), so such a failure costs the outbound-email row, not the flip or
+    the audit trail. Containing the statements themselves would still mean
+    restructuring this function around the commit (GDXA-156 audit, round 2).
     """
     try:
         # Contained (GDXA-156) — see _invoice_customer. `return False` below
-        # reads to the caller as "no customer email", and it goes on to
-        # transition the invoice to `sent` and commit, so an uncontained failure
-        # would 500 the send and lose the GL transition and the audit row with
-        # it. Not an observed incident: prod carries `customers` (checked live,
+        # reads to the caller as "no customer email", and the caller then
+        # commits its delivery stamp, so an uncontained failure would kill the
+        # transaction under it (its tail rolls back and recovers since
+        # 2026-10-15; the flip and audit row are committed before this runs). Not an observed incident: prod carries `customers` (checked live,
         # GDXA-156 audit). Insurance on the mechanism.
         cust = _invoice_customer(db, invoice)
         if cust is None or not cust.email:
@@ -1129,6 +1136,12 @@ def _send_invoice_email(
             subject=prep["subject"],
             html_body=html,
             attachments=attachments,
+            # Tagged as the desktop /send tags it, so `recently_sent` (the
+            # double-send guard in `mobile_send_invoice`) can see this send.
+            # Untagged, a truck send was invisible to every guard.
+            kind=_invoice_email_kind(invoice),
+            entity_type="invoice",
+            entity_id=str(invoice.id),
         )
         return bool(sent)
     except Exception:
@@ -1195,15 +1208,31 @@ def mobile_send_invoice(
     if invoice.status == "void":
         return _jr({"detail": "invoice is void — it cannot be re-sent"}, 409)
 
-    delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
+    # Server-side double-send guard, the desktop /send's (GDXA-1278): a
+    # retried request, a second device or a reopened dialog mailed the
+    # customer twice and wrote two audit rows (the button's own loading state
+    # only stops a tap on the same screen; a same-instant pair still passes —
+    # `recently_sent`'s docstring). Kind-scoped as there — a receipt right
+    # after the invoice email is legitimate; on a PAID invoice this email is
+    # itself a receipt and shares that kind, as on the desktop. Nothing was
+    # sent, so nothing is audited.
+    from gdx_dispatch.core.transactional_email import recently_sent
+
+    if recently_sent(db, "invoice", str(invoice.id), kind=_invoice_email_kind(invoice)):
+        dup_payload = _serialize_invoice(invoice, db=db)
+        dup_payload["email_sent"] = False
+        dup_payload["email_skip_reason"] = "duplicate_send_suppressed"
+        return _jr(dup_payload)
+
+    # Flip to sent and write the audit row BEFORE the email renders, in one
+    # commit, as the desktop /send does: the attached PDF is built from this
+    # row, and built first it printed "Draft" with no pay link while the email
+    # body beside it carried the link. The flip never depended on delivery.
+    # The audit row rides the same commit because `_send_invoice_email` can
+    # leave the transaction dead on Postgres (its docstring) — a committed
+    # flip must never be left without the row naming who sent it.
     if invoice.status == "draft":
         transition_invoice_status(db, invoice, "sent", actor=user_id)  # GL S5
-    if delivered:
-        invoice.sent_at = datetime.now(UTC)
-        invoice.sent_via = "email"
-    db.commit()
-    db.refresh(invoice)
-
     log_audit_event_sync(
         db=db,
         tenant_id=tenant_id,
@@ -1215,6 +1244,29 @@ def mobile_send_invoice(
         request=request,
     )
     db.commit()
+    db.refresh(invoice)
+
+    delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
+
+    # sent_at is a delivery fact. Same tail as the desktop /send (GDXA-673):
+    # if the email step left the transaction dead, the commit raises — roll
+    # back (flip and audit row are already committed above) and stamp a
+    # delivered email again on the clean transaction.
+    def _stamp_delivery() -> None:
+        if delivered:
+            invoice.sent_at = datetime.now(UTC)
+            invoice.sent_via = "email"
+
+    try:
+        _stamp_delivery()
+        db.commit()
+    except Exception:
+        log.exception("mobile_invoice_send_attempt_commit_failed invoice=%s", invoice_id)
+        db.rollback()
+        if delivered:
+            _stamp_delivery()
+            db.commit()
+    db.refresh(invoice)
     resend_payload = _serialize_invoice(invoice, db=db)
     resend_payload["email_sent"] = bool(delivered)
     return _jr(resend_payload)
@@ -1458,6 +1510,31 @@ def mobile_open_invoices(
 # ---------------------------------------------------------------------------
 
 
+def _receipt_recently_sent(db: Session, invoice_id: str, payment_id: str, *, within_seconds: int = 20) -> bool:
+    """True when the truck delivered a receipt for THIS payment inside the
+    window. Reads the `mobile_invoice_receipt_sent` audit row, which is written
+    only on a delivered receipt and is the one record that names the payment
+    (outbound_emails does not). Same check-then-act limit as `recently_sent`,
+    and it fails open the same way: the guard must never block a legitimate
+    send."""
+    from gdx_dispatch.core.audit import AuditLog, utcnow
+
+    try:
+        with contained_read(db):
+            rows = db.execute(
+                select(AuditLog.details).where(
+                    AuditLog.entity_type == "invoice",
+                    AuditLog.entity_id == invoice_id,
+                    AuditLog.action == "mobile_invoice_receipt_sent",
+                    AuditLog.created_at >= utcnow() - timedelta(seconds=within_seconds),
+                )
+            ).scalars().all()
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — fails open like recently_sent: a broken guard never blocks a receipt; logged
+        log.exception("mobile_receipt_recently_sent_check_failed invoice=%s", invoice_id)
+        return False
+    return any(isinstance(d, dict) and d.get("payment_id") == payment_id for d in rows)
+
+
 @router.post("/invoices/{invoice_id}/send-receipt", response_model=None)
 def mobile_send_receipt(
     invoice_id: str,
@@ -1544,6 +1621,18 @@ def mobile_send_receipt(
     # recipient, Outlook-or-SMTP via send_transactional_email (which also
     # records the attempt in outbound_emails), and the ACTUAL outcome in the
     # response.
+    # Double-send guard (GDXA-1278): a retry or a second device inside the
+    # window would mail the same receipt twice. Keyed on the PAYMENT, not the
+    # invoice — a truck receipt is per payment, and the desktop's per-invoice
+    # `recently_sent` would swallow payment B's receipt sent just after A's.
+    if _receipt_recently_sent(db, str(invoice.id), str(payment_row[0])):
+        return _jr({
+            "sent": False,
+            "skip_reason": "duplicate_send_suppressed",
+            "invoice_id": str(invoice.id),
+            "payment_id": str(payment_row[0]),
+        })
+
     sent = False
     skip_reason: str | None = None
     try:

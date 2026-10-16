@@ -37,6 +37,7 @@ import {
   syncOfficeAlerts,
 } from '../officeAlerts'
 import { getServerUrl } from '../serverConfig'
+import { _setAppMode } from '../appMode'
 
 const OWNER = '0b6c3f1e-2d4a-4b8e-9c1d-7e5f6a7b8c9d'
 const api = () => ({ post: vi.fn().mockResolvedValue({ token: 'tok-new', registration_id: 'r1', user_id: OWNER }) })
@@ -73,9 +74,21 @@ describe('officeAlerts', () => {
     const res = await enableOfficeAlerts(a)
     expect(a.post).toHaveBeenCalledWith('/api/notifications/device-alerts/token',
       expect.objectContaining({ device_label: expect.any(String) }))
-    expect(plugin.start).toHaveBeenCalledWith({ serverUrl: 'https://dispatch.example.com', token: 'tok-new' })
+    expect(plugin.start).toHaveBeenCalledWith({ serverUrl: 'https://dispatch.example.com', token: 'tok-new', scope: 'office' })
     expect(res.enabled).toBe(true)
     expect(localStorage.getItem(OWNER_KEY)).toBe(OWNER)
+  })
+
+  it('GDX Planner asks the service for the planner feed, not the office one', async () => {
+    native()
+    _setAppMode('planner')
+    try {
+      plugin.start.mockResolvedValue({ enabled: true, running: true })
+      await enableOfficeAlerts(api())
+      expect(plugin.start).toHaveBeenCalledWith(expect.objectContaining({ scope: 'planner' }))
+    } finally {
+      _setAppMode('dispatch')
+    }
   })
 
   it('enable refuses without a server address and mints nothing', async () => {
@@ -126,7 +139,7 @@ describe('officeAlerts', () => {
     const a = api()
     await ensureOfficeAlerts(a, { now, userId: OWNER })
     expect(a.post).toHaveBeenCalledTimes(1)
-    expect(plugin.start).toHaveBeenCalledWith({ serverUrl: 'https://dispatch.example.com', token: 'tok-new' })
+    expect(plugin.start).toHaveBeenCalledWith({ serverUrl: 'https://dispatch.example.com', token: 'tok-new', scope: 'office' })
   })
 
   // /audit 2026-10-14: with notifications blocked every launch minted a
@@ -305,12 +318,31 @@ describe('officeAlerts', () => {
     native()
     plugin.stop.mockResolvedValue({})
     const router = { push: vi.fn().mockResolvedValue() }
-    installOfficeAlertsBridge(router)
+    const settle = () => new Promise((r) => setTimeout(r, 0))  // alert changes run queued
+    // A tap that cold-starts the app arrives before the app knows whether it
+    // is GDX Planner; it is routed only once that is known.
+    let modeKnown
+    installOfficeAlertsBridge(router, new Promise((r) => { modeKnown = r }))
     listeners.alertTap({ category: 'sms' })
+    await settle()
+    expect(router.push).not.toHaveBeenCalled()
+    modeKnown('planner')
+    await settle()
     expect(router.push).toHaveBeenCalledWith('/mobile/sms')
     listeners.alertTap({ category: 'something-new' })
+    await settle()
     expect(router.push).toHaveBeenLastCalledWith('/mobile')
-    const settle = () => new Promise((r) => setTimeout(r, 0))  // alert changes run queued
+    // A tap to the page already open is a duplicate navigation: vue-router
+    // resolves it with a failure instead of navigating. It is still
+    // announced, so the open page can act on it.
+    const taps = []
+    const onTap = (e) => taps.push(e.detail)
+    window.addEventListener('gdx:alert-tap', onTap)
+    router.push.mockResolvedValueOnce({ type: 16 })  // NavigationFailureType.duplicated
+    listeners.alertTap({ category: 'planner_reminder' })
+    await settle()
+    window.removeEventListener('gdx:alert-tap', onTap)
+    expect(taps).toEqual([{ category: 'planner_reminder', dest: '/mobile/planner?tab=tasks' }])
     window.dispatchEvent(new CustomEvent('gdx:auth-logout', { detail: { chosen: false } }))
     window.dispatchEvent(new CustomEvent('gdx:auth-logout'))
     await settle()

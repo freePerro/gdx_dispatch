@@ -82,9 +82,18 @@ COVERED_ROOTS = (
     "gdx_dispatch/plugin_host/",
     "gdx_dispatch/templates/",
     "gdx_dispatch/frontend/src/",
+    # The Capacitor Android app. Its Java plugins answered UNOWNED until
+    # GDXA-1153 because no prefix reached them, so the gate stayed green.
+    "gdx_dispatch/frontend/android/",
     # The agent files carry the copy-paste commands every agent runs, so they
     # need an owner who keeps them right (GDXA-484: 13 of 14 lacked --tmpfs).
     ".claude/agents/",
+    # The area rules load into every agent's context when it touches a file in
+    # that area, so they rot like any present-tense doc (GDXA-966).
+    ".claude/rules/",
+    # The skills carry the harness facts (merge path, matrix runner) the agents
+    # act on; gdx-harness/SKILL.md sat UNOWNED until GDXA-1054.
+    ".claude/skills/",
 )
 
 # Repo-root files where every match must have an owner. The root cannot be a

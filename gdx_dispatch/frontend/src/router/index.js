@@ -1,13 +1,15 @@
-import { createRouter, createWebHistory } from 'vue-router';
+import { createRouter, createWebHistory, START_LOCATION } from 'vue-router';
 import { Capacitor } from '@capacitor/core';
 import { getServerUrl } from '../lib/serverConfig';
 import { useAuthStore } from '../stores/auth';
 import { createApiClient } from '../composables/useApi';
 import { isTechnician } from '../constants/roles';
 import { getLoginRedirectLocation } from '../lib/auth-urls';
+import { isSessionLocked, lockSession, unlockSession } from '../lib/nativeAuth';
 import { useViewMode } from '../composables/useViewMode';
 import { applyScroll, installScrollRestore, sameViewComponent } from '../lib/scrollRestore';
 import { navigationRemounted } from '../lib/viewRemount';
+import { isPlannerApp, plannerAppRoute, PLANNER_APP_PATH } from '../lib/appMode';
 
 // Critical views — loaded eagerly
 import LoginView from '../views/LoginView.vue';
@@ -157,6 +159,11 @@ export const routes = [
   // wizard. Every other route is wrapped by App.vue's AppLayout so the
   // sidebar/topbar/bottom-nav are stable across navigations.
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, noShell: true } },
+  // The quick-PIN / fingerprint gate of the Android app (GDXA-1187). Not
+  // public: there is a session behind it, held until the PIN or fingerprint
+  // clears the lock. Reached only through the lock gate in the guard below,
+  // so it has no nav entry.
+  { path: '/unlock', name: 'session-unlock', component: () => import('../views/SessionUnlockView.vue'), meta: { noShell: true } },
   { path: '/forgot-password', name: 'forgot-password', component: () => import('../views/ForgotPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/reset-password', name: 'reset-password', component: () => import('../views/ResetPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/onboarding', name: 'onboarding', component: () => import('../views/OnboardingView.vue'), meta: { noShell: true } },
@@ -394,6 +401,8 @@ export const routes = [
   { path: '/mobile/summary', name: 'mobile-summary', component: MobileSummaryView, meta: { noSidebar: true } },
   { path: '/mobile/dispatch', name: 'mobile-dispatch', component: MobileDispatchView, meta: { noSidebar: true, requiresPermission: 'mobile.dispatch_view' } },
   { path: '/mobile/planner', name: 'mobile-planner', component: MobilePlannerView, meta: { noSidebar: true } },
+  // The GDX Planner Android app's only page; it brings its own header.
+  { path: PLANNER_APP_PATH, name: 'planner-app', component: () => import('../views/PlannerAppView.vue'), meta: { noShell: true } },
   { path: '/mobile/customers', name: 'mobile-customers', component: MobileCustomersView, meta: { noSidebar: true } },
   { path: '/mobile/customers/:id', name: 'mobile-customer-detail', component: MobileCustomerDetailView, meta: { noSidebar: true } },
   { path: '/mobile/timeclock', name: 'mobile-timeclock', component: MobileTimeclockView, meta: { noSidebar: true } },
@@ -455,6 +464,17 @@ export const routes = [
 // self-service change-password form.
 export const PASSWORD_CHANGE_PATH = '/profile';
 
+// Where a locked session is held until the quick PIN or fingerprint unlocks it.
+export const SESSION_UNLOCK_PATH = '/unlock';
+
+// Only an in-app path may be the target after unlocking: never another origin.
+function safeUnlockTarget(raw) {
+  const target = typeof raw === 'string' ? raw : '';
+  return target.startsWith('/') && !target.startsWith('//') && !target.startsWith(SESSION_UNLOCK_PATH)
+    ? target
+    : '/';
+}
+
 export function createAppRouter() {
   const router = createRouter({
     history: createWebHistory(),
@@ -511,6 +531,24 @@ export function createAppRouter() {
     });
   }
 
+  // A session that ends without the person choosing it (a refused token
+  // refresh, from any API client) sends them to log in and come back here,
+  // rather than leaving a page whose every call now fails behind a stack of
+  // error toasts; the login page says the session expired. A chosen sign-out
+  // navigates itself.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('gdx:auth-logout', (event) => {
+      if (event?.detail?.chosen) return;
+      const current = router.currentRoute.value;
+      // Before the first navigation lands (the native cold-start restore
+      // refreshes right then) the current route is the START_LOCATION "/",
+      // not where the person is going; the guard sends them to log in with
+      // the real destination, so leave it to the guard.
+      if (current === START_LOCATION || current.meta?.public) return;
+      router.push(getLoginRedirectLocation(current.fullPath, 'expired')).catch(() => {});
+    });
+  }
+
   // The Android app loses sessionStorage (and with it the access token) every
   // time it is closed, but the refresh cookie survives in the native cookie
   // store. Try it once per launch before sending the tech to the login page.
@@ -527,6 +565,10 @@ export function createAppRouter() {
       (nativeSessionRestore || (Capacitor.isNativePlatform() && getServerUrl()))
     ) {
       nativeSessionRestore ||= (async () => {
+        // Lock BEFORE restoring: a session the refresh cookie brings back must
+        // pass the quick-PIN gate like one resumed from the background. A
+        // no-op unless the tech has turned the quick PIN on.
+        lockSession();
         try {
           await auth.refreshAccessToken();
           // The stored password-change hold went with sessionStorage: ask the
@@ -539,8 +581,30 @@ export function createAppRouter() {
       await nativeSessionRestore;
     }
 
+    // With no session there is nothing to unlock, and the password sign-in
+    // that follows is stronger proof than the PIN: drop a stale lock so it
+    // does not hold that fresh sign-in on the unlock screen.
+    if (!auth.isAuthenticated) unlockSession();
+
     if (!to.meta.public && !auth.isAuthenticated) {
       return getLoginRedirectLocation(to.fullPath);
+    }
+
+    // GDXA-1187: the quick-PIN lock gate. Every way a session comes to life
+    // in the app (the cold-start restore above, a resume from the background
+    // via lib/sessionLockLifecycle.js) locks it when the PIN is on, and no
+    // non-public route opens until MobilePinUnlockDialog clears the lock.
+    // Public routes stay reachable, and "Forgot PIN" signs out, so the person
+    // is never trapped. Ahead of the /login bounce and the password-change
+    // hold, which would otherwise route past it.
+    if (auth.isAuthenticated && isSessionLocked()) {
+      if (to.path === SESSION_UNLOCK_PATH) return true;
+      if (!to.meta.public || to.path === '/login') {
+        return { path: SESSION_UNLOCK_PATH, query: { redirect: to.fullPath } };
+      }
+    } else if (to.path === SESSION_UNLOCK_PATH && auth.isAuthenticated) {
+      // Unlocked (or never locked): go on to where the person was headed.
+      return safeUnlockTarget(to.query?.redirect);
     }
 
     if (to.path === '/login' && auth.isAuthenticated) {
@@ -554,7 +618,7 @@ export function createAppRouter() {
         window.location.assign(redirect);
         return false;
       }
-      return { path: '/dashboard' };
+      return { path: isPlannerApp() ? PLANNER_APP_PATH : '/dashboard' };
     }
 
     // GDXA-1004: an account flagged must_change_password (the seeded initial
@@ -582,6 +646,11 @@ export function createAppRouter() {
       if (!auth.isAuthenticated) return getLoginRedirectLocation(to.fullPath);
       if (auth.mustChangePassword) return { path: PASSWORD_CHANGE_PATH };
     }
+
+    // GDX Planner shows the planner and nothing else, so none of the
+    // dispatch app's redirects or page gates below apply. After the
+    // password-change hold, which it keeps.
+    if (isPlannerApp()) return plannerAppRoute(to);
 
     if (auth.isAuthenticated && !to.meta.public && to.path !== '/login') {
       const viewMode = useViewMode();

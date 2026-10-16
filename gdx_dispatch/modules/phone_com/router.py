@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import httpx
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import desc, func
@@ -29,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db, get_tenant_db
+from gdx_dispatch.core.link_sms import definitely_not_sent
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Job
 from gdx_dispatch.modules.phone_com import key_storage
@@ -816,20 +818,89 @@ def _thread_key_for(a: str, b: str) -> str:
 @router.post("/messages")
 def send_message(
     payload: SendMessageIn,
-    request: Request,  # noqa: ARG001
+    request: Request,
     tenant_db: Session = Depends(get_tenant_db),
     control_db: Session = Depends(get_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    return _send_and_record(
+        tenant_db, control_db, user, request,
+        to=payload.to, body=payload.body, customer_id=payload.customer_id,
+        job_id=payload.job_id, extension_id=payload.extension_id,
+    )
+
+
+@router.post("/messages/photo")
+def send_photo_message(
+    request: Request,
+    to: str = Form(..., min_length=1),
+    body: str = Form(default="", max_length=1600),
+    customer_id: UUID | None = Form(default=None),
+    job_id: UUID | None = Form(default=None),
+    extension_id: int | None = Form(default=None),
+    file: UploadFile = File(...),
+    tenant_db: Session = Depends(get_tenant_db),
+    control_db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One photo, as an MMS. One per text by design (Doug, 2026-10-15): the
+    carrier size limit is per message, so a second photo would halve both.
+    Several photos are several calls; the UI sends them in turn."""
+    from gdx_dispatch.core.upload_limits import assert_upload_within_limit
+    from gdx_dispatch.modules.phone_com.mms import MAX_UPLOAD_BYTES, PhotoRejected, shrink_for_mms
+
+    to_e164 = normalize_e164(to)
+    if not to_e164:
+        raise HTTPException(status_code=422, detail="to: not a valid phone number")
+    assert_upload_within_limit(file, MAX_UPLOAD_BYTES)
+    try:
+        jpeg = shrink_for_mms(file.file.read(MAX_UPLOAD_BYTES + 1))
+    except PhotoRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _send_and_record(
+        tenant_db, control_db, user, request,
+        to=to_e164, body=body.strip(), customer_id=customer_id, job_id=job_id,
+        extension_id=extension_id, media=[(jpeg, "photo.jpg")],
+    )
+
+
+def _sent_media(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Phone.com's record of what it sent — url, type, size, filename — in the
+    same shape the sync stores for inbound MMS, so the media proxy serves an
+    outbound photo exactly as it serves an inbound one. ``data`` is dropped in
+    case the response ever echoes the base64 back."""
+    out = []
+    for m in result.get("media") or []:
+        if isinstance(m, dict):
+            out.append({k: v for k, v in m.items() if k != "data"})
+    return out
+
+
+def _send_and_record(
+    tenant_db: Session,
+    control_db: Session,
+    user: dict[str, Any],
+    request: Request,
+    *,
+    to: str,
+    body: str,
+    customer_id: UUID | None,
+    job_id: UUID | None,
+    extension_id: int | None,
+    media: list[tuple[bytes, str]] | None = None,
+) -> dict[str, Any]:
+    from gdx_dispatch.core.audit import audit_best_effort
+
     tenant_id = _coerce_tenant_uuid(user)
+    sender_id = _coerce_user_uuid(user)
     # F-55 / 2026-04-29 — resolver picks DID per tenant strategy:
     # conversation_sticky → tech_override → tenant_default.
     from gdx_dispatch.modules.phone_com.outbound_did import resolve_outbound_did
     from_number = resolve_outbound_did(
         tenant_db,
-        customer_id=getattr(payload, "customer_id", None),
-        to_number=payload.to,
-        sending_user_id=_coerce_user_uuid(user),
+        customer_id=customer_id,
+        to_number=to,
+        sending_user_id=sender_id,
     ) or ""
     if not from_number:
         raise HTTPException(
@@ -837,43 +908,103 @@ def send_message(
             detail="No outbound number configured. Set Settings → Phone.com → Default outbound number.",
         )
 
+    def _trail(action: str, entity_id: str | None = None, **extra: Any) -> None:
+        audit_best_effort(
+            tenant_db,
+            action=action,
+            entity_type="phone_com_message",
+            entity_id=entity_id,
+            tenant_id=str(tenant_id),
+            user_id=str(sender_id) if sender_id else None,
+            request=request,
+            details={
+                "to_last4": to[-4:],
+                "from_number": from_number,
+                "customer_id": str(customer_id) if customer_id else None,
+                "job_id": str(job_id) if job_id else None,
+                **extra,
+            },
+        )
+
+    def _record(result: dict[str, Any], delivery_status: str, attachments: list) -> PhoneComMessage:
+        row = PhoneComMessage(
+            # Unique fallback when Phone.com's POST response omits an id (or
+            # never came) — a constant here would collide with the column's
+            # UNIQUE index on the second id-less send.
+            phone_com_message_id=str(result.get("id") or f"out-{uuid4()}"),
+            thread_key=_thread_key_for(from_number, to),
+            direction="out",
+            from_number=from_number,
+            to_number=to,
+            body=body,
+            sent_at=datetime.now(timezone.utc),
+            delivery_status=delivery_status,
+            attachments=attachments,
+            customer_id=customer_id,
+            job_id=job_id,
+            sent_by_user_id=sender_id,
+            raw_payload={**result, "media": attachments} if media else result,
+        )
+        tenant_db.add(row)
+        return row
+
     client = _get_phone_com_client(tenant_id, control_db, tenant_db)
     try:
         result = client.send_message(
             from_number=from_number,
-            to_number=payload.to,
-            body=payload.body,
-            extension_id=payload.extension_id,
+            to_number=to,
+            body=body,
+            media=media,
+            extension_id=extension_id,
         )
-    except PhoneComAPIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (PhoneComAPIError, httpx.HTTPError) as exc:
+        if definitely_not_sent(exc):
+            # A 4xx refusal, or no connection made: nothing reached the customer.
+            if isinstance(exc, PhoneComAPIError):
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Couldn't reach Phone.com — nothing was sent. Try again in a minute.",
+            ) from exc
+        # A read timeout or a 5xx means Phone.com may already have sent it — the
+        # client deliberately does not re-POST (client._request_with_retry).
+        # Put it in the thread as "unknown" (as the scheduled sender does), so
+        # "check the conversation" finds it instead of an empty thread that
+        # invites a second send; then leave a trail and say so.
+        pending = _record(
+            {}, "unknown",
+            # No Phone.com url yet: the thread shows "📎 attachment" per photo.
+            [{"filename": name, "size": len(data)} for data, name in media] if media else [],
+        )
+        pending.delivery_failed_reason = str(exc)[:500] or type(exc).__name__
+        tenant_db.commit()
+        _trail("phone_com_mms_unconfirmed" if media else "phone_com_sms_unconfirmed",
+               str(pending.id),
+               error=type(exc).__name__, provider_status=getattr(exc, "status_code", None))
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Phone.com didn't confirm the send — it may have gone through. "
+            "Check the conversation before sending again.",
+        ) from exc
 
-    msg = PhoneComMessage(
-        # Unique fallback when Phone.com's POST response omits an id — a
-        # constant here would collide with the column's UNIQUE index on the
-        # second id-less send (after the SMS already went out).
-        phone_com_message_id=str(result.get("id") or f"out-{uuid4()}"),
-        thread_key=_thread_key_for(from_number, payload.to),
-        direction="out",
-        from_number=from_number,
-        to_number=payload.to,
-        body=payload.body,
-        sent_at=datetime.now(timezone.utc),
-        delivery_status=result.get("status") or "queued",
-        attachments=[],
-        customer_id=payload.customer_id,
-        job_id=payload.job_id,
-        sent_by_user_id=_coerce_user_uuid(user),
-        raw_payload=result,
-    )
-    tenant_db.add(msg)
+    attachments = _sent_media(result) if media else []
+    msg = _record(result, result.get("status") or "queued", attachments)
     tenant_db.commit()
     tenant_db.refresh(msg)
+    # The text is already on the customer's phone: a failed trail row must not
+    # turn into a 500 that invites a second send (same rule as core/link_sms).
+    _trail(
+        "phone_com_mms_sent" if media else "phone_com_sms_sent",
+        str(msg.id),
+        phone_com_message_id=msg.phone_com_message_id,
+        photo_bytes=[len(d) for d, _ in media] if media else None,
+    )
     return {
         "id": str(msg.id),
         "phone_com_message_id": msg.phone_com_message_id,
         "thread_key": msg.thread_key,
         "delivery_status": msg.delivery_status,
+        "attachments": attachments,
     }
 
 

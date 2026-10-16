@@ -1123,6 +1123,10 @@ def test_truck_invoice_is_dated_the_shop_day_not_the_utc_day(session_factory):
 
     from freezegun import freeze_time
 
+    # Imported before the freeze: the route lazily imports routers.mobile, and
+    # a FastAPI router built under freezegun sees `FakeDate` in its annotations
+    # and refuses it — the test then fails only when it runs first in its shard.
+    import gdx_dispatch.routers.mobile  # noqa: F401
     from gdx_dispatch.models.tenant_models import AppSettings
 
     seed = _seed(session_factory)
@@ -1140,5 +1144,289 @@ def test_truck_invoice_is_dated_the_shop_day_not_the_utc_day(session_factory):
         body = _as_json(resp)
         assert body["invoice_date"] == date(2026, 9, 13).isoformat()
         assert body["due_date"] == (date(2026, 9, 13) + timedelta(days=30)).isoformat()
+    finally:
+        db.close()
+
+
+def test_mobile_send_pdf_renders_sent_with_pay_link(session_factory, monkeypatch):
+    """The truck's first send attached a PDF built while the row was still a
+    draft: "Payment Status: Draft", no pay link, beside an email body that
+    carried the link. The flip now precedes the render,
+    as on the desktop /send. Only the provider and the PDF engine are faked;
+    the payload the PDF is built from is the real one."""
+    from gdx_dispatch.core import payments, pdf_generator
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://pay.example.test")
+    monkeypatch.setattr(payments, "stripe_configured", lambda: True)
+    rendered: dict = {}
+
+    def _fake_pdf(invoice_data, tenant_branding, template_config=None):
+        rendered.update(invoice_data)
+        return b"%PDF-1.4 test"
+
+    monkeypatch.setattr(pdf_generator, "generate_invoice_pdf", _fake_pdf)
+    sent: dict = {}
+
+    def _fake_send(**kwargs):
+        sent.update(kwargs)
+        return True, "test-provider", None
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        inv = _as_json(mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id, send_email=False),
+            request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        # The seed's customer is raw-SQL inserted with a dashed id, which
+        # SQLite's dashless Uuid column never matches — give the invoice an
+        # ORM customer with an address to mail.
+        from gdx_dispatch.models.tenant_models import Customer as _Cust
+
+        cust = _Cust(id=uuid4(), company_id="tenant-a", name="Acme", email="a@example.com")
+        db.add(cust)
+        row = db.get(_Inv, UUID(inv["id"]))
+        row.customer_id = cust.id
+        row.verified_at = datetime.now(UTC)
+        row.verified_by_user_id = "office-user"
+        db.commit()
+        assert row.status == "draft"
+
+        with patch("gdx_dispatch.core.transactional_email.send_transactional_email", _fake_send):
+            send = mobile_invoicing.mobile_send_invoice(
+                invoice_id=inv["id"], request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert send.status_code == 200
+        db.refresh(row)
+        assert row.status == "sent" and row.public_token
+        assert sent.get("attachments"), "no PDF was attached — the test proves nothing"
+        assert rendered["status"] == "sent"
+        assert rendered["status_label"] == "Unpaid"
+        assert rendered["pay_url"] == f"https://pay.example.test/pay/{row.public_token}"
+        # The PDF's link and the email body's link are the same token.
+        assert rendered["pay_url"] in sent["html_body"]
+    finally:
+        db.close()
+
+
+def test_mobile_send_dead_transaction_keeps_flip_and_audit(session_factory, monkeypatch):
+    """The flip is committed before the email now, so it must carry its audit
+    row in the same commit: `_send_invoice_email` can swallow a failure that
+    leaves the transaction dead (its docstring). Before the audit row moved,
+    that left a committed `sent` naming nobody. The tail rolls back and
+    recovers, as the desktop /send does (GDXA-673)."""
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+
+    def _poisoning_send(db, invoice, *, tenant_id, user_id=None):
+        # A swallowed flush failure: the session is left needing rollback,
+        # and the caller is told only "not delivered".
+        try:
+            db.add(_Inv(id=uuid4(), company_id="tenant-a"))  # NOT NULLs unset
+            db.flush()
+        except Exception:
+            pass
+        return False
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            inv = _as_json(mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id, send_email=False),
+                request=_request(), current_user=_TEST_USER, db=db,
+            ))
+        row = db.get(_Inv, UUID(inv["id"]))
+        row.verified_at = datetime.now(UTC)
+        row.verified_by_user_id = "office-user"
+        db.commit()
+        monkeypatch.setattr(mobile_invoicing, "_send_invoice_email", _poisoning_send)
+        send = mobile_invoicing.mobile_send_invoice(
+            invoice_id=inv["id"], request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert send.status_code == 200
+        assert _as_json(send)["email_sent"] is False
+    finally:
+        db.close()
+
+    fresh = session_factory()
+    try:
+        row = fresh.get(_Inv, UUID(inv["id"]))
+        assert row.status == "sent"
+        assert row.sent_at is None  # nothing was delivered
+        audits = fresh.scalars(select(AuditLog).where(
+            AuditLog.entity_id == inv["id"], AuditLog.action == "mobile_invoice_sent",
+        )).all()
+        assert len(audits) == 1 and audits[0].user_id == _TEST_USER["user_id"]
+    finally:
+        fresh.close()
+
+
+def _verified_invoice_with_customer(session_factory, db) -> str:
+    """A verified draft invoice whose customer has an address to mail."""
+    from gdx_dispatch.models.tenant_models import Customer as _Cust
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    inv = _as_json(mobile_invoicing.mobile_create_invoice(
+        job_id=seed["job_id"],
+        payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id, send_email=False),
+        request=_request(), current_user=_TEST_USER, db=db,
+    ))
+    # The raw-SQL seed customer has a dashed id SQLite's Uuid column never
+    # matches — give the invoice an ORM customer.
+    cust = _Cust(id=uuid4(), company_id="tenant-a", name="Acme", email="a@example.com")
+    db.add(cust)
+    row = db.get(_Inv, UUID(inv["id"]))
+    row.customer_id = cust.id
+    row.verified_at = datetime.now(UTC)
+    row.verified_by_user_id = "office-user"
+    db.commit()
+    return inv["id"]
+
+
+def test_mobile_double_send_mails_once_and_audits_once(session_factory, monkeypatch):
+    """GDXA-1278: a retried send from the truck mailed the customer twice and
+    wrote two `mobile_invoice_sent` rows — the desktop /send's `recently_sent`
+    guard was missing here, and the truck's send was not even tagged with its
+    invoice, so no guard could see it. Real pipeline: only the SMTP hop is
+    faked, so the outbound_emails row the guard reads is really written."""
+    from sqlalchemy import select
+
+    import gdx_dispatch.core.transactional_email as te
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import OutboundEmail
+
+    smtp_calls: list[dict] = []
+
+    def _fake_smtp(**kw):
+        smtp_calls.append(kw)
+        return True, None
+
+    monkeypatch.setattr(te, "_try_smtp", _fake_smtp)
+    db = session_factory()
+    try:
+        inv_id = _verified_invoice_with_customer(session_factory, db)
+        first = mobile_invoicing.mobile_send_invoice(
+            invoice_id=inv_id, request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert first.status_code == 200
+        assert _as_json(first)["email_sent"] is True
+        second = mobile_invoicing.mobile_send_invoice(
+            invoice_id=inv_id, request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert second.status_code == 200
+        body = _as_json(second)
+        assert body["email_sent"] is False
+        assert body["email_skip_reason"] == "duplicate_send_suppressed"
+        assert body["status"] == "sent"
+
+        assert len(smtp_calls) == 1
+        rows = db.scalars(select(OutboundEmail).where(OutboundEmail.entity_id == inv_id)).all()
+        assert [(r.entity_type, r.kind, r.status) for r in rows] == [("invoice", "document", "sent")]
+        audits = db.scalars(select(AuditLog).where(
+            AuditLog.entity_id == inv_id, AuditLog.action == "mobile_invoice_sent",
+        )).all()
+        assert len(audits) == 1
+    finally:
+        db.close()
+
+
+def test_mobile_double_receipt_mails_once(session_factory, monkeypatch):
+    """GDXA-1278 sweep: /send-receipt had the same gap as /send. The second
+    tap inside the window is suppressed, mails nothing and says so."""
+    import gdx_dispatch.core.transactional_email as te
+
+    smtp_calls: list[dict] = []
+
+    def _fake_smtp(**kw):
+        smtp_calls.append(kw)
+        return True, None
+
+    monkeypatch.setattr(te, "_try_smtp", _fake_smtp)
+    db = session_factory()
+    try:
+        inv = _receipt_ready_invoice(session_factory, db)
+        bodies = [
+            _as_json(mobile_invoicing.mobile_send_receipt(
+                invoice_id=inv["id"], payload=mobile_invoicing.SendReceiptIn(),
+                request=_request(), current_user=_TEST_USER, db=db,
+            ))
+            for _ in range(2)
+        ]
+        assert bodies[0]["sent"] is True
+        assert bodies[1]["sent"] is False
+        assert bodies[1]["skip_reason"] == "duplicate_send_suppressed"
+        assert len(smtp_calls) == 1
+    finally:
+        db.close()
+
+
+def test_mobile_send_after_receipt_is_not_suppressed(session_factory, monkeypatch):
+    """The guard is kind-scoped, as on the desktop: a receipt does not block
+    the invoice email of an unpaid invoice."""
+    import gdx_dispatch.core.transactional_email as te
+
+    monkeypatch.setattr(te, "_try_smtp", lambda **kw: (True, None))
+    db = session_factory()
+    try:
+        inv = _receipt_ready_invoice(session_factory, db)
+        receipt = _as_json(mobile_invoicing.mobile_send_receipt(
+            invoice_id=inv["id"], payload=mobile_invoicing.SendReceiptIn(),
+            request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        assert receipt["sent"] is True
+        send = _as_json(mobile_invoicing.mobile_send_invoice(
+            invoice_id=inv["id"], request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        assert send["email_sent"] is True
+        assert "email_skip_reason" not in send
+    finally:
+        db.close()
+
+
+def test_mobile_receipt_for_a_second_payment_is_not_suppressed(session_factory, monkeypatch):
+    """GDXA-1278 audit: a truck receipt is per PAYMENT. The guard must stop
+    the same payment's receipt twice, never payment B's just after A's."""
+    import gdx_dispatch.core.transactional_email as te
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+    from gdx_dispatch.models.tenant_models import Payment as _Pay
+
+    smtp_calls: list[dict] = []
+
+    def _fake_smtp(**kw):
+        smtp_calls.append(kw)
+        return True, None
+
+    monkeypatch.setattr(te, "_try_smtp", _fake_smtp)
+    db = session_factory()
+    try:
+        inv = _receipt_ready_invoice(session_factory, db)
+        first = _as_json(mobile_invoicing.mobile_send_receipt(
+            invoice_id=inv["id"], payload=mobile_invoicing.SendReceiptIn(),
+            request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        assert first["sent"] is True
+        row = db.get(_Inv, UUID(inv["id"]))
+        second_payment = _Pay(invoice_id=row.id, amount=25, method="check",
+                              company_id=str(row.company_id or "t1"))
+        db.add(second_payment)
+        db.commit()
+        second = _as_json(mobile_invoicing.mobile_send_receipt(
+            invoice_id=inv["id"],
+            payload=mobile_invoicing.SendReceiptIn(payment_id=str(second_payment.id)),
+            request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        assert second["payment_id"] == str(second_payment.id)
+        assert second["sent"] is True, second
+        assert len(smtp_calls) == 2
     finally:
         db.close()

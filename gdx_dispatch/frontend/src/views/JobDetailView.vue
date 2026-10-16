@@ -970,8 +970,27 @@
           </div>
           <p class="dispatch-status-value">{{ job?.dispatch_status || job?.status || '—' }}</p>
         </div>
-        <div class="card time-entry-card">
-          <div class="card-header"><h3>Time Entries</h3></div>
+        <div class="card time-entry-card" data-testid="time-entry-card">
+          <div class="card-header">
+            <h3>Time Entries</h3>
+            <!-- GDXA-1065: the office's only way to correct a job's hours.
+                 POST/PATCH/DELETE in routers/labor.py are dispatch/admin only,
+                 so the buttons are too. -->
+            <Button v-if="canEditTimeEntries" label="Add time" icon="pi pi-plus" size="small" outlined
+              data-testid="time-entry-add" @click="openTimeEntryDialog()" />
+          </div>
+          <!-- Two clocks, two tables (Doug, 2026-10-15). The payroll time
+               clock a tech punches is `timeclock_entries_router`
+               (TimesheetsView); this card is JOB TRACKING, `time_entries`:
+               the per-job hours job costing reads and the tech's invoicing
+               screen totals (mobile_invoicing.py sums every closed row as
+               "Labor hours"). Labor billing reads only attested rows, which
+               are locked here. Nothing on this card changes payroll, and the
+               payroll clock is never written from here. -->
+          <p class="muted time-entry-scope" data-testid="time-entry-scope-note">
+            Job hours — what job costing and the tech's invoicing screen read. Payroll is paid
+            from the time clock, which is kept separately and is not changed here.
+          </p>
           <!-- Plan §3: three display bugs fixed. The Tech column bound
                `technician_name`, which _entry_to_dict never returned (always
                blank). Clock In/Out used `:body="formatDateTime"` as a PROP —
@@ -998,8 +1017,71 @@
             <Column header="Cost">
               <template #body="{ data }">{{ formatCurrency(data.labor_cost) }}</template>
             </Column>
+            <Column v-if="canEditTimeEntries" header="" :style="{ width: '6rem' }">
+              <template #body="{ data }">
+                <!-- A billed row is its invoice's labor evidence, and a
+                     day-closed row is that day's attested labor; the server
+                     refuses those writes (409), so say why instead of offering them. -->
+                <span v-if="data.billed_invoice_id" class="muted time-entry-locked"
+                  :data-testid="`time-entry-billed-${data.id}`"
+                  title="Billed on an invoice — void or edit the invoice to change these hours">
+                  <i class="pi pi-lock" /> Billed
+                </span>
+                <span v-else-if="data.day_closed_at" class="muted time-entry-locked"
+                  :data-testid="`time-entry-day-closed-${data.id}`"
+                  title="Closed by day close — these are that day's attested hours">
+                  <i class="pi pi-lock" /> Day closed
+                </span>
+                <!-- Only office-entered ("manual") rows are edited here. Every
+                     other row is the tech's: a job timer is day close's input,
+                     and a closeout's attested row ("work") is rewritten by the
+                     next closeout and billed from the closeout record. A row
+                     with a user_id is the tech's whatever its type (labor.py
+                     _refuse_if_locked). -->
+                <span v-else-if="data.entry_type !== 'manual' || data.user_id" class="muted time-entry-locked"
+                  :data-testid="`time-entry-tech-${data.id}`"
+                  title="The tech's own time (clock or closeout) — corrected through their closeout, not here">
+                  <i class="pi pi-lock" /> Tech time
+                </span>
+                <span v-else class="time-entry-actions">
+                  <Button icon="pi pi-pencil" text rounded size="small" aria-label="Edit time entry"
+                    :data-testid="`time-entry-edit-${data.id}`" @click="openTimeEntryDialog(data)" />
+                  <Button icon="pi pi-trash" text rounded size="small" severity="danger" aria-label="Delete time entry"
+                    :data-testid="`time-entry-delete-${data.id}`" @click="deleteTimeEntry(data)" />
+                </span>
+              </template>
+            </Column>
           </DataTable>
         </div>
+        <Dialog v-model:visible="timeEntryDialog" :header="timeEntryForm.id ? 'Edit time entry' : 'Add time entry'"
+          modal :style="{ width: '440px' }" :breakpoints="{ '768px': '95vw' }" data-testid="time-entry-dialog">
+          <div class="schedule-form">
+            <div class="form-field">
+              <label for="time-entry-tech">Technician</label>
+              <Select labelId="time-entry-tech" v-model="timeEntryForm.tech_id" :options="timeEntryTechOptions"
+                optionLabel="label" optionValue="value" placeholder="Pick a tech" filter class="w-full"
+                data-testid="time-entry-tech" />
+            </div>
+            <div class="form-field">
+              <label for="time-entry-start">Start</label>
+              <DatePicker inputId="time-entry-start" v-model="timeEntryForm.clock_in" showTime hourFormat="12"
+                dateFormat="mm/dd/yy" showIcon class="w-full" data-testid="time-entry-start" />
+            </div>
+            <div class="form-field">
+              <label for="time-entry-hours">Hours</label>
+              <InputNumber inputId="time-entry-hours" v-model="timeEntryForm.hours" :min="0.25" :step="0.25"
+                :minFractionDigits="0" :maxFractionDigits="2" class="w-full"
+                data-testid="time-entry-hours" />
+              <small class="muted">Hours actually worked on this job. They count toward job costing; labor
+                billing reads only the hours a tech attests at closeout or day close.</small>
+            </div>
+          </div>
+          <template #footer>
+            <Button label="Cancel" text @click="timeEntryDialog = false" />
+            <Button :label="timeEntryForm.id ? 'Save' : 'Add'" :loading="savingTimeEntry"
+              :disabled="!timeEntryFormValid" data-testid="time-entry-save" @click="saveTimeEntry" />
+          </template>
+        </Dialog>
         <div v-if="financials" class="card financials-card" data-testid="job-financials-card">
           <div class="card-header"><h3>Financials</h3></div>
           <div style="display:flex; flex-wrap:wrap; gap:2rem; padding:.5rem 0;">
@@ -1363,6 +1445,7 @@
       @applied="onStateOverrideApplied"
     />
 
+    <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
     <UndoArrivalDialog
       v-model="crewUndo.visible"
       mode="job"
@@ -1492,11 +1575,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from "vue";
+import { ref, shallowRef, computed, onMounted, nextTick, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import UndoArrivalDialog from "../components/UndoArrivalDialog.vue";
 import JobVisitsCard from "../components/JobVisitsCard.vue";
+import CrewChangeDialog from "../components/CrewChangeDialog.vue";
+import { crewOf, crewPatch, useCrewChangePrompt } from "../composables/useCrewChange";
 import { isDispatchManagerRole, pointsAtAppointments, refusalOf as visitRefusalOf } from "../utils/visitRefusals";
 import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
 import JobDailyLogCard from "../components/JobDailyLogCard.vue";
@@ -1507,6 +1592,7 @@ import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency,
 import { useToast } from "primevue/usetoast";
 import { downloadAuthedFile, openAuthedFile } from "../composables/useAuthedFile";
 import { useAuthStore } from "../stores/auth";
+import { useTenantModules } from "../composables/useTenantModules";
 import { isTechnician as isTechRole } from "../constants/roles";
 import { estimateStatusLabel, estimateStatusSeverity } from "../utils/statusSeverity";
 import { isAwaitingSchedule } from "../utils/jobDisplayState";
@@ -1525,6 +1611,7 @@ import FileUpload from "primevue/fileupload";
 import Dialog from "primevue/dialog";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
+import InputNumber from "primevue/inputnumber";
 import JobStateChip from "../components/JobStateChip.vue";
 import AuthedImage from "../components/AuthedImage.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
@@ -1673,6 +1760,9 @@ const crewTechIds = computed(() => (assignments.value.length
   ? assignments.value.map((a) => a.tech_id).filter(Boolean)
   : (job.value?.assigned_to ? [job.value.assigned_to] : [])));
 const assignmentsLoading = ref(false);
+// False until the assignment rows have been read: an unread crew is not a
+// crew of one, and the Technician picker must not act as if it were.
+const crewKnown = ref(false);
 const addAssignmentTechId = ref(null);
 const addingAssignment = ref(false);
 
@@ -2014,6 +2104,105 @@ async function collectDeposit() {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to create deposit invoice", life: 5000 });
   } finally {
     collectingDeposit.value = false;
+  }
+}
+
+// GDXA-1065: add / edit / delete on the job's Time Entries card. The form
+// asks for start + hours (what a person attests to), and clock_out is derived
+// from them — the same shape a closeout row is written in.
+// The writes live in routers/labor.py, gated on the timeclock module, while
+// this card is listed through the jobs module; with timeclock off every click
+// would 403, so the controls follow the same module gate as the endpoints.
+const { isEnabled: isModuleEnabled } = useTenantModules();
+const canEditTimeEntries = computed(
+  () => isDispatchManagerRole(auth.user?.role) && isModuleEnabled("timeclock"),
+);
+const timeEntryDialog = ref(false);
+const savingTimeEntry = ref(false);
+const timeEntryForm = ref({ id: null, tech_id: null, clock_in: null, hours: null });
+// A ref, not a plain let: the tech options below must recompute per row.
+const timeEntryOriginal = shallowRef(null);
+// The row's tech may be an id no technicians row carries; keep it pickable
+// so an edit doesn't blank it.
+const timeEntryTechOptions = computed(() => {
+  const opts = techOptions.value;
+  const orig = timeEntryOriginal.value;
+  const current = orig?.tech_id;
+  if (current && !opts.some((o) => o.value === current)) {
+    return [{ label: orig.tech_name || current, value: current }, ...opts];
+  }
+  return opts;
+});
+const timeEntryFormValid = computed(() => {
+  const f = timeEntryForm.value;
+  return Boolean(f.tech_id && f.clock_in && Number(f.hours) > 0);
+});
+
+function openTimeEntryDialog(entry = null) {
+  timeEntryOriginal.value = entry;
+  timeEntryForm.value = entry
+    ? {
+        id: entry.id,
+        tech_id: entry.tech_id,
+        clock_in: entry.clock_in ? new Date(entry.clock_in) : null,
+        hours: entry.duration_minutes != null ? Math.round((entry.duration_minutes / 60) * 100) / 100 : null,
+      }
+    : { id: null, tech_id: null, clock_in: null, hours: null };
+  timeEntryDialog.value = true;
+}
+
+async function saveTimeEntry() {
+  if (!timeEntryFormValid.value) return;
+  const f = timeEntryForm.value;
+  const start = new Date(f.clock_in);
+  const minutes = Math.round(Number(f.hours) * 60);
+  const end = new Date(start.getTime() + minutes * 60000);
+  savingTimeEntry.value = true;
+  try {
+    if (f.id) {
+      // Send only what changed: re-sending tech_id makes the server re-read
+      // the tech's rate, which would overwrite a deliberate stored $0.
+      const orig = timeEntryOriginal.value || {};
+      const body = {};
+      if (f.tech_id !== orig.tech_id) body.tech_id = f.tech_id;
+      const origStart = orig.clock_in ? new Date(orig.clock_in).getTime() : null;
+      if (start.getTime() !== origStart || minutes !== orig.duration_minutes) {
+        body.clock_in = start.toISOString();
+        body.clock_out = end.toISOString();
+      }
+      if (Object.keys(body).length) {
+        await api.patch(`/api/time-entries/${f.id}`, body, { successMessage: "Time entry saved" });
+      }
+    } else {
+      await api.post(`/api/jobs/${route.params.id}/time-entries`, {
+        tech_id: f.tech_id,
+        clock_in: start.toISOString(),
+        clock_out: end.toISOString(),
+      }, { successMessage: "Time entry added" });
+    }
+    timeEntryDialog.value = false;
+    await fetchTimeEntries();
+  } catch {
+    // useApi has already toasted the server's reason (a 409 says the row is billed).
+  } finally {
+    savingTimeEntry.value = false;
+  }
+}
+
+async function deleteTimeEntry(entry) {
+  const ok = await confirmAsync({
+    header: "Delete time entry?",
+    icon: "pi pi-trash",
+    message: `${entry.tech_name || "This tech"}'s ${formatHours(entry.duration_minutes)} on this job will no longer count toward job costing.`,
+    acceptLabel: "Delete",
+    acceptClass: "p-button-danger",
+  });
+  if (!ok) return;
+  try {
+    await api.del(`/api/time-entries/${entry.id}`, { successMessage: "Time entry deleted" });
+    await fetchTimeEntries();
+  } catch {
+    // useApi has already toasted the server's reason.
   }
 }
 
@@ -2443,12 +2632,77 @@ async function applyStage(stage) {
   }
 }
 
-async function assignTech(techId) {
+const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techLabel(id));
+
+// The crew from the assignment rows, lead first.
+function currentCrew() {
+  const lead = assignments.value.find((a) => a.is_lead)?.tech_id;
+  return crewOf({
+    assigned_tech_ids: assignments.value.map((a) => a.tech_id),
+    lead_tech_id: lead,
+    assigned_to: job.value.assigned_to,
+  });
+}
+
+// The Select's @change hands over { originalEvent, value }, not the id.
+async function assignTech(change) {
+  const techId = change && typeof change === "object" ? change.value : change;
   if (!job.value.id) return;
+  // A single assigned_tech_id replaces the whole crew, so on a crew job a
+  // pick keeps everyone: a member becomes lead, anyone else is a swap or an
+  // add. Clearing the picker unassigns everyone, after a confirm. With the crew
+  // unread (still loading, or the read failed) nothing is sent: a wrong
+  // guess here is the crew wipe this guards against.
+  if (assignmentsLoading.value || !crewKnown.value) {
+    selectedTech.value = job.value.assigned_to || null;
+    toast.add({
+      severity: "warn",
+      summary: "Crew not loaded",
+      detail: "The crew on this job could not be read yet, so the technician was not changed. Reload the page and try again.",
+      life: 5000,
+    });
+    return;
+  }
+  const crew = currentCrew();
+  if (techId && crew.length >= 2) {
+    const id = String(techId);
+    if (id === crew[0]) return;
+    if (crew.includes(id)) {
+      await setLead(id);
+      return;
+    }
+    const choice = await askCrew({ crew, techId: id, jobLabel: job.value.customer_name || job.value.title });
+    if (!choice) {
+      selectedTech.value = job.value.assigned_to || null;
+      return;
+    }
+    try {
+      await api.patch(`/api/jobs/${job.value.id}`, crewPatch(choice), { successMessage: "Crew updated" });
+      await fetchAssignments();
+      await fetchJob();
+    } catch {
+      selectedTech.value = job.value.assigned_to || null;
+    }
+    return;
+  }
+  // The picker's X takes every tech off the job, crew and all, so it asks.
+  if (!techId && crew.length) {
+    const ok = await confirmAsync({
+      header: crew.length > 1 ? "Remove every technician?" : "Remove the technician?",
+      message: `${crew.map((id) => techLabel(id)).join(", ")} will be taken off this job, and it goes back to unassigned.`,
+      acceptLabel: "Remove",
+    });
+    if (!ok) {
+      selectedTech.value = job.value.assigned_to || null;
+      return;
+    }
+  }
   try {
     await api.patch(`/api/jobs/${job.value.id}`, { assigned_tech_id: techId }, { successMessage: techId ? "Technician assigned" : "Technician cleared" });
+    if (!techId) await fetchAssignments();
     await fetchJob();
   } catch {
+    selectedTech.value = job.value.assigned_to || null;
   }
 }
 
@@ -2459,8 +2713,10 @@ async function fetchAssignments() {
   try {
     const data = await api.get(`/api/jobs/${route.params.id}/assignments`);
     assignments.value = Array.isArray(data) ? data : (data?.data || []);
+    crewKnown.value = true;
   } catch {
     assignments.value = [];
+    crewKnown.value = false;
   } finally {
     assignmentsLoading.value = false;
   }
@@ -2520,7 +2776,10 @@ async function setLead(techId) {
     );
     await fetchAssignments();
     await fetchJob();
-  } catch { /* api toasts errors */ }
+  } catch {
+    // api toasts errors; the picker goes back to the lead that still stands.
+    selectedTech.value = job.value.assigned_to || null;
+  }
 }
 
 async function updatePriority() {
@@ -3230,6 +3489,9 @@ onMounted(async () => {
 .activity-meta { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--p-text-muted-color); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
 .muted { color: var(--p-text-muted-color); }
+.time-entry-scope { font-size: 0.8rem; margin: 0 0 0.5rem; }
+.time-entry-actions { display: inline-flex; gap: 0.15rem; white-space: nowrap; }
+.time-entry-locked { font-size: 0.8rem; white-space: nowrap; }
 
 /* Schedule dialog. `.w-full` is used all over this app but never defined
    anywhere, so the controls need real width rules to fill the dialog. */

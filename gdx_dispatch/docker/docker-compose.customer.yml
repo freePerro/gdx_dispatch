@@ -150,11 +150,13 @@ services:
     # --requirepass from the minted secret so an untrusted container that reaches
     # redis (the Celery broker) can't inject tasks into DB-credentialed workers.
     # `$(cat …)` strips the trailing newline, matching REDIS_URL's copy.
+    # noeviction + AOF on a volume, as in docker-compose.yml (GDXA-1117).
     command: >
       sh -c 'exec redis-server --requirepass "$$(cat /secrets/redis_password)"
-      --maxmemory 256mb --maxmemory-policy allkeys-lru'
+      --maxmemory 256mb --maxmemory-policy noeviction --appendonly yes'
     volumes:
       - gdx_secrets:/secrets:ro
+      - gdx_redis_data:/data
     depends_on:
       secrets-init:
         condition: service_completed_successfully
@@ -474,6 +476,7 @@ networks:
 # project updates containers but keeps these.
 volumes:
   gdx_db_data:
+  gdx_redis_data:
   gdx_uploads:
   gdx_plugins:
   gdx_secrets:

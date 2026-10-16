@@ -136,12 +136,49 @@
             />
           </div>
 
+          <div v-if="photos.length" class="photo-strip" data-test="ms-compose-photos">
+            <div v-for="(p, i) in photos" :key="i" class="photo-chip">
+              <img v-if="p.preview" :src="p.preview" alt="" class="photo-thumb" />
+              <span v-else class="photo-name">{{ p.file.name }}</span>
+              <Button
+                icon="pi pi-times"
+                text
+                rounded
+                size="small"
+                severity="secondary"
+                :aria-label="`Remove ${p.file.name}`"
+                @click="removePhoto(i)"
+              />
+            </div>
+            <span v-if="photos.length > 1" class="photo-note">Each photo goes as its own text</span>
+          </div>
           <div class="compose-row">
+            <!-- One picker: on Android and iOS an image picker already offers
+                 the camera beside the gallery, so a separate camera button
+                 would only take width from the message box. -->
+            <input
+              ref="photoInput"
+              type="file"
+              :accept="SMS_PHOTO_ACCEPT"
+              multiple
+              hidden
+              data-test="ms-compose-photo-input"
+              @change="onPhotoPick"
+            />
+            <Button
+              icon="pi pi-camera"
+              aria-label="Attach a photo"
+              severity="secondary"
+              outlined
+              :disabled="sending"
+              @click="photoInput?.click()"
+              data-test="ms-compose-attach"
+            />
             <Textarea
               v-model="composeBody"
               rows="2"
               auto-resize
-              placeholder="Type a reply…"
+              :placeholder="photos.length ? 'Add a message…' : 'Type a reply…'"
               class="compose-input"
               data-test="ms-compose-body"
             />
@@ -151,19 +188,21 @@
               aria-label="Send later"
               severity="secondary"
               outlined
-              :disabled="!composeBody.trim() || sending"
+              :disabled="!composeBody.trim() || sending || photos.length > 0"
               @click="laterOpen = !laterOpen"
               data-test="ms-compose-later"
             />
             <Button
               icon="pi pi-send"
               aria-label="Send"
-              :disabled="!composeBody.trim() || sending"
+              :disabled="(!composeBody.trim() && !photos.length) || sending"
               :loading="sending"
               @click="sendReply"
               data-test="ms-compose-send"
             />
           </div>
+          <div v-if="photoProgress" class="quiet-hint" data-test="ms-photo-progress">{{ photoProgress }}</div>
+          <div v-if="photoError" class="status-line error-banner" data-test="ms-photo-error">{{ photoError }}</div>
           <div
             v-if="quiet && composeBody.trim() && !laterOpen"
             class="quiet-hint"
@@ -200,6 +239,7 @@ import SendLaterPanel from '../components/SendLaterPanel.vue'
 import ScheduledTextsList from '../components/ScheduledTextsList.vue'
 import OfficeAlertsToggle from '../components/OfficeAlertsToggle.vue'
 import { isQuietHours, whenLabel } from '../utils/sendLater'
+import { useSmsPhotos, SMS_PHOTO_ACCEPT } from '../composables/useSmsPhotos'
 
 const api = useApi()
 const smsUnread = useSmsUnreadStore()
@@ -217,6 +257,18 @@ const bubblesEl = ref(null)
 const composeBody = ref('')
 const composeStatus = ref(null)
 const sending = ref(false)
+
+// Picture texts (MMS) — one photo per text; see composables/useSmsPhotos.js.
+const {
+  photos, photoError, progress: photoProgress,
+  add: addPhotos, remove: removePhoto, clear: clearPhotos, sendAll: sendPhotos,
+} = useSmsPhotos(api)
+const photoInput = ref(null)
+
+function onPhotoPick(e) {
+  addPhotos(e.target.files)
+  e.target.value = '' // picking the same photo again must fire change again
+}
 
 // Send later — the server side is modules/phone_com/scheduled.py.
 const laterOpen = ref(false)
@@ -334,6 +386,8 @@ const _scrollToLatest = async () => {
 }
 
 const openThread = async (thread) => {
+  // A photo picked for one customer must never ride along to the next.
+  if (selectedThread.value?.thread_key !== thread.thread_key) clearPhotos()
   selectedThread.value = thread
   threadMessages.value = []
   _revokeMedia()
@@ -361,26 +415,56 @@ const openThread = async (thread) => {
   }
 }
 
+const _reloadThread = async (thread) => {
+  const rr = await api.get(
+    `/api/phone-com/messages/threads/${encodeURIComponent(thread.thread_key)}?per_page=500`,
+  )
+  if (selectedThread.value?.thread_key !== thread.thread_key) return
+  threadMessages.value = rr.items
+  _loadThreadMedia(rr.items)
+  _scrollToLatest()
+}
+
 const sendReply = async () => {
-  if (!selectedThread.value || !composeBody.value.trim()) return
+  if (!selectedThread.value || sending.value) return
+  if (!composeBody.value.trim() && !photos.value.length) return
+  // The thread is fixed when Send is pressed. The user may close it or open
+  // another while this uploads; nothing below may then write into that one.
+  const thread = selectedThread.value
+  const stillOpen = () => selectedThread.value?.thread_key === thread.thread_key
   sending.value = true
   composeStatus.value = null
   try {
+    if (photos.value.length) {
+      const r = await sendPhotos({
+        to: thread.other_party_number,
+        body: composeBody.value,
+        customerId: thread.customer_id,
+      })
+      if (!stillOpen()) return
+      if (r.wordsSent) composeBody.value = ''
+      composeStatus.value = r.error
+        ? { ok: false, message: r.sent ? `${r.sent} sent, then: ${r.error}` : r.error }
+        : { ok: true, message: r.sent > 1 ? `Sent ${r.sent} photos` : 'Photo sent' }
+      // Always reload: a send Phone.com did not confirm is in the thread as
+      // "unknown", and the error says to check there before sending again.
+      await _reloadThread(thread).catch(() => {})
+      return
+    }
     const r = await api.post('/api/phone-com/messages', {
-      to: selectedThread.value.other_party_number,
+      to: thread.other_party_number,
       body: composeBody.value.trim(),
-      customer_id: selectedThread.value.customer_id || undefined,
+      customer_id: thread.customer_id || undefined,
     })
+    if (!stillOpen()) return
     composeStatus.value = { ok: true, message: `Sent · ${r.delivery_status || 'queued'}` }
     composeBody.value = ''
     // Reload the conversation so the sent bubble appears.
-    const rr = await api.get(
-      `/api/phone-com/messages/threads/${encodeURIComponent(selectedThread.value.thread_key)}?per_page=500`,
-    )
-    threadMessages.value = rr.items
-    _scrollToLatest()
+    await _reloadThread(thread)
   } catch (err) {
+    if (!stillOpen()) return
     composeStatus.value = { ok: false, message: err.message || 'Send failed' }
+    await _reloadThread(thread).catch(() => {})
   } finally {
     sending.value = false
   }
@@ -393,6 +477,7 @@ const closeThread = () => {
   laterOpen.value = false
   composeBody.value = ''
   composeStatus.value = null
+  clearPhotos()
   _revokeMedia()
 }
 
@@ -412,6 +497,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (_threadsTimer) clearInterval(_threadsTimer)
+  clearPhotos()
   _revokeMedia()
 })
 </script>
@@ -593,6 +679,44 @@ onUnmounted(() => {
 .compose-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+.photo-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: 6px;
+}
+.photo-chip {
+  position: relative;
+}
+.photo-chip .p-button {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  background: var(--p-content-background);
+}
+.photo-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+}
+.photo-name {
+  display: block;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  padding: 0.5rem 1.2rem 0.5rem 0.4rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 6px;
+}
+.photo-note {
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
 }
 .quiet-hint {
   font-size: 0.85rem;

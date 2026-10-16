@@ -47,7 +47,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # Fail before building anything when the tag has no release notes. The
+      # Fail before building anything when the tag has no release notes, or
+      # notes older than a non-doc commit the tag includes (the full history
+      # fetched above is what lets `check` see those). The
       # notes file (gdx_dispatch/release_notes/vX.Y.Z.md) must be merged to
       # main BEFORE the tag is pushed — /GDXrelease drafts it with
       # `python -m gdx_dispatch.tools.release_notes draft X.Y.Z`. On a failure

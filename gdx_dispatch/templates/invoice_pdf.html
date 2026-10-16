@@ -33,6 +33,9 @@
     .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; color: {{ branding.secondary_color }}; }
     .paid-badge { display: inline-block; border: 2.5px solid #16a34a; color: #16a34a; font-weight: 800; font-size: 18px; letter-spacing: 3px; padding: 3px 14px; border-radius: 6px; }
     .status { margin-top: 10px; color: #4b5563; }
+    .pay { margin-top: 10px; color: #1f2937; word-break: break-all; }
+    .pay a { color: {{ accent }}; }
+    .pay-notice { margin-top: 2px; font-size: 10px; color: #6b7280; word-break: normal; }
     .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
     /* Job photos grid — same shapes as estimate_pdf.html's attachments. */
     .attachments-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
@@ -64,6 +67,9 @@
     </div>
     <div class="meta-grid">
       <div>Invoice #: {{ data.invoice_number or '' }}</div>
+      {% if data.job_number %}
+      <div>Job #: {{ data.job_number }}</div>
+      {% endif %}
       {% if data.invoice_date %}
       <div>Invoice Date: {{ data.invoice_date }}</div>
       {% endif %}
@@ -79,6 +85,27 @@
     {{ data.customer.address or '' }}
   </div>
 
+  {% if data.job_name %}
+  <div class="section">
+    <strong>Job Name</strong><br>
+    {{ data.job_name }}
+  </div>
+  {% endif %}
+
+  {% if data.jobsite_address %}
+  <div class="section">
+    <strong>Jobsite</strong><br>
+    {{ data.jobsite_address }}
+  </div>
+  {% endif %}
+
+  {% if data.description %}
+  <div class="section">
+    <strong>Description of Work</strong>
+    <div style="white-space: pre-line">{{ data.description }}</div>
+  </div>
+  {% endif %}
+
     {% elif block.type == 'line_items' %}
   {{ li.line_items_table(data, tpl, block.style) }}
 
@@ -86,19 +113,19 @@
   <table class="totals"{% if block.style %} style="{{ block.style }}"{% endif %}>
     {# Tax stays separately stated even when per-line prices are hidden — an
        invoice must disclose tax. Only the per-line columns above are gated. #}
-    <tr><td class="label">Subtotal</td><td class="num">${{ '%.2f'|format(data.subtotal or 0) }}</td></tr>
-    <tr><td class="label">Tax{% if (data.tax_rate_pct or 0) > 0 %} ({{ '%g'|format(data.tax_rate_pct) }}%){% endif %}</td><td class="num">${{ '%.2f'|format(data.tax or 0) }}</td></tr>
-    <tr><td class="label">Total</td><td class="num">${{ '%.2f'|format(data.total or 0) }}</td></tr>
+    <tr><td class="label">Subtotal</td><td class="num">{{ (data.subtotal or 0) | money }}</td></tr>
+    <tr><td class="label">Tax{% if (data.tax_rate_pct or 0) > 0 %} ({{ '%g'|format(data.tax_rate_pct) }}%){% endif %}</td><td class="num">{{ (data.tax or 0) | money }}</td></tr>
+    <tr><td class="label">Total</td><td class="num">{{ (data.total or 0) | money }}</td></tr>
     {% if (data.paid_to_date or 0) > 0 %}
-    <tr><td class="label">Paid to Date</td><td class="num">-${{ '%.2f'|format(data.paid_to_date) }}</td></tr>
+    <tr><td class="label">Paid to Date</td><td class="num">-{{ data.paid_to_date | abs | money }}</td></tr>
     {% endif %}
     {# Credits applied (credit memos / applied customer credit). Without this
        line a credit-memo'd invoice printed Total − Paid ≠ Balance Due with no
        explanation (Tier-9.2). #}
     {% if (data.credits_applied or 0) > 0 %}
-    <tr><td class="label">Credits Applied</td><td class="num">-${{ '%.2f'|format(data.credits_applied) }}</td></tr>
+    <tr><td class="label">Credits Applied</td><td class="num">-{{ data.credits_applied | abs | money }}</td></tr>
     {% endif %}
-    <tr class="grand"><td>Balance Due</td><td class="num">${{ '%.2f'|format(data.balance_due or 0) }}</td></tr>
+    <tr class="grand"><td>Balance Due</td><td class="num">{{ (data.balance_due or 0) | money }}</td></tr>
   </table>
 
   {# PAID badge (2026-08-17) — the paid copy doubles as the customer's
@@ -109,14 +136,32 @@
   {% endif %}
 
   <div class="status">
-    Payment Status: {{ data.status or '' }}
+    Payment Status: {{ data.status_label or data.status or '' }}
   </div>
+
+  {# Pay link (2026-10-15) — the same /pay/{token} link and gates as the
+     invoice email; the card-fee notice travels with it, as in the email. #}
+  {% if data.pay_url %}
+  <div class="pay">
+    <strong>Pay online:</strong> <a href="{{ data.pay_url }}">{{ data.pay_url }}</a>
+    {% if data.card_notice %}<div class="pay-notice">{{ data.card_notice }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+    {% elif block.type == 'terms' %}
+  {# Payment terms in words, read off the invoice's own invoice/due dates
+     (routers/pdf._invoice_payment_terms). There is no free-text invoice
+     terms setting; estimates have one (default_terms). #}
+  {% if data.terms %}
+  <div class="section"{% if block.style %} style="{{ block.style }}"{% endif %}>
+    <strong>Terms</strong>
+    <div style="white-space: pre-line">{{ data.terms }}</div>
+  </div>
+  {% endif %}
 
     {% elif block.type == 'notes' %}
   {# invoice.notes used to print under a "Terms" heading (mislabel) — it's
-     operator-typed per-invoice text, so it belongs to the Notes block. The
-     terms block renders nothing for invoices until a tenant-wide default
-     terms text exists for billing (estimates already have one). #}
+     operator-typed per-invoice text, so it belongs to the Notes block. #}
   {% if data.notes %}
   <div class="section"{% if block.style %} style="{{ block.style }}"{% endif %}>
     <strong>Notes</strong>

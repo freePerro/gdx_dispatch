@@ -106,6 +106,7 @@ GET /.well-known/security.txt
 GET /api/.well-known/jwks.json
 GET /api/accounting/journal
 GET /api/accounting/opening/proposal
+GET /api/accounting/reports/ar-control
 GET /api/accounting/reports/balance-sheet
 GET /api/accounting/reports/pnl
 GET /api/accounting/reports/trial-balance
@@ -252,6 +253,7 @@ GET /api/documents/{document_id}
 GET /api/documents/{document_id}/download
 GET /api/door-listings
 GET /api/door-listings/{listing_id}
+GET /api/email-attachments/sources
 GET /api/estimates
 GET /api/estimates-features
 GET /api/estimates/analytics/conversion-rate
@@ -1098,6 +1100,7 @@ POST /api/phone-com/blocked-calls
 POST /api/phone-com/calls/originate
 POST /api/phone-com/calls/{call_id}/mark-heard
 POST /api/phone-com/messages
+POST /api/phone-com/messages/photo
 POST /api/phone-com/messages/schedule
 POST /api/phone-com/messages/threads/{thread_key}/mark-read
 POST /api/phone-com/scheduled/{scheduled_id}/cancel
@@ -1287,5 +1290,6 @@ PUT /api/pricing-engine/tier-sets/{set_id}
 PUT /api/pricing-engine/volume-tiers
 PUT /api/qb/schedule
 PUT /api/settings/email
+PUT /api/settings/integrations/phone-com/on-my-way
 PUT /api/workflows/{rule_id}
 PUT /portal/reseller/profile

@@ -69,7 +69,11 @@ describe('EstimateView — multi-provider estimate_source wiring', () => {
     const catchBlock = SRC.slice(SRC.indexOf('async function openCapturedPicker'), SRC.indexOf('function openFolder'));
     expect(catchBlock).toMatch(/e\?\.status === 401/);
     expect(catchBlock).toMatch(/auth\.logout\(\)/);
-    expect(catchBlock).toMatch(/router\.push\("\/login"\)/);
+    // The logout alone hands off to the gdx:auth-logout listener, which keeps
+    // the way back and says why (sessionExpiredRedirect.spec.js); a bare
+    // push('/login') would cancel that navigation, and a toast here doubled it.
+    expect(catchBlock).not.toMatch(/router\.push\(/);
+    expect(catchBlock).not.toMatch(/Session expired/);
   });
 
   it('drops picker rows without an id (dataKey + draft URL both need it)', () => {

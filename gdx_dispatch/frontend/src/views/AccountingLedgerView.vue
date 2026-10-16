@@ -9,6 +9,14 @@
       </p>
     </header>
 
+    <!-- Above the tabs so every report carries it (GDXA-1183). Remove it when
+         the Phase 2 bank-statement tie-out lands: gl-phase1-core-ledger §11 step 4. -->
+    <div class="skip-note provisional-note" role="note" data-testid="ledger-provisional-note">
+      <strong>Provisional: not yet tied out to bank statements.</strong>
+      These figures come straight from the general ledger, but nothing has yet
+      checked them against the bank. Treat them as a working view, not closed books.
+    </div>
+
     <Tabs v-model:value="activeTab" data-testid="ledger-tabs">
       <TabList>
         <Tab value="trial-balance" data-testid="ledger-tab-trial-balance">Trial Balance</Tab>
@@ -45,6 +53,117 @@
           <p v-if="tb" class="totals-row" data-testid="tb-totals">
             Totals — debit {{ fmt(tb.totals.debit_cents) }} · credit {{ fmt(tb.totals.credit_cents) }}
           </p>
+
+          <!-- Open invoices tied to the AR control account (GDXA-1181). Current
+               state only: it ignores the As-of date above. -->
+          <p v-if="arFailed" class="skip-note" role="status" data-testid="ar-control-failed">
+            The receivables tie-out could not be loaded. Press Run to try again.
+          </p>
+          <div v-if="ar" class="ar-control" data-testid="ar-control">
+            <h3 class="section-heading">
+              Receivables tie-out
+              <Tag
+                :severity="ar.tied ? 'success' : 'danger'"
+                :value="arTagLabel(ar)"
+                data-testid="ar-control-tag"
+              />
+            </h3>
+            <p class="memo-col">
+              Today's open invoice balances against the Accounts Receivable account.
+              This check ignores the As-of date.
+            </p>
+            <p v-if="!ar.ledger_posting_enabled" class="skip-note" data-testid="ar-control-off">
+              Ledger posting is off, so the AR account is not expected to match yet.
+            </p>
+            <p class="totals-row" data-testid="ar-control-totals">
+              Open invoices {{ fmt(ar.subledger_cents) }} · AR account {{ fmt(ar.control_cents) }}
+            </p>
+            <p v-if="ar.unattributed_by_source?.length" class="skip-note" data-testid="ar-control-unattributed">
+              {{ fmt(ar.unattributed_cents) }} of AR traces to no invoice:
+              <span v-for="(row, i) in ar.unattributed_by_source" :key="row.source_type">
+                {{ row.source_type }} {{ fmt(row.amount_cents) }}<span v-if="i < ar.unattributed_by_source.length - 1">, </span>
+              </span>
+            </p>
+            <!-- GDXA-1223: a late pre-cutover payment larger than the invoice's
+                 opening balance. The excess posts nowhere, so both totals above
+                 read it as zero. -->
+            <template v-if="ar.era_settlement_shortfall_cents">
+              <p class="skip-note" data-testid="ar-control-shortfall-note">
+                {{ fmt(ar.era_settlement_shortfall_cents) }} of payments dated before the
+                ledger start is on no ledger line: each exceeds what its invoice still owed
+                at the start. Check the payment or the opening balance.<span
+                  v-if="ar.era_settlement_shortfall_count > ar.era_settlement_shortfalls.length"
+                  data-testid="ar-control-shortfall-cap"
+                > Showing the {{ ar.era_settlement_shortfalls.length }} largest of
+                  {{ ar.era_settlement_shortfall_count }} payments.</span>
+              </p>
+              <DataTable :value="ar.era_settlement_shortfalls" size="small" data-testid="ar-control-shortfalls">
+                <Column header="Invoice">
+                  <template #body="{ data }">
+                    <router-link :to="`/billing/${data.invoice_id}`" class="source-link">
+                      {{ data.invoice_number || data.invoice_id }}
+                    </router-link>
+                  </template>
+                </Column>
+                <Column header="Paid on" style="width: 7rem">
+                  <template #body="{ data }">{{ data.payment_date || '—' }}</template>
+                </Column>
+                <Column header="Payment" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.amount_cents) }}</template>
+                </Column>
+                <Column header="On the ledger" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.allocated_cents) }}</template>
+                </Column>
+                <!-- GDXA-1247: excess already refunded to the customer is not missing. -->
+                <Column header="Refunded" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.refunded_cents || 0) }}</template>
+                </Column>
+                <Column header="Uncovered" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.uncovered_cents) }}</template>
+                </Column>
+              </DataTable>
+            </template>
+            <!-- GDXA-1247: a refunded excess no longer counts against the tie,
+                 but the refund was booked against revenue (the money was never
+                 on customer credit), so it stays named here. -->
+            <p
+              v-if="ar.era_settlement_refunded_cents"
+              class="skip-note"
+              data-testid="ar-control-era-refunded-note"
+            >
+              {{ fmt(ar.era_settlement_refunded_cents) }} of payments dated before the ledger
+              start that posted nowhere was refunded to the customer. The refund was booked
+              against revenue, because the money was never on customer credit.
+            </p>
+            <template v-if="ar.drift_invoice_count">
+              <p class="skip-note" data-testid="ar-control-drift-note">
+                {{ ar.drift_invoice_count }} invoice(s) disagree with the ledger<span
+                  v-if="ar.drift_invoice_count > ar.drift.length"
+                >; the {{ ar.drift.length }} largest are listed</span>.
+              </p>
+              <DataTable :value="ar.drift" size="small" data-testid="ar-control-drift">
+                <Column header="Invoice">
+                  <template #body="{ data }">
+                    <router-link :to="`/billing/${data.invoice_id}`" class="source-link">
+                      {{ data.invoice_number || data.invoice_id }}
+                    </router-link>
+                  </template>
+                </Column>
+                <Column header="Status" style="width: 7rem">
+                  <template #body="{ data }">{{ data.deleted ? 'deleted' : data.status }}</template>
+                </Column>
+                <Column header="Open balance" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.open_balance_cents) }}</template>
+                </Column>
+                <Column header="Ledger AR" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.ledger_ar_cents) }}</template>
+                </Column>
+                <Column header="Difference" class="amount-col">
+                  <template #body="{ data }">{{ fmt(data.drift_cents) }}</template>
+                </Column>
+              </DataTable>
+            </template>
+          </div>
         </TabPanel>
 
         <!-- ── P&L ───────────────────────────────────────────────────── -->
@@ -284,6 +403,8 @@ const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
 
 const tbAsOf = ref(today);
 const tb = ref(null);
+const ar = ref(null);
+const arFailed = ref(false);
 const pnlStart = ref(monthStart);
 const pnlEnd = ref(today);
 const pnlBasis = ref('accrual');
@@ -310,6 +431,23 @@ const journalSourceOptions = [
 const fmt = (cents) => {
   const dollars = (cents || 0) / 100;
   return dollars.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+};
+
+// difference_cents is a signed net: invoices drifting +X and -X, or untraced
+// sources of +X and -X, cancel to $0.00 while the tie-out still fails. Name
+// what is off in figures that cannot cancel (GDXA-1229). An era-settlement
+// shortfall is on neither total, so it fails the tie-out at a zero net
+// (GDXA-1223).
+const arTagLabel = (a) => {
+  if (a.tied) return 'Tied';
+  const parts = [];
+  if (a.drift_invoice_count) parts.push(`${a.drift_invoice_count} invoice(s)`);
+  const untraced = (a.unattributed_by_source || [])
+    .reduce((sum, row) => sum + Math.abs(row.amount_cents), 0);
+  if (untraced) parts.push(`${fmt(untraced)} untraced`);
+  if (a.era_settlement_shortfall_cents) parts.push(`${fmt(a.era_settlement_shortfall_cents)} posted nowhere`);
+  if (parts.length) return `NOT TIED: ${parts.join(', ')}`;
+  return a.difference_cents ? `NOT TIED: ${fmt(a.difference_cents)}` : 'NOT TIED';
 };
 
 // What the ledger's net income does not contain yet (GDXA-356). The report
@@ -341,7 +479,15 @@ const iso = (value) => {
 };
 
 const loadTrialBalance = async () => {
-  tb.value = await get(`/api/accounting/reports/trial-balance?as_of=${iso(tbAsOf.value)}`);
+  // Independent on purpose: a failed tie must not blank the trial balance.
+  const [trial, tie] = await Promise.allSettled([
+    get(`/api/accounting/reports/trial-balance?as_of=${iso(tbAsOf.value)}`),
+    get('/api/accounting/reports/ar-control'),
+  ]);
+  ar.value = tie.status === 'fulfilled' ? tie.value : null;
+  arFailed.value = tie.status === 'rejected';
+  if (trial.status === 'rejected') throw trial.reason;
+  tb.value = trial.value;
 };
 const loadPnl = async () => {
   pnl.value = await get(
@@ -400,6 +546,14 @@ onMounted(loadTrialBalance);
   border-radius: 6px;
   font-size: 0.9rem;
 }
+
+:root[data-theme='dark'] .skip-note {
+  background: color-mix(in srgb, var(--p-amber-400, #fbbf24) 12%, transparent);
+  border-color: color-mix(in srgb, var(--p-amber-400, #fbbf24) 45%, transparent);
+  color: var(--p-amber-200, #fde68a);
+}
+
+.provisional-note { margin: 0 0 1rem; }
 
 .incomplete-list { margin: 0.35rem 0 0; padding-left: 1.25rem; }
 

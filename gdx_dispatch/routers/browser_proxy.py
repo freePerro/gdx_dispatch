@@ -55,15 +55,14 @@ from gdx_dispatch.core.plugin_consent import (
 )
 from gdx_dispatch.plugin_host.browser_stream import host_allowed
 from gdx_dispatch.routers.auth import get_current_user
+
+# The key auth/core validated at boot (it refuses to start without one), never
+# a local env read with a guessable fallback (GDXA-1310). Tickets carry
+# typ="browserstream", which every staff decode path refuses.
+from gdx_dispatch.routers.auth.core import ALG, SIGN_KEY, VERIFY_KEY
 from gdx_dispatch.routers.plugins_proxy import PLUGIN_HOST_UNREACHABLE, plugin_host_unavailable
 
 log = logging.getLogger(__name__)
-
-PRIV = os.getenv("RS_PRIVATE_KEY", "").replace("\\n", "\n").strip()
-PUB = os.getenv("RS_PUBLIC_KEY", "").replace("\\n", "\n").strip()
-ALG = "RS256" if PRIV else "HS256"
-SIGN_KEY = PRIV or os.getenv("JWT_SECRET", "dev-secret")
-VERIFY_KEY = (PUB or PRIV) if ALG == "RS256" else SIGN_KEY
 
 _OWNER_ROLES = {"owner"}
 _TICKET_TTL = 30  # seconds — just long enough to open the socket

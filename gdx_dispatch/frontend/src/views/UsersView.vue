@@ -18,6 +18,10 @@
           <span class="stat-count">{{ roleCounts.technician }}</span>
           <span class="stat-label">Technician</span>
         </div>
+        <div class="stat-card" data-testid="users-stat-sales">
+          <span class="stat-count">{{ roleCounts.sales }}</span>
+          <span class="stat-label">Sales</span>
+        </div>
         <div class="stat-card" data-testid="users-stat-viewer">
           <span class="stat-count">{{ roleCounts.viewer }}</span>
           <span class="stat-label">Viewer</span>
@@ -630,17 +634,16 @@ const AVATAR_COLORS = [
   '#F57C00', '#1A237E', '#00695C', '#6A1B9A', '#C2185B',
 ];
 
-// 2026-04-29 nav-cleanup: align with the canonical 5-role taxonomy from
-// /role-permissions ({admin, dispatcher, owner, technician, viewer}). The
-// previous UsersView used {Admin, Dispatch, Tech, Sales, Owner} — which both
-// renamed dispatcher/technician AND introduced a "sales" role that doesn't
-// exist in the system roles table. KPI counts beneath the chips were always
-// reading 0/0 for Sales because no row could ever match.
+// The roles routers/users.py accepts: core/roles.ASSIGNABLE_ROLES, one list
+// shared with the admin invite. Sales was removed on 2026-04-29 as a role
+// "that doesn't exist"; it is a builtin RBAC role, and Viewer was offered here
+// while this router 422ed it (GDXA-1200).
 const roleOptions = [
   { label: 'Owner', value: 'owner' },
   { label: 'Admin', value: 'admin' },
   { label: 'Dispatcher', value: 'dispatcher' },
   { label: 'Technician', value: 'technician' },
+  { label: 'Sales', value: 'sales' },
   { label: 'Viewer', value: 'viewer' },
 ];
 
@@ -650,6 +653,7 @@ const filterOptions = [
   { label: 'Admin', value: 'admin' },
   { label: 'Dispatcher', value: 'dispatcher' },
   { label: 'Technician', value: 'technician' },
+  { label: 'Sales', value: 'sales' },
   { label: 'Viewer', value: 'viewer' },
   { label: 'Inactive', value: 'inactive' },
 ];
@@ -818,7 +822,7 @@ const toBackendRole = (r) => ROLE_TO_BACKEND[r] || r;
 const fromBackendRole = (r) => ROLE_ALIASES[r] || r;
 
 const roleCounts = computed(() => {
-  const counts = { owner: 0, admin: 0, dispatcher: 0, technician: 0, viewer: 0 };
+  const counts = { owner: 0, admin: 0, dispatcher: 0, technician: 0, sales: 0, viewer: 0 };
   for (const u of users.value) {
     let r = (u.role || '').toLowerCase();
     r = ROLE_ALIASES[r] || r;

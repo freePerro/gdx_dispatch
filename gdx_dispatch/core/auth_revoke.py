@@ -4,8 +4,23 @@ When a user's status changes in a way that should invalidate their open
 sessions (deleted, deactivated, role demoted, password reset), we add
 every JTI in their refresh family to the global `used_refresh_jtis` set.
 The next refresh attempt for any of those tokens hits the replay-detected
-path and dies. The currently-issued access token still works until its
-~15-minute TTL expires, but no fresh access token can be minted.
+path and dies. No fresh access token can be minted.
+
+The currently-issued access token is NOT revoked here: this helper has no
+access ``jti`` to put on the denylist. What still accepts it, until its
+15-minute TTL (``ACCESS_TTL``) runs out (GDXA-1215):
+
+- ``get_current_user`` and the composite dispatcher refuse it on the next
+  request whenever the user row is deleted or inactive, and apply a demotion
+  from the row (``finalize_login_jwt``'s DB verify). A password reset with
+  the user still active does not stop it there.
+- The bearer fallback behind ``require_role``/``require_permission``
+  (``core/modules.py::decode_live_access_token``) and the ``/ws/dispatch``
+  handshake check signature, expiry, ``typ`` and the denylist only, so they
+  accept it for any of these events.
+
+Logout is different: it holds the access token and denylists its jti
+(``routers/auth/core.py::_denylist_access_tokens_on_logout``).
 
 Pre-fix (Sprint Auth & Identity Hardening Finding 2):
     `routers/users.py::delete_user` set `deleted_at = now()` and stopped.

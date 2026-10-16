@@ -24,6 +24,7 @@ import { useAuthStore } from '../stores/auth';
 import { useToast } from 'primevue/usetoast';
 import { useRouter } from 'vue-router';
 import { queueAction } from './useOfflineSync';
+import { getLoginRedirectLocation } from '../lib/auth-urls';
 
 // The server's refusal for a session whose account must change its password
 // first (GDXA-1003). The server sends `{code, message}`; a bare `detail`
@@ -62,7 +63,19 @@ export function createApiClient() {
     const response = await fetch(url, requestOptions);
 
     if (response.status === 401 && retry) {
-      await auth.refreshAccessToken();
+      try {
+        await auth.refreshAccessToken();
+      } catch (e) {
+        // A refresh that failed without logging out (a network blip, a
+        // gateway 5xx mid-deploy) keeps the session: rethrow as-is. A refused refresh has logged out, so
+        // this request is a 401 like any other — the status sends the caller
+        // down the session-expired path rather than a bare "Token refresh failed".
+        if (auth.isAuthenticated) throw e;
+        const err = new Error('Session expired');
+        err.status = 401;
+        err.url = url;
+        throw err;
+      }
       return request(url, options, false);
     }
 
@@ -81,10 +94,16 @@ export function createApiClient() {
         else if (rawDetail && typeof rawDetail === 'object' && typeof rawDetail.message === 'string') {
           detail = rawDetail.message;
         }
+        // require_role's `{error_type, detail, required_roles}` carries its
+        // reason in `detail` (GDXA-1144).
+        else if (rawDetail && typeof rawDetail === 'object' && typeof rawDetail.detail === 'string') {
+          detail = rawDetail.detail;
+        }
         else if (rawDetail !== undefined && rawDetail !== null) detail = JSON.stringify(rawDetail);
       } catch {}
       const err = new Error(detail);
       err.status = response.status;
+      err.url = url;
       err.code = (errBody && typeof errBody.detail === 'object' && errBody.detail)
         ? errBody.detail.code
         : undefined;
@@ -222,7 +241,7 @@ export function createApiClient() {
  * View-facing composable. Use this in `<script setup>`.
  *
  * Mutation methods accept an optional `options` arg:
- *   { successMessage?: string, suppressErrorToast?: boolean }
+ *   { successMessage?: string, suppressErrorToast?: boolean | (err) => boolean }
  *
  * Examples:
  *   const api = useApi();
@@ -249,22 +268,53 @@ export function useApi() {
   }
 
   function fireError(err, suppress) {
-    if (suppress || !toast) return;
+    // suppress: true silences every toast; a predicate silences only the
+    // errors it accepts (an expected 403), so the rest keep the handling
+    // below, the 401 logout included (GDXA-1143).
+    if (!toast || (typeof suppress === 'function' ? suppress(err) : suppress)) return;
     const status = err?.status || 0;
     const msg = err?.message || '';
 
     if (status === 401 || /Unauthorized/i.test(msg)) {
-      toast.add({ severity: 'warn', summary: 'Session expired', detail: 'Please log in again', life: 3000 });
-      if (auth) auth.logout();
-      if (router) router.push('/login');
+      // No toast: one per failing call stacked up on the board (2026-10-15),
+      // and the first call to meet a dead session is often a background poll
+      // that never comes here. The login page says why the person is there
+      // (`reason=expired`), once, whichever call noticed.
+      if (auth?.isAuthenticated) auth.logout();
+      const current = router?.currentRoute?.value;
+      if (router && current?.path !== '/login' && !current?.meta?.public) {
+        router.push(current?.fullPath
+          ? getLoginRedirectLocation(current.fullPath, 'expired')
+          : { path: '/login', query: { reason: 'expired' } }).catch(() => {});
+      }
     } else if (isPasswordChangeRequired(err)) {
       // No toast: the AppLayout banner says it once, and shell polls hitting
       // this 403 on /profile stacked a toast per call (2026-10-14 walk).
     } else if (status === 403 || /Forbidden|Missing permission/i.test(msg)) {
-      const match = msg.match(/Missing permission:\s*(\[[^\]]+\])/i);
-      const detail = match
-        ? `You don't have ${match[1]}. Ask an admin to grant it on /role-permissions.`
-        : "You don't have permission to do that. Ask an admin to grant it on /role-permissions.";
+      // Only core RBAC's refusal is fixed by a grant on /role-permissions:
+      // `Missing permission: ['billing.edit']` (require_permission),
+      // `Missing permission: plugin.<key>.<action>` (the plugin proxy). A bare
+      // `Forbidden` (FastAPI's detail for HTTPException(403); no core route
+      // sends one as of 2026-10-14) keeps the advice. Under /api/plugins it is
+      // the plugin's own `HTTPException(403)`, which the proxy passes through
+      // unchanged. Any other 403 (a plugin's own refusal, a disabled module, a
+      // role-gated route) says its own reason, without advice that cannot help
+      // (GDXA-1144).
+      const text = msg.trim();
+      const match = text.match(/^Missing permission:\s*(\[[^\]]*\]|plugin\.[a-z0-9][a-z0-9_-]*\.(?:read|write))$/);
+      const fromPlugin = /^\/api\/plugins(?:[/?]|$)/.test(err?.url || '');
+      let detail;
+      if (match) {
+        detail = `You don't have ${match[1]}. Ask an admin to grant it on /role-permissions.`;
+      } else if ((text === '' || text === 'Forbidden') && !fromPlugin) {
+        detail = "You don't have permission to do that. Ask an admin to grant it on /role-permissions.";
+      } else if (text === '' || text === 'Forbidden' || /^[[{]/.test(text) || /^Request failed \(403\)$/.test(text)) {
+        // No reason of its own, a JSON-stringified structured detail, or a
+        // non-JSON body (core always answers JSON, so that one is not core).
+        detail = "You don't have permission to do that.";
+      } else {
+        detail = msg;
+      }
       toast.add({ severity: 'warn', summary: 'Permission denied', detail, life: 5000 });
     } else if (status === 429) {
       toast.add({ severity: 'warn', summary: 'Slow down', detail: 'Too many requests — try again in a moment.', life: 4000 });
@@ -273,8 +323,8 @@ export function useApi() {
     } else if (/Failed to fetch|NetworkError/i.test(msg)) {
       toast.add({ severity: 'error', summary: 'Network error', detail: 'Check your connection', life: 4000 });
     } else {
-      // Generic fallback — covers throws from refreshAccessToken failures
-      // (status=0, msg="Token refresh failed") and any other unclassified error.
+      // Generic fallback for any unclassified error. A refused token refresh
+      // arrives as the 401 above, not here.
       toast.add({ severity: 'error', summary: 'Error', detail: msg || 'Unknown error', life: 4000 });
     }
   }

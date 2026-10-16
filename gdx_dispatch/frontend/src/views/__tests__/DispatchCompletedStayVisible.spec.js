@@ -197,4 +197,35 @@ describe('dispatch board keeps finished jobs visible', () => {
     // a scheduling decision.
     expect(wrapper.text()).not.toContain('Old import — finished, no date');
   });
+
+  // 2026-10-15: a finished job that was never scheduled matched every date,
+  // so it sat in its tech's column on every day (16 such jobs on prod). It
+  // belongs on the day it was completed, and on no day when it has no time.
+  it('shows an undated finished job in its tech column only on its completion day', async () => {
+    const undatedTeched = (id, completedAt) => ({
+      ...JOB_DONE_UNDATED,
+      id,
+      title: id,
+      technician_id: 'tech-1',
+      assigned_tech_ids: ['tech-1'],
+      completed_at: completedAt,
+    });
+    const doneToday = undatedTeched('done-today', at(14));
+    const doneLastWeek = undatedTeched(
+      'done-last-week',
+      new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate() - 7, 14).toISOString(),
+    );
+    const doneNoTime = undatedTeched('done-no-time', null);
+    const liveUndated = {
+      ...JOB_OPEN, id: 'live-undated', title: 'live-undated', scheduled_at: null, status: 'New', lifecycle_stage: 'new',
+    };
+    const wrapper = await mountBoard([doneToday, doneLastWeek, doneNoTime, liveUndated]);
+
+    const tray = wrapper.find('[data-testid="tech-timeline-tray-tech-1"]');
+    expect(tray.exists()).toBe(true);
+    expect(tray.find('[data-testid^="tray-job-done-today"]').exists()).toBe(true);
+    expect(tray.find('[data-testid^="tray-job-live-undated"]').exists()).toBe(true);
+    expect(tray.find('[data-testid^="tray-job-done-last-week"]').exists()).toBe(false);
+    expect(tray.find('[data-testid^="tray-job-done-no-time"]').exists()).toBe(false);
+  });
 });

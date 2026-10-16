@@ -62,7 +62,10 @@ describe('InvoiceCreateView — closeout prefill', () => {
   });
 
   it('renders the closeout context card with hours, notes, and the notes shortcut', () => {
-    const card = SRC.slice(SRC.indexOf('data-testid="closeout-context"'), SRC.indexOf('data-testid="closeout-context"') + 2000);
+    // The card runs up to the duplicate-part warning that follows it; a fixed
+    // character window broke each time the card grew (GDXA-890, GDXA-1184).
+    const start = SRC.indexOf('data-testid="closeout-context"');
+    const card = SRC.slice(start, SRC.indexOf('closeout-dupe-warning', start));
     expect(card).toMatch(/closeout-context-hours/);
     expect(card).toMatch(/closeout-context-notes/);
     expect(card).toMatch(/data-testid="use-closeout-notes"/);

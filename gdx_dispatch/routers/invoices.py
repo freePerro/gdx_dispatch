@@ -828,8 +828,46 @@ def _refuse_labor_suggestion_stale(db: Session) -> None:
     )
 
 
+def _refuse_restated_line_off_the_suggestion(
+    db: Session, invoice: Invoice, closeout, estimated_man_hours, time_entry_ids: list,
+) -> None:
+    """409 ``labor_suggestion_stale`` unless a line naming a restatement says
+    the man-hours the suggestion would build for it now (GDXA-890).
+
+    A restatement's line bills only what its run has not billed, and the
+    claim records that figure. If an invoice in the run was voided after the
+    suggestion was read, the line bills less than the claim would record, and
+    the difference would be on no invoice with nothing left to offer it. So
+    the line is rebuilt here — same closeout, same day rows, read now — and
+    its ``estimated_man_hours`` must match. A line with no man-hours cannot be
+    checked and is refused."""
+    from gdx_dispatch.core.billing_lanes import job_labor_lines  # noqa: PLC0415
+    from gdx_dispatch.models.tenant_models import TimeEntry  # noqa: PLC0415
+
+    if estimated_man_hours is None:
+        _refuse_labor_suggestion_stale(db)
+    ids = list(time_entry_ids)  # list[UUID]: the payload model parsed them
+    rows = [
+        (r[0], r[1], int(r[2] or 0))
+        for r in db.execute(
+            select(TimeEntry.id, TimeEntry.clock_in, TimeEntry.duration_minutes)
+            .where(TimeEntry.id.in_(ids), TimeEntry.billed_invoice_id == invoice.id)
+            .order_by(TimeEntry.clock_in, TimeEntry.id)
+        ).all()
+    ] if ids else []
+    job = db.get(Job, invoice.job_id)
+    now = [
+        ln for ln in job_labor_lines(db, job, closeout, invoice_id=invoice.id, day_rows=rows)
+        if ln.get("closeout_id") == str(closeout.id)
+    ]
+    built = Decimal(str(now[0]["estimated_man_hours"])) if now else None
+    if built is None or abs(built - Decimal(str(estimated_man_hours))) > Decimal("0.01"):
+        _refuse_labor_suggestion_stale(db)
+
+
 def _claim_labor_closeout(
-    db: Session, invoice: Invoice, closeout_id: UUID | None, *, actor: str | None
+    db: Session, invoice: Invoice, closeout_id: UUID | None, *, actor: str | None,
+    estimated_man_hours: float | None = None, time_entry_ids: list | None = None,
 ) -> bool:
     """Claim the job's closeout final-day hours for the labor line that names
     them (GDXA-799, GDXA-812), in the caller's transaction.
@@ -842,6 +880,10 @@ def _claim_labor_closeout(
     * not named — the line does not bill the closeout's hours; never claimed;
     * named, but not the job's current closeout with hours — rolled back with
       409 ``labor_suggestion_stale``;
+    * named on a restatement, with man-hours other than the line the
+      suggestion builds now for the same day rows (an invoice in the run was
+      voided or billed since it was read) — 409 ``labor_suggestion_stale``,
+      so the claim never records more than the line bills (GDXA-890);
     * named and held by another live invoice, before or during the claim —
       rolled back with 409 ``labor_already_billed``;
     * named and held by THIS invoice — a second line billing them, rolled
@@ -853,16 +895,27 @@ def _claim_labor_closeout(
     """
     if closeout_id is None:
         return False
-    from gdx_dispatch.core.closeout_billing import claim_closeout_hours, closeout_hours_holder
+    from gdx_dispatch.core.closeout_billing import (
+        claim_closeout_hours,
+        closeout_hours_billed_before,
+        closeout_hours_holder,
+        closeout_man_hours_to_bill,
+    )
     from gdx_dispatch.core.closeouts import get_current_closeout
 
     closeout = get_current_closeout(db, invoice.job_id) if invoice.job_id is not None else None
     if (
         closeout is None
         or str(closeout.id) != str(closeout_id)
-        or not Decimal(str(closeout.hours_worked or 0)) > 0
+        # Nothing left to bill: no hours, or a restatement its run has
+        # already billed in full (GDXA-890).
+        or not closeout_man_hours_to_bill(db, closeout) > 0
     ):
         _refuse_labor_suggestion_stale(db)
+    if closeout_hours_billed_before(db, closeout) > 0 or closeout.is_restatement:
+        _refuse_restated_line_off_the_suggestion(
+            db, invoice, closeout, estimated_man_hours, time_entry_ids or [],
+        )
     holder = closeout_hours_holder(db, closeout)
     if holder == invoice.id:
         _refuse_labor_already_on_invoice(db, "the closeout's labor")
@@ -2040,6 +2093,7 @@ def create_invoice(
             # The closeout's final-day hours ride the same line (GDXA-799).
             _claim_labor_closeout(
                 db, invoice, line.closeout_id, actor=_actor_id(_),
+                estimated_man_hours=line.estimated_man_hours, time_entry_ids=line.time_entry_ids,
             )
 
     # D2 — materialize an operator-entered discount as the same negative line
@@ -2883,9 +2937,9 @@ def get_invoice_activity(
     # email counts only if outbound_emails shows it went out, was not bounced,
     # and its exact HTML contains this invoice's /pay link (a zero-balance or
     # unconfigured send carries none); a text counts only on a confirmed send.
-    # A mobile email is not tagged with its invoice in outbound_emails, so it
-    # cannot count — the panel under-claims rather than guess. Nothing before
-    # views were first recorded counts either.
+    # A mobile email counts since GDXA-1278 tagged it with its invoice; one
+    # sent before that is untagged and cannot — the panel under-claims rather
+    # than guess. Nothing before views were first recorded counts either.
     #
     # A bounce voids every email sent before it. The detector's main path
     # (subject match) writes invoice_email_rejected and never stamps
@@ -3930,6 +3984,7 @@ def add_invoice_line(
     # The closeout's final-day hours ride the same line (GDXA-799).
     _claim_labor_closeout(
         db, invoice, payload.closeout_id, actor=_actor_id(current_user),
+        estimated_man_hours=payload.estimated_man_hours, time_entry_ids=payload.time_entry_ids,
     )
 
     _recalculate_invoice(invoice, db, actor=_actor_id(current_user))
@@ -4980,6 +5035,11 @@ def verify_invoice(
 class CreditMemoIn(BaseModel):
     amount: float = Field(gt=0)
     reason: str = Field(min_length=1)
+    # GDXA-1184: the restated closeout this credit settles, when the dialog was
+    # opened from one. Recorded on the audit row, so the trail says why the
+    # credit was issued; it changes nothing about the credit itself, and the
+    # offer is withdrawn by the credit's amount, not by this tag.
+    closeout_id: UUID | None = None
 
 
 def _net_paid(db: Session, invoice) -> float:
@@ -5019,6 +5079,12 @@ def issue_credit_memo(
         # P1 never debited (negative AR), and draft deletion would strand
         # the entry. Drafts are edited, not credited.
         raise HTTPException(status_code=409, detail="only issued invoices can be credited — edit the draft instead")
+    if payload.closeout_id is not None:
+        from gdx_dispatch.models.tenant_models import JobCloseout
+
+        settles = db.get(JobCloseout, payload.closeout_id)
+        if settles is None or invoice.job_id is None or str(settles.job_id) != str(invoice.job_id):
+            raise HTTPException(status_code=422, detail="closeout_id is not a closeout of this invoice's job")
     credit_amount = _money(payload.amount)
     _recalculate_invoice(invoice, db, actor=_actor_id(_))
     if float(credit_amount) > _to_float(invoice.balance_due) + 0.005:
@@ -5065,6 +5131,7 @@ def issue_credit_memo(
             "amount": float(credit_amount), "reason": payload.reason,
             "adjustment_id": str(adjustment.id),
             "stale_intent_sweep_queued": queued,
+            "closeout_id": str(payload.closeout_id) if payload.closeout_id is not None else None,
         },
     )
     db.commit()

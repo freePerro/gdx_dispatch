@@ -146,8 +146,9 @@ def test_en_route_updates_status_without_claiming_notification(session_factory):
         assert r.status_code == 200
         body = _as_json(r)
         assert body["dispatch_status"] == "en_route"
-        # Silent-success sweep 2026-09-19: the handler sends the customer
-        # nothing (no mail, SMS or task call), so it must not say it did.
+        # Silent-success sweep 2026-09-19: it must not claim a text it did
+        # not send. This tenant has not opted in to the on-my-way text
+        # (GDXA-1202), so nothing is queued and the answer is False.
         assert body["customer_notified"] is False
 
         status = db.execute(text("SELECT dispatch_status FROM jobs WHERE id = :jid"), {"jid": _JOB_ID})

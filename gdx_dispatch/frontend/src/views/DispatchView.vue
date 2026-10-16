@@ -6,9 +6,9 @@
         <div class="toolbar-controls">
           <div class="date-controls">
             <Button
-              v-tooltip="'Previous day'"
+              v-tooltip="viewMode === 'week' ? 'Previous week' : 'Previous day'"
               icon="pi pi-angle-left"
-              aria-label="Previous day"
+              :aria-label="viewMode === 'week' ? 'Previous week' : 'Previous day'"
               class="p-button-text"
               severity="secondary"
               size="small"
@@ -24,9 +24,9 @@
               class="dispatch-calendar"
             />
             <Button
-              v-tooltip="'Next day'"
+              v-tooltip="viewMode === 'week' ? 'Next week' : 'Next day'"
               icon="pi pi-angle-right"
-              aria-label="Next day"
+              :aria-label="viewMode === 'week' ? 'Next week' : 'Next day'"
               class="p-button-text"
               severity="secondary"
               size="small"
@@ -60,6 +60,19 @@
             data-testid="dispatch-date-range"
           />
           <div class="toolbar-actions">
+          <!-- Day view density (2026-10-15): shorter hours and narrower tech
+               columns so more of the day and more techs fit on one screen.
+               Remembered on this browser. -->
+          <Button
+            v-if="viewMode === 'day'"
+            v-tooltip="compactBoard ? 'Roomy layout' : 'Compact layout'"
+            :icon="compactBoard ? 'pi pi-window-maximize' : 'pi pi-window-minimize'"
+            :aria-label="compactBoard ? 'Roomy layout' : 'Compact layout'"
+            :severity="compactBoard ? 'primary' : 'secondary'"
+            size="small"
+            data-testid="dispatch-compact-toggle"
+            @click="compactBoard = !compactBoard"
+          />
           <Button
             v-tooltip="'Refresh dispatch board'"
             icon="pi pi-refresh"
@@ -88,7 +101,8 @@
             @click="runOptimizer"
           />
           <Button
-            label="Geocode Missing"
+            v-tooltip="'Geocode missing addresses'"
+            aria-label="Geocode missing addresses"
             icon="pi pi-map-marker"
             severity="secondary"
             size="small"
@@ -147,7 +161,7 @@
            Same contract as the labor card below: it renders only when
            something is wrong, and dealing with the job (closing it out, or
            giving it a new date from the job page) IS the dismissal. -->
-      <Card v-if="lateOpenJobs.length" class="board-section" data-testid="late-open-jobs">
+      <Card v-if="lateOpenJobs.length" class="board-section" :class="{ 'is-folded': lateOpenCollapsed }" data-testid="late-open-jobs">
         <template #title>
           <div class="section-header">
             <span class="section-icon pi pi-history" style="color: var(--p-red-500)"></span>
@@ -156,8 +170,10 @@
             <!-- The tech columns and intake queue must stay reachable without
                  scrolling (you cannot scroll mid-drag — see the Day View
                  note), so the list is short and can be folded away while the
-                 board is open (not persisted — it is back on the next visit,
-                 by design). The header and count stay put either way. -->
+                 board is open. The fold lasts for the browser tab (sessionStorage)
+                 so a reload does not bring the table back mid-shift; a new
+                 tab starts open again, by design. The header and count stay
+                 put either way. -->
             <Button :label="lateOpenCollapsed ? 'Show' : 'Hide'" size="small" text
               style="margin-left: auto" data-testid="late-open-toggle"
               @click="lateOpenCollapsed = !lateOpenCollapsed" />
@@ -206,16 +222,19 @@
            on the screen dispatch already has open, so nobody has to remember
            to run it and it cannot nag on a clean day. Correcting the shift IS
            the dismissal — the row drops out on the next load. -->
-      <Card v-if="laborExceptions.length" class="board-section" data-testid="labor-exceptions">
+      <Card v-if="laborExceptions.length" class="board-section" :class="{ 'is-folded': laborCollapsed }" data-testid="labor-exceptions">
         <template #title>
           <div class="section-header">
             <span class="section-icon pi pi-exclamation-triangle" style="color: var(--p-amber-500)"></span>
             <span>Timeclock needs a look</span>
             <Tag :value="String(laborExceptions.length)" severity="warn" rounded />
+            <Button :label="laborCollapsed ? 'Show' : 'Hide'" size="small" text
+              style="margin-left: auto" data-testid="labor-exceptions-toggle"
+              @click="laborCollapsed = !laborCollapsed" />
           </div>
         </template>
         <template #content>
-          <DataTable responsiveLayout="scroll" :value="laborExceptions" :rows="5" size="small" stripedRows>
+          <DataTable v-if="!laborCollapsed" responsiveLayout="scroll" :value="laborExceptions" :rows="5" size="small" stripedRows>
             <Column header="Who">
               <template #body="{ data }">
                 {{ data.tech_name || 'Unknown tech' }}
@@ -330,7 +349,7 @@
                 :data-testid="`unassigned-job-${job.card_key || job.id}`"
                 draggable="true"
                 style="cursor:pointer"
-                @dragstart="onDragStart(job, $event)"
+                @dragstart="onDragStart(job, $event, null, 'day-queue')"
                 @dragend="draggingJobId = null"
                 @click="openJobDrawer(job)"
               >
@@ -363,13 +382,14 @@
                 </div>
                 <div class="job-card-actions" @click.stop>
                   <Select
+                    :key="`assign-${queuePickerKey}`"
                     :options="assignableTechnicians"
                     optionLabel="name"
                     optionValue="id"
                     placeholder="Assign to tech..."
                     class="assign-dropdown"
                     :data-testid="`assign-dropdown-${job.card_key || job.id}`"
-                    @change="job.visit_id ? assignVisitTech(job, $event.value) : assignJob(job.id, $event.value)"
+                    @change="job.visit_id ? assignVisitTech(job, $event.value) : assignFromPicker(job.id, $event.value)"
                   />
                   <!-- Assigning a tech dates the job to the selected day
                        (_doAssignJobInner case c). When the dispatcher needs a
@@ -424,7 +444,7 @@
              scrolling. These carry the assign-to-tech drop targets (the
              TechTimelineColumn body/tray), which is the board's primary
              action; anything above them pushes those targets off screen. -->
-        <div class="tech-columns-grid" style="order: 1;">
+        <div class="tech-columns-grid" :class="{ 'is-compact': compactBoard }" style="order: 1;">
           <Card
             v-for="tech in technicianColumns"
             :key="tech.id"
@@ -477,8 +497,9 @@
                 :tech="tech"
                 :jobs="tech.jobs"
                 :selected-date="selectedDate"
+                :px-per-hour="compactBoard ? 30 : 48"
                 @open-drawer="openJobDrawer"
-                @job-drag-start="(job, e) => onDragStart(job, e)"
+                @job-drag-start="(job, e) => onDragStart(job, e, tech.id)"
                 @job-drag-end="draggingJobId = null"
                 @place="onTimelinePlace"
                 @place-tray="onTimelinePlaceTray"
@@ -595,48 +616,151 @@
            accounting can open this page but the panel 403'd inside it. -->
       <TechEfficiencyPanel v-if="viewMode === 'day' && hasPermission('dispatch.read')" data-testid="dispatch-efficiency-panel" />
 
-      <!-- Week View -->
+      <!-- Week View — technicians down the side, days across the top
+           (2026-10-15, Doug: "everything takes up too much space" and the
+           week view could not take a drop). Every cell is a drop target: a
+           card dropped on a tech's day lands on that day, at the time it
+           already had, with that tech. The arrows step a whole week here.
+           Same shape as ServiceTitan's Weekly Dispatch Board. -->
       <template v-if="viewMode === 'week'">
-        <div class="week-grid">
-          <Card
-            v-for="day in weekDays"
-            :key="day.date"
-            class="week-day-col"
-            :class="{ 'is-today': day.isToday }"
+        <!-- Drag sources and drop targets for the week: jobs with no date
+             yet, partial jobs waiting on their next day, and the holding
+             areas. Compact strips above the grid, because you cannot scroll
+             mid-drag. Always drawn: an empty strip is still where a job goes
+             back to (Doug, 2026-10-16 — the strip only rendered when it had
+             cards and took no drop, and the holding areas were not on the
+             week board at all). -->
+        <div class="week-lanes">
+          <div
+            class="week-queue"
+            :class="{ 'drag-over': dragOverTechId === 'unassigned-queue' }"
+            data-testid="week-queue"
+            @dragover.prevent="onDragOver('unassigned-queue')"
+            @dragleave="onWeekCellLeave"
+            @drop.prevent="moveToScheduleQueue($event)"
           >
-            <template #title>
-              <div class="week-day-header">
-                <span class="day-name">{{ day.dayName }}</span>
-                <span class="day-date">{{ day.dateLabel }}</span>
-                <Badge
-                  v-if="day.jobs.length"
-                  :value="day.jobs.length"
-                  severity="info"
-                />
-              </div>
-            </template>
-            <template #content>
+            <span class="week-queue-label">
+              <i class="pi pi-inbox"></i> To schedule
+              <Badge v-if="weekQueueJobs.length" :value="weekQueueJobs.length" severity="danger" />
+            </span>
+            <div class="week-queue-chips">
               <div
-                v-for="job in day.jobs"
+                v-for="job in weekQueueJobs"
                 :key="job.card_key || job.id"
-                class="job-card week-job-card"
-                :data-testid="`week-job-${day.date}-${job.card_key || job.id}`"
+                class="week-chip week-queue-chip"
+                :class="{ 'week-chip--partial': partialJobIds.has(String(job.id)) }"
+                :data-testid="`week-queue-${job.card_key || job.id}`"
+                draggable="true"
+                v-tooltip.bottom="weekChipTooltip(job)"
+                @dragstart="onDragStart(job, $event, null, 'week-queue')"
+                @dragend="draggingJobId = null"
+                @click="openJobDrawer(job)"
               >
-                <div class="job-card-header">
-                  <span class="job-customer">
-                    <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
+                <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
+                <span class="week-chip-meta">{{ partialJobIds.has(String(job.id)) ? 'next day' : formatDurationHours(job.effective_duration_hours) }}</span>
+              </div>
+              <span v-if="!weekQueueJobs.length" class="week-cell-note">Drop a job here to take it off the schedule</span>
+            </div>
+          </div>
+          <div v-if="parkingHoldingAreas.length" class="week-areas">
+            <div
+              v-for="area in parkingHoldingAreas"
+              :key="area.id"
+              class="week-queue week-area"
+              :class="{ 'drag-over': dragOverTechId === area.id }"
+              :style="{ borderLeft: '3px solid ' + area.color }"
+              :data-testid="`week-area-${area.id}`"
+              @dragover.prevent="onDragOver(area.id)"
+              @dragleave="onWeekCellLeave"
+              @drop.prevent="moveToHoldingArea($event, area.id)"
+            >
+              <span class="week-queue-label" :style="{ color: area.color }">
+                {{ area.name }}
+                <Badge v-if="getHoldingAreaJobs(area.id).length" :value="getHoldingAreaJobs(area.id).length" severity="info" />
+              </span>
+              <div class="week-queue-chips">
+                <div
+                  v-for="job in getHoldingAreaJobs(area.id)"
+                  :key="job.card_key || job.id"
+                  class="week-chip week-queue-chip"
+                  :data-testid="`week-area-job-${area.id}-${job.id}`"
+                  :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
+                  v-tooltip.bottom="weekChipTooltip(job)"
+                  @dragstart="onDragStart(job, $event, null, `area:${area.id}`)"
+                  @dragend="draggingJobId = null"
+                  @click="openJobDrawer(job)"
+                >
+                  <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
+                  <span v-if="job.scheduled_at" class="week-chip-meta">{{ formatScheduled(job.scheduled_at) }}</span>
+                </div>
+                <span v-if="!getHoldingAreaJobs(area.id).length" class="week-cell-note">Drop jobs here</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="week-board-scroll">
+          <div class="week-board" data-testid="week-board">
+            <div class="week-corner">Tech</div>
+            <button
+              v-for="day in weekDays"
+              :key="`h-${day.date}`"
+              type="button"
+              class="week-day-head"
+              :class="{ 'is-today': day.isToday }"
+              :data-testid="`week-day-head-${day.date}`"
+              v-tooltip.bottom="'Open this day'"
+              @click="openDay(day.date)"
+            >
+              <span class="day-name">{{ day.dayName }}</span>
+              <span class="day-date">{{ day.dateLabel }}</span>
+              <Badge v-if="day.jobs.length" :value="day.jobs.length" severity="info" />
+            </button>
+
+            <template v-for="row in weekRows" :key="row.id">
+              <div class="week-tech" :class="{ 'week-tech--unassigned': row.unassigned }">
+                <span class="week-tech-name">{{ row.name }}</span>
+                <span v-if="!row.unassigned" class="week-tech-hours">{{ formatDurationHours(row.weekHours) }} this week</span>
+              </div>
+              <div
+                v-for="cell in row.cells"
+                :key="`${row.id}-${cell.date}`"
+                class="week-cell"
+                :class="{
+                  'is-today': cell.isToday,
+                  'is-off': cell.isOff,
+                  'is-over': cell.isOver,
+                  'drag-over': dragOverTechId === `${row.id}|${cell.date}`,
+                }"
+                :data-testid="`week-cell-${row.id}-${cell.date}`"
+                @dragover.prevent="onDragOver(`${row.id}|${cell.date}`)"
+                @dragleave="onWeekCellLeave"
+                @drop.prevent="onWeekCellDrop($event, row.unassigned ? null : row.id, cell.date)"
+              >
+                <div
+                  v-for="job in cell.jobs"
+                  :key="job.card_key || job.id"
+                  class="week-chip"
+                  :class="{ 'week-chip--locked': job.visit_id && !job.visit_movable }"
+                  :data-testid="`week-job-${cell.date}-${job.card_key || job.id}`"
+                  :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
+                  v-tooltip.bottom="weekChipTooltip(job)"
+                  @dragstart="onDragStart(job, $event, row.unassigned ? null : row.id)"
+                  @dragend="draggingJobId = null"
+                  @click="openJobDrawer(job)"
+                >
+                  <span class="week-chip-time">{{ weekChipTime(job) }}</span>
+                  <span class="week-chip-customer">
+                    <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" />
                     {{ displayCustomer(job) }}
                   </span>
-                  <JobStateChip :job="job" />
+                  <span v-if="visitDayLabel(job)" class="week-chip-meta" :data-testid="`week-day-badge-${job.card_key}`">{{ visitDayLabel(job) }}</span>
                 </div>
-                <p v-if="displayTitle(job)" class="job-line job-title-line">{{ displayTitle(job) }}</p>
-                <p class="job-line"><i class="pi pi-user"></i> {{ techName(job.technician_id) }}</p>
-                <p v-if="visitDayLabel(job)" class="job-line" :data-testid="`week-day-badge-${job.card_key}`"><i class="pi pi-calendar-clock"></i> {{ visitDayLabel(job) }}</p>
-                <p class="job-line"><i class="pi pi-clock"></i> {{ job.time_window || 'Anytime' }} · <span class="job-duration">{{ formatDurationHours(job.effective_duration_hours) }}</span></p>
+                <span v-if="cell.isOff && !cell.jobs.length" class="week-cell-note">off</span>
+                <span v-else-if="cell.hoursLabel" class="week-cell-note" :class="{ 'is-over': cell.isOver }">{{ cell.hoursLabel }}</span>
               </div>
-              <p v-if="!day.jobs.length" class="empty-message">No jobs</p>
             </template>
-          </Card>
+          </div>
         </div>
       </template>
 
@@ -687,6 +811,67 @@
         </template>
       </Dialog>
 
+      <!-- Week board: a job with no time dropped on a day that already has
+           work asks where it goes in that day's order. An empty day needs no
+           question — it starts at the tech's shift start. -->
+      <Dialog
+        v-model:visible="slotPromptOpen"
+        :header="slotPromptHeader"
+        :modal="true"
+        :closable="true"
+        :style="{ width: '440px' }"
+        data-testid="week-slot-prompt"
+        @hide="resolveSlotPrompt(null)"
+      >
+        <p style="margin-top:0;">
+          Where does <strong>{{ slotPromptJobLabel }}</strong> go?
+        </p>
+        <ol class="week-slot-list">
+          <li v-for="item in slotPromptItems" :key="item.key">
+            <button
+              v-if="item.slot"
+              type="button"
+              class="week-slot-option"
+              :class="{ 'is-selected': slotPromptChoice === item.index }"
+              :data-testid="`week-slot-${item.index}`"
+              @click="chooseSlot(item)"
+            >
+              <span class="pi" :class="slotPromptChoice === item.index ? 'pi-circle-fill' : 'pi-circle'" />
+              Put it here — starts {{ clockLabel(item.startMin) }}
+            </button>
+            <div v-else class="week-slot-job">
+              <span class="week-slot-job-time">{{ item.rangeLabel }}</span>
+              <span>{{ item.label }}</span>
+            </div>
+          </li>
+        </ol>
+        <div style="display:flex; align-items:center; gap:0.75rem; margin-top:0.75rem;">
+          <label for="week-slot-time">Start time</label>
+          <InputText
+            id="week-slot-time"
+            v-model="slotPromptTime"
+            type="time"
+            step="900"
+            style="max-width:140px;"
+            data-testid="week-slot-time"
+          />
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" text data-testid="week-slot-cancel" @click="resolveSlotPrompt(null)" />
+          <Button
+            label="Place job"
+            icon="pi pi-check"
+            :disabled="!/^\d{2}:\d{2}$/.test(slotPromptTime || '')"
+            data-testid="week-slot-confirm"
+            @click="resolveSlotPrompt(slotPromptTime)"
+          />
+        </template>
+      </Dialog>
+
+      <!-- A crew job dropped on a tech outside its crew: swap one member or
+           add the tech. Nothing changes the crew without this answer. -->
+      <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
+
       <!-- Sprint dispatch-capacity (2026-05-20) — duration prompt on drop -->
       <Dialog
         v-model:visible="durationPromptOpen"
@@ -695,8 +880,16 @@
         :closable="true"
         :style="{ width: '420px' }"
         data-testid="dispatch-duration-prompt"
+        @hide="onDurationPromptHide"
       >
-        <p style="margin-top:0;">
+        <p v-if="durationPromptEstimate" style="margin-top:0;" data-testid="dispatch-duration-prompt-from-estimate">
+          <strong>{{ durationPromptJobLabel }}</strong> has no scheduled time yet.
+          The {{ durationPromptEstimate.accepted ? 'accepted' : 'not yet accepted' }}
+          estimate has {{ durationPromptEstimate.manHours }} man-hours; the hours below
+          are that over a crew of {{ durationPromptEstimate.crew }}.
+          Change them if you know better.
+        </p>
+        <p v-else style="margin-top:0;">
           <strong>{{ durationPromptJobLabel }}</strong> has no estimated time yet.
           A quick guess keeps the day's total accurate.
         </p>
@@ -858,7 +1051,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { usePollingRefresh } from '../composables/usePollingRefresh';
 import { useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { toShopWallClock, useTenantTimezone } from '../composables/useTenantTimezone';
+import { shopWallClockToIso, toShopWallClock, useTenantTimezone } from '../composables/useTenantTimezone';
 import { formatTime, formatDateTime } from '../composables/useFormatters';
 import { useToast } from 'primevue/usetoast';
 import Avatar from 'primevue/avatar';
@@ -867,6 +1060,9 @@ import Button from 'primevue/button';
 import DatePicker from 'primevue/datepicker';
 import Card from 'primevue/card';
 import Dialog from 'primevue/dialog';
+import CrewChangeDialog from '../components/CrewChangeDialog.vue';
+import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
 import Drawer from 'primevue/drawer';
@@ -914,7 +1110,19 @@ async function loadLaborExceptions() {
 // Office-only (jobs.read_all): the board is also opened by roles without it,
 // so don't ask rather than eat a 403 on every poll.
 const lateOpenJobs = ref([]);
-const lateOpenCollapsed = ref(false);
+// Folding either alert card holds for this browser session only (2026-10-15):
+// it no longer has to be re-folded on every date change or reload, and a
+// fresh tab still opens with the rows showing, as before.
+function sessionFlag(key) {
+  const flag = ref(false);
+  try { flag.value = window.sessionStorage.getItem(key) === '1'; } catch { /* storage blocked */ }
+  watch(flag, (v) => {
+    try { window.sessionStorage.setItem(key, v ? '1' : '0'); } catch { /* storage blocked */ }
+  });
+  return flag;
+}
+const lateOpenCollapsed = sessionFlag('gdx.dispatch.lateOpenFolded');
+const laborCollapsed = sessionFlag('gdx.dispatch.laborFolded');
 
 async function loadLateOpen({ keepOnError = false } = {}) {
   if (!hasPermission('jobs.read_all')) {
@@ -1118,7 +1326,18 @@ watch(closeoutOpen, async (v) => {
 });
 
 const selectedDate = ref(new Date());
-const viewMode = ref('day');
+// Day or Week survives a reload, as the compact toggle does (COMPACT_KEY).
+const VIEW_MODE_KEY = 'gdx.dispatch.viewMode';
+function readViewMode() {
+  try {
+    const v = window.localStorage.getItem(VIEW_MODE_KEY);
+    return v === 'week' ? 'week' : 'day';
+  } catch { return 'day'; }
+}
+const viewMode = ref(readViewMode());
+watch(viewMode, (v) => {
+  try { window.localStorage.setItem(VIEW_MODE_KEY, v); } catch { /* private mode */ }
+});
 const viewOptions = [
   { label: 'Day', value: 'day' },
   { label: 'Week', value: 'week' },
@@ -1186,6 +1405,9 @@ const durationPromptJobId = ref(null);
 const durationPromptTechId = ref(null);
 const durationPromptHours = ref('');
 const durationPromptJobLabel = ref('');
+// Set when the hours were prefilled from the job's estimate:
+// { manHours, crew, accepted }. null = blank prompt.
+const durationPromptEstimate = ref(null);
 // Sprint dispatch-timeline (2026-05-21) — carry the timeline-drop target
 // time through the prompt so confirm/skip both reach _doAssignJob with
 // the slot the user clicked, not just the tech they dropped on.
@@ -1255,6 +1477,9 @@ function normalizeTech(tech) {
     id: String(tech.id),
     name: tech.name || tech.user_id || `Tech ${tech.id}`,
     skills: normalizeSkills(tech.skills),
+    // assignableTechnicians and the column/row filters read this; dropping it
+    // made every inactive tech pickable (GDXA-1255).
+    active: tech.active !== false,
     // Sprint dispatch-capacity (2026-05-20) — effective shift values
     // (server already resolved user-override → tenant default per-field).
     effective_shift_start: tech.effective_shift_start || null,
@@ -1389,6 +1614,13 @@ function sumDurationHours(jobList) {
 // --- Computed ---
 
 function matchesDate(job, dateStr) {
+  // An undated job is intake and waits on whatever day is open — unless it
+  // is finished. A finished job never scheduled sits on the day it was
+  // completed, or on no day: matching every day drew each one in its tech's
+  // column and capacity on every date (2026-10-15, 16 such jobs on prod).
+  if (!job.scheduled_at && isTerminalJob(job)) {
+    return Boolean(job.completed_at) && zonedDateKey(job.completed_at) === dateStr;
+  }
   if (!job.scheduled_at) return dateStr === selectedDateStr.value;
   // Bucket by the OFFICE-local calendar day (tenant timezone), not the raw UTC
   // date. Slicing the UTC ISO string put an evening job into the NEXT day's
@@ -1466,6 +1698,14 @@ const readyToScheduleAreaId = computed(() => {
 const knownHoldingAreaIds = computed(
   () => new Set((holdingAreas.value || []).map((a) => String(a.id))),
 );
+
+// Parked = in a holding area the board draws a lane for, other than the
+// intake queue ("Ready to Schedule" is the queue, not a parking lot).
+function isParked(job) {
+  if (!job?.holding_area_id) return false;
+  const areaId = String(job.holding_area_id);
+  return areaId !== readyToScheduleAreaId.value && knownHoldingAreaIds.value.has(areaId);
+}
 
 // A partial job parked in a holding area (Needs Parts, …) waits there, not
 // in this queue — the same rule "New Jobs" applies below.
@@ -1582,11 +1822,92 @@ const weekDays = computed(() => {
         dayName: dayNames[i],
         dateLabel: `${d.getMonth() + 1}/${d.getDate()}`,
         isToday: ds === todayStr,
-        jobs: rangeFilteredJobs.value.filter((j) => matchesDate(j, ds)),
+        dateObj: d,
+        // Dated work only: an undated job is in the "To schedule" strip, not
+        // on whichever day of the week happens to be selected.
+        jobs: rangeFilteredJobs.value
+          .filter((j) => (j.scheduled_at || isTerminalJob(j)) && matchesDate(j, ds))
+          .sort((a, b) => String(a.scheduled_at || '').localeCompare(String(b.scheduled_at || ''))),
       });
   }
   return days;
 });
+
+// One row per tech: the active techs, plus any tech (inactive included) who
+// holds a job this week, so no card goes missing — the same rule the day
+// view's columns follow. A last row carries dated jobs with no tech.
+const weekRows = computed(() => {
+  const referenced = new Set();
+  for (const day of weekDays.value) {
+    for (const j of day.jobs) for (const tid of (j.assigned_tech_ids || [])) if (tid) referenced.add(String(tid));
+  }
+  let techs = technicians.value.filter((t) => t.active !== false || referenced.has(String(t.id)));
+  if (skillFilter.value) techs = techs.filter((t) => (t.skills || []).includes(skillFilter.value));
+  const rows = techs.map((tech) => {
+    let weekHours = 0;
+    const cells = weekDays.value.map((day) => {
+      const cellJobs = day.jobs.filter((j) => (j.assigned_tech_ids || []).map(String).includes(String(tech.id)));
+      const capacity = techCapacityHours(tech, day.dateObj);
+      const totals = sumDurationHours(cellJobs);
+      weekHours += totals.known;
+      return {
+        date: day.date,
+        isToday: day.isToday,
+        jobs: cellJobs,
+        isOff: capacity === 0,
+        isOver: capacity > 0 && totals.known > capacity,
+        hoursLabel: cellJobs.length
+          ? `${formatDurationHours(totals.known)}${capacity > 0 ? ` / ${formatDurationHours(capacity)}` : ''}${totals.unknown ? ` +${totals.unknown}?` : ''}`
+          : '',
+      };
+    });
+    return { id: String(tech.id), name: tech.name, unassigned: false, cells, weekHours: Math.round(weekHours * 100) / 100 };
+  });
+  rows.push({
+    id: 'unassigned',
+    name: 'No tech',
+    unassigned: true,
+    weekHours: 0,
+    cells: weekDays.value.map((day) => ({
+      date: day.date,
+      isToday: day.isToday,
+      // A job parked in a holding area is in that area's lane above, as on
+      // the day board — not here as well.
+      jobs: day.jobs.filter((j) => !(j.assigned_tech_ids || []).some(Boolean) && !isParked(j)),
+      isOff: false,
+      isOver: false,
+      hoursLabel: '',
+    })),
+  });
+  return rows;
+});
+
+// The week's drag sources: intake with no date yet, and partial jobs whose
+// next day is not booked. Dated-but-untechhed work is on the "No tech" row.
+const weekQueueJobs = computed(() => [
+  ...visiblePartialJobs.value,
+  ...unassignedJobs.value.filter((j) => !j.scheduled_at && !partialJobIds.value.has(String(j.id))),
+]);
+
+function weekChipTime(job) {
+  const wall = job.scheduled_at ? toShopWallClock(job.scheduled_at, tenantTimezone.value) : null;
+  if (!wall || (wall.getHours() === 0 && wall.getMinutes() === 0)) return '';
+  const h = wall.getHours();
+  const m = wall.getMinutes();
+  const h12 = h % 12 || 12;
+  return `${h12}${m ? `:${String(m).padStart(2, '0')}` : ''}${h < 12 ? 'a' : 'p'}`;
+}
+
+function weekChipTooltip(job) {
+  return [
+    displayCustomer(job),
+    displayTitle(job),
+    visitDayLabel(job),
+    job.technician_id ? techName(job.technician_id) : '',
+    `${job.time_window || 'Anytime'} · ${formatDurationHours(job.effective_duration_hours)}`,
+    job.address || '',
+  ].filter(Boolean).join('\n');
+}
 
 // --- Display helpers ---
 
@@ -1653,13 +1974,30 @@ function shiftSelectedDate(days) {
   selectedDate.value = base;
 }
 
+// In week view the arrows step a whole week — stepping a day re-drew the
+// same week shifted by one column, and nothing could be dropped meanwhile.
 function goPrevDay() {
-  shiftSelectedDate(-1);
+  shiftSelectedDate(viewMode.value === 'week' ? -7 : -1);
 }
 
 function goNextDay() {
-  shiftSelectedDate(1);
+  shiftSelectedDate(viewMode.value === 'week' ? 7 : 1);
 }
+
+function openDay(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  selectedDate.value = new Date(y, m - 1, d);
+  viewMode.value = 'day';
+}
+
+const COMPACT_KEY = 'gdx.dispatch.compact';
+function readCompact() {
+  try { return window.localStorage.getItem(COMPACT_KEY) === '1'; } catch { return false; }
+}
+const compactBoard = ref(readCompact());
+watch(compactBoard, (v) => {
+  try { window.localStorage.setItem(COMPACT_KEY, v ? '1' : '0'); } catch { /* private mode */ }
+});
 
 function openJobDrawer(job) {
   drawerJob.value = job;
@@ -1749,8 +2087,14 @@ async function geocodeMissing() {
 
 // The visit card being dragged: a drop moves that visit, never its job row.
 const draggingCard = ref(null);
+// The tech row or column the card was picked up from, when it came from one:
+// a crew job dropped on a tech outside the crew offers to swap this tech first.
+let draggingFromTechId = null;
+// The week strip or lane the card was picked up from ('week-queue',
+// 'area:<id>'): let go over that same one, the drag was cancelled.
+let draggingFromLane = null;
 
-function onDragStart(job, event) {
+function onDragStart(job, event, fromTechId = null, fromLane = null) {
   // A day that has started or closed stays where it was worked.
   if (job?.visit_id && !job.visit_movable) {
     event?.preventDefault?.();
@@ -1758,6 +2102,8 @@ function onDragStart(job, event) {
   }
   draggingCard.value = job?.visit_id ? job : null;
   draggingJobId.value = job.id;
+  draggingFromTechId = fromTechId ? String(fromTechId) : null;
+  draggingFromLane = fromLane;
   if (event?.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', String(job.id));
@@ -1834,6 +2180,286 @@ async function assignVisitTech(card, techId) {
   await moveVisitCard(card, techId, card.scheduled_at);
 }
 
+// Crossing a chip inside the cell fires dragleave on the cell; only a pointer
+// that has left the cell clears the drop highlight.
+function onWeekCellLeave(event) {
+  if (event?.currentTarget?.contains?.(event.relatedTarget)) return;
+  dragOverTechId.value = null;
+}
+
+// --- Week board: where a job with no time goes (Doug, 2026-10-15) ---
+// An empty day starts it at the tech's shift start. A day with work asks
+// where it goes in that day's order, and suggests a start from the
+// neighbours; the time stays editable, and Cancel moves nothing.
+const slotPromptOpen = ref(false);
+const slotPromptHeader = ref('');
+const slotPromptJobLabel = ref('');
+const slotPromptItems = ref([]);
+const slotPromptChoice = ref(null);
+const slotPromptTime = ref('');
+let slotPromptResolve = null;
+
+const ASSUMED_HOURS = 1; // only to suggest a start; nothing is written from it
+
+function clockLabel(min) {
+  const h = Math.floor(min / 60) % 24;
+  const m = min % 60;
+  return `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''}${h < 12 ? 'a' : 'p'}`;
+}
+function toHHMM(min) {
+  const c = Math.min(Math.max(min, 0), 23 * 60 + 45);
+  return `${String(Math.floor(c / 60)).padStart(2, '0')}:${String(c % 60).padStart(2, '0')}`;
+}
+const roundUp15 = (min) => Math.ceil(min / 15) * 15;
+const roundDown15 = (min) => Math.floor(min / 15) * 15;
+
+function jobHours(job) {
+  const v = Number(job?.effective_duration_hours) || Number(job?.scheduled_duration_hours);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+// The tech's shift start in minutes. The "No tech" row has no tech, so it
+// uses the earliest shift start on the board; 8:00 only when no tech has one.
+function dayStartMin(techId) {
+  const own = techId ? technicians.value.find((t) => String(t.id) === String(techId)) : null;
+  const parsed = parseHHMM(own?.effective_shift_start);
+  if (parsed != null) return Math.round(parsed * 60);
+  const starts = technicians.value.map((t) => parseHHMM(t.effective_shift_start)).filter((v) => v != null);
+  return starts.length ? Math.round(Math.min(...starts) * 60) : 8 * 60;
+}
+
+function timedJobsInCell(techId, dayStr, excludeId) {
+  const row = weekRows.value.find((r) => (techId ? r.id === String(techId) : r.unassigned));
+  const cell = row?.cells.find((c) => c.date === dayStr);
+  return (cell?.jobs || [])
+    .filter((j) => String(j.id) !== String(excludeId))
+    .map((j) => {
+      const wall = j.scheduled_at ? toShopWallClock(j.scheduled_at, tenantTimezone.value) : null;
+      if (!wall || (wall.getHours() === 0 && wall.getMinutes() === 0)) return null;
+      const startMin = wall.getHours() * 60 + wall.getMinutes();
+      const hours = jobHours(j);
+      return { job: j, startMin, endMin: startMin + Math.round((hours ?? ASSUMED_HOURS) * 60), knownEnd: hours != null };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.startMin - b.startMin);
+}
+
+// Resolves "HH:MM" (shop wall clock), or null when the person cancels.
+function pickWeekStart(source, techId, dayStr) {
+  const shiftStart = dayStartMin(techId);
+  const others = timedJobsInCell(techId, dayStr, source?.id);
+  if (!others.length) return Promise.resolve(toHHMM(shiftStart));
+
+  const ownMin = Math.round((jobHours(source) ?? ASSUMED_HOURS) * 60);
+  const items = [];
+  others.forEach((o, i) => {
+    const startMin = i === 0
+      ? (shiftStart + ownMin <= o.startMin ? shiftStart : roundDown15(Math.max(o.startMin - ownMin, 0)))
+      : roundUp15(others[i - 1].endMin);
+    items.push({ key: `slot-${i}`, slot: true, index: i, startMin });
+    items.push({
+      key: `job-${o.job.card_key || o.job.id}`,
+      slot: false,
+      label: displayCustomer(o.job),
+      rangeLabel: `${clockLabel(o.startMin)}–${o.knownEnd ? clockLabel(o.endMin) : '?'}`,
+    });
+  });
+  items.push({ key: `slot-${others.length}`, slot: true, index: others.length, startMin: roundUp15(others[others.length - 1].endMin) });
+
+  // Preselect the first gap the job fits in; the end of the day otherwise.
+  const slots = items.filter((it) => it.slot);
+  const fits = slots.find((s) => s.index < others.length && s.startMin + ownMin <= others[s.index].startMin
+    && (s.index === 0 || s.startMin >= others[s.index - 1].endMin));
+  const pick = fits || slots[slots.length - 1];
+
+  const [y, m, d] = dayStr.split('-').map(Number);
+  const dayLabel = new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  slotPromptHeader.value = `${techId ? techName(techId) : 'No tech'} · ${dayLabel}`;
+  slotPromptJobLabel.value = displayCustomer(source) || 'this job';
+  slotPromptItems.value = items;
+  slotPromptChoice.value = pick.index;
+  slotPromptTime.value = toHHMM(pick.startMin);
+  slotPromptOpen.value = true;
+  return new Promise((resolve) => { slotPromptResolve = resolve; });
+}
+
+function chooseSlot(item) {
+  slotPromptChoice.value = item.index;
+  slotPromptTime.value = toHHMM(item.startMin);
+}
+
+function resolveSlotPrompt(value) {
+  const resolve = slotPromptResolve;
+  slotPromptResolve = null;
+  slotPromptOpen.value = false;
+  if (resolve) resolve(value);
+}
+
+// A drop on a week cell: that tech, that day, at the time the card already
+// had (shop wall clock). A card with no time yet takes one from
+// pickWeekStart — shift start on an empty day, or a slot the person picks
+// among the day's jobs. Every path
+// below is one the day view already uses, so the duration prompt, partial-job
+// guards and the server's visit refusals all still apply.
+async function onWeekCellDrop(event, techId, dayStr) {
+  dragOverTechId.value = null;
+  const transferId = event?.dataTransfer?.getData('text/plain');
+  const jobId = transferId || draggingJobId.value;
+  if (!jobId) return;
+  draggingJobId.value = null;
+  const card = takeDraggedVisit(jobId);
+  const from = takeDragOrigin();
+  const source = card
+    || jobs.value.find((j) => String(j.id) === String(jobId))
+    || partialJobs.value.find((j) => String(j.id) === String(jobId))
+    || scheduledUnassigned.value.find((j) => String(j.id) === String(jobId));
+  const isPartial = partialJobIds.value.has(String(jobId));
+  const wall = source?.scheduled_at && !isPartial ? toShopWallClock(source.scheduled_at, tenantTimezone.value) : null;
+  let hh = wall ? wall.getHours() : 0;
+  let mm = wall ? wall.getMinutes() : 0;
+  const pad = (n) => String(n).padStart(2, '0');
+
+  if (!techId) {
+    // The "No tech" row moves a date only; taking a tech off is the job page's call.
+    if (card || isPartial || (source?.assigned_tech_ids || []).some(Boolean) || source?.technician_id) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Nothing was moved',
+        detail: 'The "No tech" row only re-dates jobs that have no tech. Drop it on a tech\'s row, or change the crew on the job page.',
+        life: 6000,
+      });
+      return;
+    }
+  }
+  if (hh === 0 && mm === 0) {
+    const start = await pickWeekStart(source, techId, dayStr);
+    if (!start) return; // cancelled: nothing moves
+    [hh, mm] = start.split(':').map(Number);
+  }
+  if (card) {
+    await sendVisitMove(card, techId, dayStr, `${pad(hh)}:${pad(mm)}`);
+    return;
+  }
+  const [y, m, d] = dayStr.split('-').map(Number);
+  const iso = shopWallClockToIso(new Date(y, m - 1, d, hh, mm), tenantTimezone.value);
+  if (isPartial) {
+    await placePartialJob(jobId, techId, iso, dayStr);
+    return;
+  }
+  // A job with a crew is drawn in every crew member's row, so a drop in any
+  // of those rows is a date move. It must not go through assignJob: one
+  // assigned_tech_id replaces the whole crew on the server, which took the
+  // lead off a two-tech job dragged along the helper's row (/audit, 2026-10-15).
+  const crew = (source?.assigned_tech_ids || []).map(String).filter(Boolean);
+  if (source?.technician_id && !crew.includes(String(source.technician_id))) crew.push(String(source.technician_id));
+  const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
+  if (source && onCrew) {
+    const datePatch = { scheduled_at: iso };
+    // An undated job with no hours gets the hours question placeCrewJob asks,
+    // or it lands in the tech's day uncounted in capacity; closing it moves
+    // nothing. The "No tech" row has no capacity, so it is exempt, as
+    // _needsDurationPrompt exempts techId=null.
+    if (techId && !source.scheduled_at && !jobHasDuration(source)) {
+      const hours = await askDurationFor(source);
+      if (hours === null) return;
+      if (hours > 0) datePatch.scheduled_duration_hours = hours;
+    }
+    await withBoardWrite(async () => {
+      try {
+        await api.patch(`/api/jobs/${jobId}`, datePatch);
+      } catch { /* api composable already toasts */ }
+      await fetchJobs();
+    });
+    return;
+  }
+  if (await placeCrewJob(jobId, techId, iso, from, source)) return;
+  await assignJob(jobId, techId, iso);
+}
+
+// --- Crew-safe placement (Doug, 2026-10-15) ---
+// One assigned_tech_id replaces the whole crew on the server, so a job with a
+// crew of two or more never goes through assignJob. Dropped on a crew member
+// it moves the time only; dropped on anyone else it asks whether to swap one
+// member for that tech or add them, and Cancel moves nothing.
+function findBoardJob(jobId) {
+  const id = String(jobId);
+  return jobs.value.find((j) => String(j.id) === id)
+    || scheduledUnassigned.value.find((j) => String(j.id) === id)
+    || unassignedJobs.value.find((j) => String(j.id) === id)
+    || null;
+}
+
+function takeDragOrigin() {
+  const from = draggingFromTechId;
+  draggingFromTechId = null;
+  return from;
+}
+
+const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techName(id));
+const { confirmAsync } = useDestructiveConfirm();
+
+// Dropping a crew job into the queue or a holding area takes every tech off
+// it (the PATCH clears the crew), so a crew of two or more asks first. A
+// one-tech drop is the plain unassign the drag is for.
+async function okToClearCrew(job) {
+  const crew = crewOf(job);
+  if (crew.length < 2) return true;
+  return confirmAsync({
+    header: "Remove every technician?",
+    message: `${crew.map((id) => techName(id)).join(", ")} will be taken off this job, and it goes back to unassigned.`,
+    acceptLabel: "Remove",
+  });
+}
+
+// True when the drop was a crew job and is handled here (moved, re-crewed
+// or cancelled); false sends the caller on to assignJob.
+async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = null) {
+  if (!techId) return false;
+  const job = knownJob || findBoardJob(jobId);
+  const crew = crewOf(job);
+  if (crew.length < 2) return false;
+  const moved = scheduledAt
+    && new Date(scheduledAt).getTime() !== new Date(job.scheduled_at || 0).getTime();
+  if (crew.includes(String(techId))) {
+    if (!moved) return true;
+    const datePatch = { scheduled_at: scheduledAt };
+    // An undated job landing in its crew's day for the first time gets the
+    // hours question a one-tech pick gets; a time move of a dated job doesn't.
+    if (!job.scheduled_at && !jobHasDuration(job)) {
+      const hours = await askDurationFor(job, crew.length);
+      if (hours === null) return true;
+      if (hours > 0) datePatch.scheduled_duration_hours = hours;
+    }
+    await withBoardWrite(async () => {
+      try {
+        await api.patch(`/api/jobs/${jobId}`, datePatch);
+      } catch { /* api composable already toasts */ }
+      await fetchJobs();
+    });
+    return true;
+  }
+  const choice = await askCrew({
+    crew, techId, jobLabel: displayCustomer(job), firstId: fromTechId,
+  });
+  if (!choice) return true; // cancelled: nothing moves
+  const patch = crewPatch(choice);
+  if (moved) patch.scheduled_at = scheduledAt;
+  // A swap or add puts the job in a new tech's day, so it gets the same
+  // duration question a one-tech drop does (assignJob); closing it cancels.
+  if (!jobHasDuration(job)) {
+    const hours = await askDurationFor(job, choice.tech_ids?.length);
+    if (hours === null) return true;
+    if (hours > 0) patch.scheduled_duration_hours = hours;
+  }
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${jobId}`, patch);
+    } catch { /* api composable already toasts */ }
+    await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
+  });
+  return true;
+}
+
 async function handleDrop(techId, event) {
   event?.preventDefault?.();
   dragOverTechId.value = null;
@@ -1842,10 +2468,12 @@ async function handleDrop(techId, event) {
   if (!dropJobId) return;
   draggingJobId.value = null;
   const card = takeDraggedVisit(dropJobId);
+  const from = takeDragOrigin();
   if (card) {
     await moveVisitCard(card, techId, card.scheduled_at);
     return;
   }
+  if (await placeCrewJob(dropJobId, techId, null, from)) return;
   await assignJob(dropJobId, techId);
 }
 
@@ -1862,12 +2490,76 @@ function _needsDurationPrompt(jobId, techId) {
     || scheduledUnassigned.value.find((j) => String(j.id) === String(jobId))
     || unassignedJobs.value.find((j) => String(j.id) === String(jobId));
   if (!job) return null;
-  const hasDuration = Number(job.scheduled_duration_hours) > 0
-    || Number(job.effective_duration_hours) > 0;
-  return hasDuration ? null : job;
+  return jobHasDuration(job) ? null : job;
+}
+
+function jobHasDuration(job) {
+  return Number(job?.scheduled_duration_hours) > 0 || Number(job?.effective_duration_hours) > 0;
+}
+
+// The crew path (placeCrewJob) asks the same question but sends the hours in
+// its own crew PATCH: it waits on this instead of the prompt assigning.
+// Resolves the hours, 0 for Skip, or null when the dialog is closed.
+let durationPromptAfter = null;
+// crewSize = how many techs the job will have once this drop saves.
+function askDurationFor(job, crewSize) {
+  if (durationPromptAfter) durationPromptAfter(null);
+  durationPromptJobId.value = job.id;
+  durationPromptTechId.value = null;
+  durationPromptScheduledAt.value = null;
+  durationPromptHours.value = '';
+  durationPromptJobLabel.value = job.customer_name || job.title || 'Job';
+  durationPromptOpen.value = true;
+  prefillDurationFromEstimate(job.id, crewSize);
+  return new Promise((resolve) => { durationPromptAfter = resolve; });
+}
+
+// The list endpoint leaves estimate man-hours out (N+1 on the board's hot
+// path), so ask for this one job when its prompt opens. A suggestion only:
+// nothing is written until Save. The hours are the estimate's man-hours over
+// the crew this drop creates, not the endpoint's duration_minutes: the prompt
+// opens before the assignment saves, so the server would divide by the crew
+// as it stands (or the labor row's default crew), not by who is being placed.
+// A failed or empty answer leaves the prompt blank, and a late answer never
+// overwrites what the scheduler typed or a prompt opened since.
+let durationPrefillSeq = 0;
+async function prefillDurationFromEstimate(jobId, crewSize) {
+  const seq = ++durationPrefillSeq;
+  durationPromptEstimate.value = null;
+  let s;
+  try {
+    s = await api.get(`/api/jobs/${encodeURIComponent(jobId)}/suggested-duration`,
+      { suppressErrorToast: true });
+  } catch (_e) {
+    return;
+  }
+  const manHours = Number(s?.man_hours);
+  if (!(manHours > 0)) return;
+  if (seq !== durationPrefillSeq || !durationPromptOpen.value) return;
+  if (durationPromptHours.value !== '') return;
+  const crew = Math.max(1, Number(crewSize) || 1);
+  durationPromptHours.value = String(Math.max(0.25, Math.ceil((manHours / crew) * 4) / 4));
+  durationPromptEstimate.value = {
+    manHours, crew, accepted: s.estimate_status === 'accepted',
+  };
+}
+
+function onDurationPromptHide() {
+  if (!durationPromptAfter) return;
+  const after = durationPromptAfter;
+  durationPromptAfter = null;
+  after(null);
 }
 
 async function confirmDurationPrompt(skip = false) {
+  if (durationPromptAfter) {
+    const after = durationPromptAfter;
+    durationPromptAfter = null;
+    const picked = Number(durationPromptHours.value);
+    durationPromptOpen.value = false;
+    after(!skip && Number.isFinite(picked) && picked > 0 ? picked : 0);
+    return;
+  }
   const jobId = durationPromptJobId.value;
   const techId = durationPromptTechId.value;
   const scheduledAt = durationPromptScheduledAt.value;
@@ -1914,6 +2606,8 @@ async function assignJob(jobId, techId, scheduledAt = null) {
       || jobNeedingDuration.title
       || 'Job';
     durationPromptOpen.value = true;
+    // A one-tech assignment: the dropped tech does the hours alone.
+    prefillDurationFromEstimate(jobId, 1);
     return;
   }
   await _doAssignJob(jobId, techId, scheduledAt);
@@ -2000,6 +2694,7 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
 async function onTimelinePlace({ jobId, techId, startISO }) {
   if (!jobId || !techId || !startISO) return;
   const card = takeDraggedVisit(jobId);
+  const from = takeDragOrigin();
   if (card) {
     await moveVisitCard(card, techId, startISO);
     return;
@@ -2008,6 +2703,9 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     await placePartialJob(jobId, techId, startISO);
     return;
   }
+  // A crew job moved along a helper's column was checked against the lead
+  // only, fell through to assignJob and lost its crew (Doug, 2026-10-15).
+  if (await placeCrewJob(jobId, techId, startISO, from)) return;
   // Same-tech reschedule with existing duration → patch scheduled_at
   // only, no duration prompt (we know the height already, and the block
   // is just moving on the same tech's timeline).
@@ -2035,6 +2733,7 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
 async function onTimelinePlaceTray({ jobId, techId }) {
   if (!jobId || !techId) return;
   const card = takeDraggedVisit(jobId);
+  const from = takeDragOrigin();
   if (card) {
     // The tray is the day with no time: shop midnight of the board day.
     await sendVisitMove(card, techId, selectedDateStr.value, '00:00');
@@ -2048,12 +2747,36 @@ async function onTimelinePlaceTray({ jobId, techId }) {
     await placePartialJob(jobId, techId, d.toISOString(), boardDay);
     return;
   }
+  if (await placeCrewJob(jobId, techId, d.toISOString(), from)) return;
   await assignJob(jobId, techId, d.toISOString());
+}
+
+const queuePickerKey = ref(0);
+
+// A tech picked from a dropdown (queue card or Assign dialog). A crew job goes
+// through placeCrewJob; an undated one lands on the selected day, as
+// _doAssignJobInner case (c) does for a one-tech job.
+async function assignFromPicker(jobId, techId) {
+  const job = findBoardJob(jobId);
+  let day = null;
+  if (job && !job.scheduled_at) {
+    const d = new Date(selectedDate.value || new Date());
+    d.setHours(0, 0, 0, 0);
+    day = d.toISOString();
+  }
+  try {
+    if (await placeCrewJob(jobId, techId, day, null)) return;
+    await assignJob(jobId, techId);
+  } finally {
+    // The queue card's Select keeps its pick internally; remount it so a
+    // cancelled pick doesn't leave a tech's name on a card nobody has.
+    queuePickerKey.value += 1;
+  }
 }
 
 function confirmAssign() {
   if (assignDialogJob.value && assignDialogTechId.value) {
-    assignJob(assignDialogJob.value.id, assignDialogTechId.value);
+    assignFromPicker(assignDialogJob.value.id, assignDialogTechId.value);
   }
   assignDialogVisible.value = false;
   assignDialogJob.value = null;
@@ -2251,11 +2974,18 @@ function formatBoardDay(iso) {
   return formatDateTime(iso, { options });
 }
 
+// The week board's lanes hold the whole week's parked work, not one day's.
+// Computed, so the per-job timezone date check runs once per data change and
+// not on every re-render a drag-over causes (/audit, 2026-10-16).
+const holdingAreaSourceJobs = computed(() => (viewMode.value === 'week'
+  ? rangeFilteredJobs.value.filter((j) => weekDays.value.some((d) => matchesDate(j, d.date)))
+  : dayJobs.value));
+
 function getHoldingAreaJobs(areaId) {
   // A lane lists a job once: a multi-day job parked here has a card per day
   // on the board, and the lane total is the job's hours, not one day's.
   const seenJobs = new Set();
-  const here = dayJobs.value.filter((j) => {
+  const here = holdingAreaSourceJobs.value.filter((j) => {
     if (j.holding_area_id !== areaId || seenJobs.has(String(j.id))) return false;
     seenJobs.add(String(j.id));
     return true;
@@ -2292,6 +3022,17 @@ async function moveToHoldingArea(event, areaId) {
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
+  // Let go over the lane it came from: a cancelled drag, not an edit. Keyed
+  // on where the drag started, not on the lane listing the job — a parked
+  // job with a tech is in its tech's row too, and dragging it from there
+  // onto its lane is how its tech comes off (/audit, 2026-10-16).
+  const fromLane = draggingFromLane;
+  draggingFromLane = null;
+  if (fromLane === `area:${areaId}`) {
+    draggingJobId.value = null;
+    draggingCard.value = null;
+    return;
+  }
   const card = takeDraggedVisit(jobId);
   if (card) {
     draggingJobId.value = null;
@@ -2303,11 +3044,15 @@ async function moveToHoldingArea(event, areaId) {
     await setPartialHoldingArea(jobId, areaId);
     return;
   }
-  const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
-  if (idx === -1) return;
+  const job = jobs.value.find((j) => String(j.id) === String(jobId));
+  if (!job) return;
   draggingJobId.value = null;
+  if (!(await okToClearCrew(job))) return;
   await withBoardWrite(async () => {
-    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null };
+    // Looked up again: the board can refresh while the confirm is open.
+    const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
+    if (idx === -1) return;
+    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
     try {
       await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
     } catch { await refreshBoard(); }
@@ -2318,12 +3063,24 @@ async function moveToHoldingArea(event, areaId) {
 // drag onto the "Ready to Schedule" holding-area column; that column no longer
 // renders separately (its jobs ARE this queue), so the queue takes the drop.
 // Routes the job back to the intake area and clears the tech, mirroring
-// moveToHoldingArea.
+// moveToHoldingArea. A drop here takes the job off the schedule, so it also
+// clears the date: left dated, it stayed booked on the day it was dragged off
+// with nobody on it — on the week board's "No tech" row and in this queue as
+// "needs a tech" (Doug, 2026-10-16).
 async function moveToScheduleQueue(event) {
   dragOverTechId.value = null;
   const transferId = event?.dataTransfer?.getData("text/plain");
   const jobId = transferId || draggingJobId.value;
   if (!jobId) return;
+  // Let go over the queue it came from: a cancelled drag, not an edit — it
+  // would otherwise clear the date of a queued "needs a tech" job.
+  const fromLane = draggingFromLane;
+  draggingFromLane = null;
+  if (fromLane === 'week-queue' || fromLane === 'day-queue') {
+    draggingJobId.value = null;
+    draggingCard.value = null;
+    return;
+  }
   const areaId = readyToScheduleAreaId.value || null;
   const card = takeDraggedVisit(jobId);
   if (card) {
@@ -2338,13 +3095,32 @@ async function moveToScheduleQueue(event) {
     await setPartialHoldingArea(jobId, areaId);
     return;
   }
-  const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
-  if (idx === -1) return;
+  const job = jobs.value.find((j) => String(j.id) === String(jobId));
+  if (!job) return;
   draggingJobId.value = null;
+  // Work that is finished or under way keeps the day it was worked. The
+  // jobs list sends the stage as a label ("In Progress"), not the enum.
+  const stage = String(job.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (isTerminalJob(job) || stage === 'in_progress') {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was moved',
+      detail: 'A job that is finished or under way keeps its date and crew. Change it on the job page.',
+      life: 6000,
+    });
+    return;
+  }
+  if (!(await okToClearCrew(job))) return;
   await withBoardWrite(async () => {
-    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
+    // Looked up again: the board can refresh while the confirm is open.
+    const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
+    if (idx === -1) return;
+    const patch = { assigned_to: null, holding_area_id: areaId, scheduled_at: null };
+    jobs.value[idx] = {
+      ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [], scheduled_at: null,
+    };
     try {
-      await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
+      await api.patch(`/api/jobs/${jobId}`, patch);
     } catch { await refreshBoard(); }
   });
 }
@@ -2548,10 +3324,60 @@ defineExpose({
   durationPromptJobId,
   durationPromptTechId,
   durationPromptScheduledAt,
+  durationPromptHours,
+  durationPromptEstimate,
 });
 </script>
 
 <style scoped>
+.week-slot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.week-slot-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px dashed var(--p-content-border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--p-text-muted-color);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.week-slot-option:hover,
+.week-slot-option.is-selected {
+  border-style: solid;
+  border-color: var(--p-primary-color);
+  color: var(--p-text-color);
+}
+.week-slot-job {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  background: var(--p-content-hover-background);
+  color: var(--p-text-color);
+}
+.week-slot-job-time {
+  font-weight: 600;
+  min-width: 6.5rem;
+}
+.board-section.is-folded :deep(.p-card-body) {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+.board-section.is-folded :deep(.p-card-content) {
+  display: none;
+}
+
 .dispatch-view {
   display: flex;
   flex-direction: column;
@@ -2580,11 +3406,11 @@ defineExpose({
 }
 
 .dispatch-range-picker {
-  min-width: 220px;
+  width: 200px;
 }
 
 .dispatch-calendar {
-  max-width: 180px;
+  max-width: 150px;
 }
 
 .date-controls {
@@ -2904,19 +3730,101 @@ defineExpose({
   border-radius: var(--p-border-radius);
 }
 
-/* Week grid */
-.week-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
+/* Week board — techs × days */
+.week-queue {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px dashed var(--p-content-border-color);
+  border-radius: var(--p-border-radius);
+}
+.week-queue-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-right: 0.25rem;
+}
+.week-queue-chip { max-width: 16rem; }
+.week-lanes { margin-bottom: 0.5rem; }
+.week-lanes .week-queue.drag-over {
+  background: color-mix(in srgb, var(--p-primary-color) 18%, transparent);
+  box-shadow: inset 0 0 0 2px var(--p-primary-color);
+}
+/* Holding areas sit side by side in one row so the grid stays on screen. */
+.week-areas {
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
 }
+.week-area {
+  flex: 1 1 14rem;
+  min-width: 0;
+  margin-bottom: 0;
+}
+/* A long intake list scrolls inside two rows instead of pushing the grid
+   down (scroll the strip first, then drag). */
+.week-queue-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 0;
+  max-height: 3.4rem;
+  overflow-y: auto;
+}
 
-.week-day-header {
+.week-board-scroll {
+  overflow-x: auto;
+}
+.week-board {
+  display: grid;
+  grid-template-columns: 8.5rem repeat(7, minmax(7.5rem, 1fr));
+  min-width: 61rem;
+  border-top: 1px solid var(--p-content-border-color);
+  border-left: 1px solid var(--p-content-border-color);
+}
+.week-corner,
+.week-day-head,
+.week-tech,
+.week-cell {
+  border-right: 1px solid var(--p-content-border-color);
+  border-bottom: 1px solid var(--p-content-border-color);
+}
+.week-corner,
+.week-day-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--p-content-background);
+}
+.week-corner {
+  left: 0;
+  z-index: 3;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--p-text-muted-color);
+}
+.week-day-head {
   display: flex;
   align-items: center;
   gap: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
   font-size: 0.85rem;
+  color: inherit;
+  border-top: 0;
+  border-left: 0;
+  cursor: pointer;
+  text-align: left;
 }
+.week-day-head:hover { background: var(--p-content-hover-background); }
+.week-day-head.is-today { box-shadow: inset 0 -3px 0 var(--p-primary-color); }
 
 .day-name {
   font-weight: 700;
@@ -2924,19 +3832,86 @@ defineExpose({
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
 }
+.day-date { font-weight: 600; }
 
-.day-date {
+.week-tech {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0.3rem 0.5rem;
+  background: var(--p-content-background);
+}
+.week-tech-name {
+  font-size: 0.85rem;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.week-tech-hours {
+  font-size: 0.7rem;
+  color: var(--p-text-muted-color);
+}
+.week-tech--unassigned .week-tech-name { color: var(--p-text-muted-color); font-style: italic; }
 
-.week-day-col.is-today {
-  border: 2px solid var(--p-primary-color);
+.week-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 2.6rem;
+  padding: 3px;
+  transition: background 0.1s;
 }
+.week-cell.is-today { background: color-mix(in srgb, var(--p-primary-color) 6%, transparent); }
+.week-cell.is-off {
+  background: repeating-linear-gradient(
+    135deg, transparent, transparent 6px,
+    color-mix(in srgb, var(--p-text-muted-color) 10%, transparent) 6px,
+    color-mix(in srgb, var(--p-text-muted-color) 10%, transparent) 8px);
+}
+.week-cell.drag-over {
+  background: color-mix(in srgb, var(--p-primary-color) 18%, transparent);
+  box-shadow: inset 0 0 0 2px var(--p-primary-color);
+}
+.week-cell-note {
+  margin-top: auto;
+  font-size: 0.68rem;
+  color: var(--p-text-muted-color);
+  text-align: right;
+}
+.week-cell-note.is-over { color: var(--p-red-500, #ef4444); font-weight: 600; }
 
-.week-job-card {
-  padding: 0.5rem;
-  font-size: 0.8rem;
+.week-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 1px 5px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  border: 1px solid var(--p-content-border-color);
+  border-left: 3px solid var(--p-primary-color);
+  border-radius: 4px;
+  background: var(--p-content-background);
+  cursor: grab;
+  overflow: hidden;
+  white-space: nowrap;
 }
+.week-chip:hover { border-color: var(--p-primary-color); }
+.week-chip--partial { border-left-color: var(--p-amber-500, #f59e0b); }
+.week-chip--locked { cursor: pointer; opacity: 0.75; border-left-color: var(--p-text-muted-color); }
+.week-chip-time { font-weight: 700; flex: none; }
+.week-chip-customer { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.week-chip-meta { flex: none; font-size: 0.68rem; color: var(--p-text-muted-color); }
+
+/* Compact day view: narrower tech columns (hours shrink via pxPerHour). */
+.tech-columns-grid.is-compact {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0.5rem;
+}
+.tech-columns-grid.is-compact :deep(.p-card-body) { padding: 0.6rem; gap: 0.4rem; }
 
 .assign-dialog {
   width: 400px;
@@ -2968,10 +3943,6 @@ defineExpose({
 }
 
 @media (max-width: 900px) {
-  .week-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
   .tech-columns-grid {
     grid-template-columns: 1fr;
   }
@@ -2985,10 +3956,6 @@ defineExpose({
   .dispatch-toolbar {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .week-grid {
-    grid-template-columns: 1fr;
   }
 }
 </style>

@@ -83,6 +83,12 @@ class AppSettings(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
     automation_sender_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # GDXA-1201 — text the customer when a tech sets off (core/on_my_way_sms).
+    # An OPTION, default OFF: before it existed nothing was texted, so turning
+    # it on is a deliberate act on the Phone.com settings card. Migration 128.
+    on_my_way_sms_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # Phone.com per-tenant integration. voip_id is the Phone.com account ID
     # (not a secret — appears in every API URL). default_extension_id chooses
     # which extension sends outbound SMS by default; default_caller_id is the
@@ -450,8 +456,10 @@ class Job(Base):
     signed_by: Mapped[str] = mapped_column(String(200), nullable=True)
     # Sprint dispatch-capacity (2026-05-20) — the scheduler's expected
     # duration in decimal hours. Distinct from estimate-derived duration
-    # (compute_man_hour_duration_minutes). The dispatch board prefers this
-    # when set; falls back to estimate-derived; surfaces "?h" if both NULL.
+    # (compute_man_hour_duration_minutes). The dispatch board shows only
+    # this (or "?h" when NULL); the estimate-derived figure is offered as a
+    # prefill in the board's drop prompt, and is written here only when
+    # the scheduler saves it.
     # Tracked against JobCloseout.hours_worked for the per-tech efficiency
     # report (foundation for bonus structure).
     scheduled_duration_hours: Mapped[Decimal | None] = mapped_column(
@@ -2243,6 +2251,13 @@ class PlannerTask(Base):
     # Today, D@00:00 UTC like due_date. On Today only while it equals today,
     # so the list empties itself each morning (the 2026-09-28 planner Today plan).
     today_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Reminder (migration 125, GDX Planner app): an instant, not a date.
+    # remind_user_id is whoever set it — "remind me" buzzes the person who
+    # asked, not the assignee. tasks/planner_reminders.py writes the bell row
+    # and stamps reminder_sent_at; moving remind_at clears it so it fires again.
+    remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    remind_user_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    reminder_sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PlannerDayNote(Base):
@@ -2685,6 +2700,17 @@ class JobCloseout(Base):
     # destroyed). supersedes_id links a restatement to what it replaced.
     superseded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     supersedes_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    # Migration 127 (GDXA-890): True when this row was written while the job
+    # was still completed — a restatement of the closeout it supersedes, so an
+    # invoice offers only the hours above what the job's earlier closeouts
+    # already billed (Doug, 2026-10-13). False after an uncomplete/reopen: new
+    # work, new hours. NULL on every row written before 127: billing reads the
+    # audit trail instead (no job_uncompleted between the closeouts = True).
+    is_restatement: Mapped[bool] = mapped_column(Boolean, nullable=True)
+    # Migration 127 (GDXA-890): the man-hours the claim that stamped
+    # billed_invoice_id billed — the full final day, or a restatement's delta.
+    # NULL on a stamped row from before 127 reads as its full man-hours.
+    man_hours_billed: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=True)
     # Migration 118 (GDXA-798): the invoice that billed this closeout's
     # final-day hours, as TimeEntry.billed_invoice_id does for a day row.
     # NULL = not billed yet, and every closeout written before 118, so old

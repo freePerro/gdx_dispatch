@@ -625,8 +625,11 @@ def list_jobs(
     # clients bucket by the TENANT-zone calendar day (zonedDateKey), which the
     # server can't reproduce without timezone math — the wide window
     # guarantees no tenant-zone match is ever excluded, and the client filter
-    # remains the precise cut. Undated jobs stay included (the boards surface
-    # them on today's column).
+    # remains the precise cut. An undated job is included while it is live
+    # (the boards surface it as intake); a finished one only when it was
+    # completed inside the window, which is the day the boards draw it on
+    # (2026-10-15: every undated completed job used to come back for every
+    # date, and the boards drew it in its tech's column on every day).
     def _parse_day(value: str, label: str) -> datetime:
         try:
             return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -710,7 +713,12 @@ def list_jobs(
             where.append("1 = 0")  # no customer has a malformed id
     if date_lo is not None and date_hi is not None:
         where.append(
-            "(j.scheduled_at IS NULL OR (j.scheduled_at >= :date_lo AND j.scheduled_at < :date_hi))"
+            "((j.scheduled_at >= :date_lo AND j.scheduled_at < :date_hi)"
+            " OR (j.scheduled_at IS NULL"
+            " AND COALESCE(CAST(j.lifecycle_stage AS text), '') NOT IN ('completed', 'cancelled'))"
+            " OR (j.scheduled_at IS NULL"
+            " AND CAST(j.lifecycle_stage AS text) = 'completed'"
+            " AND j.completed_at >= :date_lo AND j.completed_at < :date_hi))"
         )
         params["date_lo"] = date_lo
         params["date_hi"] = date_hi
@@ -801,11 +809,13 @@ def list_jobs(
     # LIST endpoint is the scheduler-entered hours only. We DELIBERATELY
     # do NOT call compute_man_hour_duration_minutes here — that helper
     # runs 2-3 queries per job and the list endpoint is the dispatch
-    # board's hot path. Estimate-derived fallback lives on the per-job
-    # detail endpoint (`/api/jobs/{id}/duration`) when a single job's
-    # value is needed. "?h" on the board is correct: it means "scheduler
-    # hasn't put a number on this yet", which is the signal the drop
-    # prompt + create dialog are built to capture. /audit 2026-05-21 — N+1.
+    # board's hot path. The estimate-derived figure is per job, from
+    # `/api/jobs/{id}/suggested-duration` (routers/appointments.py): the
+    # board's drop prompt fetches it to prefill its hours (GDXA-1262).
+    # (`/api/jobs/{id}/duration` is time actually worked, not this.) "?h"
+    # on the board is correct: it means "scheduler hasn't put a number on
+    # this yet", which is the signal the drop prompt + create dialog are
+    # built to capture. /audit 2026-05-21 — N+1.
 
     # Effective jobsite per row (core/job_site.py, one batch — no N+1 on
     # the dispatch-board hot path). The raw SELECT's location_label/
@@ -2159,7 +2169,10 @@ def _owned_closeout_labor_entry(db: Session, job_uuid: uuid.UUID) -> TimeEntry |
     Scoped to the job, not the closer: a closeout is a job-level attestation
     (one LIVE JobCloseout per job under the supersede model — a re-closeout
     stamps the prior snapshot superseded and this labor row is restated in
-    place; see core/closeouts.py). Keying this on the closer instead would
+    place; see core/closeouts.py). This is the labor/costing row only; what an
+    invoice bills reads the closeout snapshot, where a re-closeout of a still-
+    completed job offers just the hours not billed yet and a closeout after a
+    reopen offers its own (GDXA-890, core/closeout_billing). Keying this on the closer instead would
     dedupe only when the same
     human closes twice, and a tech closing 2h followed by a dispatcher closing
     3h would bill 5h for a 3h job.
@@ -2897,6 +2910,12 @@ def closeout_job(
         from gdx_dispatch.core.closeouts import get_current_closeout
 
         prior_closeout = get_current_closeout(db, job.id)
+        # A re-closeout of a job that is STILL completed restates the same
+        # work (Doug, 2026-10-13, GDXA-890): its hours are a new total, and an
+        # invoice offers only what the earlier closeouts have not billed. After
+        # an uncomplete/reopen the stage is no longer completed, so the next
+        # closeout is new work with new hours. Read before step 4 flips it.
+        restating = prior_closeout is not None and job.lifecycle_stage == "completed"
         prior_snapshot: dict[str, Any] | None = None
         if prior_closeout is not None:
             prior_closeout.superseded_at = now
@@ -2932,6 +2951,7 @@ def closeout_job(
             created_at=now,
             updated_at=now,
             supersedes_id=(prior_closeout.id if prior_closeout is not None else None),
+            is_restatement=restating,
         )
         db.add(closeout)
 
@@ -3144,6 +3164,35 @@ def closeout_job(
                 request=request,
             )
 
+        # What this restatement leaves to bill (GDXA-890), read after the
+        # autodraft: an untouched draft was released in step 0 and rebuilt in
+        # step 7, so only hours a human-held or sent invoice bills are netted.
+        # Hours restated BELOW what was billed bill nothing more, and the
+        # excess already invoiced stays on that invoice for the office to
+        # credit: never a negative line, never silent — the audit row, the
+        # response and the invoice screen all carry it.
+        from gdx_dispatch.core.closeout_billing import (
+            closeout_hours_billed_before,
+            closeout_man_hours,
+            restatement_credit_targets,
+        )
+
+        billed_before = closeout_hours_billed_before(db, closeout) if restating else Decimal(0)
+        billed_above_attested = max(Decimal(0), billed_before - closeout_man_hours(closeout))
+        # GDXA-1184: which earlier invoices hold that excess, for the office
+        # to credit by hand. Nothing is credited here.
+        credit_targets = restatement_credit_targets(db, closeout) if billed_above_attested > 0 else []
+        if billed_above_attested > 0:
+            log.warning(
+                "closeout_restated_below_billed",
+                extra={
+                    "job_id": str(job.id),
+                    "closeout_id": str(closeout.id),
+                    "man_hours_billed_before": str(billed_before),
+                    "man_hours_billed_above_attested": str(billed_above_attested),
+                },
+            )
+
         # Audit events join the SAME transaction as the closeout (adversarial
         # audit, round 2). The old shape committed the closeout first and the
         # events in a second commit — so a failed audit write 500'd a closeout
@@ -3205,6 +3254,12 @@ def closeout_job(
                         "no_parts_used": bool(payload.no_parts_used),
                         "parts_count": len(part_lines),
                     },
+                    # GDXA-890: restatement (job still completed) or new work
+                    # after a reopen, and what the earlier closeouts billed.
+                    "is_restatement": restating,
+                    "man_hours_billed_before": str(billed_before),
+                    "man_hours_billed_above_attested": str(billed_above_attested),
+                    "credit_targets": credit_targets,
                 },
                 ip_address=request.client.host if request.client else None,
                 request=request,
@@ -3232,6 +3287,13 @@ def closeout_job(
             "autodraft_invoice_number": (
                 autodraft_invoice.invoice_number if autodraft_invoice is not None else None
             ),
+            # GDXA-890: a restatement bills only the hours above what was
+            # already billed; the second figure is billed hours the restated
+            # total no longer covers (0 normally).
+            "is_restatement": restating,
+            "man_hours_billed_before": float(billed_before),
+            "man_hours_billed_above_attested": float(billed_above_attested),
+            "credit_targets": credit_targets,
         }, 201)
     except IntegrityError as exc:
         # Two people closing out the same job within the same moment: B's
@@ -3515,6 +3577,20 @@ def closeout_billing_suggestion(
         ).scalars()
     ]
 
+    # GDXA-890: a restatement of a still-completed job offers only the hours
+    # above what its earlier closeouts billed; the screen says so, and says
+    # when the restated total is below what is already on an invoice, or when
+    # a voided invoice left attested hours no live invoice bills.
+    from gdx_dispatch.core.closeout_billing import (
+        closeout_hours_billed_before,
+        closeout_man_hours,
+        closeout_man_hours_left_unbilled,
+        restatement_credit_targets,
+    )
+
+    billed_before = closeout_hours_billed_before(db, closeout)
+    billed_above_attested = max(Decimal(0), billed_before - closeout_man_hours(closeout))
+
     return jsonable_response({
         "has_closeout": True,
         "estimate_exists": estimate_exists,
@@ -3524,6 +3600,12 @@ def closeout_billing_suggestion(
             "notes": closeout.notes,
             "no_parts_used": bool(closeout.no_parts_used),
             "closed_at": closeout.closed_at.isoformat() if closeout.closed_at else None,
+            "man_hours_billed_before": float(billed_before),
+            "man_hours_billed_above_attested": float(billed_above_attested),
+            "man_hours_left_unbilled": float(closeout_man_hours_left_unbilled(db, closeout)),
+            # GDXA-1184: the earlier invoices to credit, with a pre-filled
+            # amount the office confirms in the credit-memo dialog.
+            "credit_targets": restatement_credit_targets(db, closeout) if billed_above_attested > 0 else [],
         },
         "job_notes": job_notes,
         "labor_lines": labor_lines,

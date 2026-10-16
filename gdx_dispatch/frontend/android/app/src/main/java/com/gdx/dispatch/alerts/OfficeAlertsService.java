@@ -61,6 +61,29 @@ public class OfficeAlertsService extends Service {
     static final String KEY_CURSOR = "cursor";
     static final String KEY_SEEN = "seen";
 
+    // Which feed this app polls. GDX Dispatch gets the office's alerts; GDX
+    // Planner gets only the signed-in user's planner reminders. The installed
+    // package decides, not the web layer. A server released before scopes
+    // ignores the parameter and sends the office feed, so the planner app
+    // also posts only planner reminders itself (belongsInScope).
+    static final String SCOPE_OFFICE = "office";
+    static final String SCOPE_PLANNER = "planner";
+    static final String PLANNER_PACKAGE = "com.gdx.planner";
+
+    static String scopeForPackage(@Nullable String packageName) {
+        return PLANNER_PACKAGE.equals(packageName) ? SCOPE_PLANNER : SCOPE_OFFICE;
+    }
+
+    // The server's planner scope is every category starting "planner_"
+    // (device_alerts.py); this filter matches it, so a new planner category is
+    // not dropped here and marked seen.
+    static final String PLANNER_CATEGORY_PREFIX = "planner_";
+
+    static boolean belongsInScope(String scope, @Nullable String category) {
+        return !SCOPE_PLANNER.equals(scope)
+                || (category != null && category.startsWith(PLANNER_CATEGORY_PREFIX));
+    }
+
     static final String TOKEN_HEADER = "X-Device-Alerts-Token";
     static final String CHANNEL_STATUS = "gdx_office_alerts_status";
     static final String CHANNEL_ALERTS = "gdx_office_alerts";
@@ -88,8 +111,47 @@ public class OfficeAlertsService extends Service {
         return running;
     }
 
+    // The worker reads the token, holds a long-poll, then writes; stop() or a
+    // new start() can replace the prefs in between. Each of those writes, and
+    // every worker write, checks and writes under this one lock.
+    static final Object PREFS_LOCK = new Object();
+
     static SharedPreferences prefs(Context ctx) {
         return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    static boolean isCurrent(SharedPreferences p, String token) {
+        return !token.isEmpty() && token.equals(p.getString(KEY_TOKEN, ""));
+    }
+
+    /** stop(): forget the session, after any worker write already under way. */
+    static void clearAll(SharedPreferences p) {
+        synchronized (PREFS_LOCK) {
+            p.edit().clear().commit();
+        }
+    }
+
+    /**
+     * Posts a response's alerts and saves its cursor and seen list, unless the
+     * session that fetched it is over: stopped, or its token replaced.
+     */
+    static boolean recordIfCurrent(SharedPreferences p, String token, boolean stopping,
+                                   Runnable postAlerts, String cursor, String seen) {
+        synchronized (PREFS_LOCK) {
+            if (stopping || !isCurrent(p, token)) return false;
+            postAlerts.run();
+            p.edit().putString(KEY_CURSOR, cursor).putString(KEY_SEEN, seen).apply();
+            return true;
+        }
+    }
+
+    /** A refusal of a token start() has already replaced is not a turn-off. */
+    static boolean clearIfCurrent(SharedPreferences p, String token) {
+        synchronized (PREFS_LOCK) {
+            if (!isCurrent(p, token)) return false;
+            p.edit().clear().commit();
+            return true;
+        }
     }
 
     static boolean hasCredentials(Context ctx) {
@@ -137,14 +199,14 @@ public class OfficeAlertsService extends Service {
         NotificationChannel status = new NotificationChannel(
             CHANNEL_STATUS, "Phone alerts status", NotificationManager.IMPORTANCE_LOW
         );
-        status.setDescription("Shows that office alerts are on for this phone");
+        status.setDescription("Shows that phone alerts are on for this phone");
         status.setShowBadge(false);
         nm.createNotificationChannel(status);
 
         NotificationChannel alerts = new NotificationChannel(
-            CHANNEL_ALERTS, "Office alerts", NotificationManager.IMPORTANCE_HIGH
+            CHANNEL_ALERTS, "Alerts", NotificationManager.IMPORTANCE_HIGH
         );
-        alerts.setDescription("New customer texts, payments, leads and other office notifications");
+        alerts.setDescription(ctx.getString(R.string.alerts_channel_description));
         alerts.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         nm.createNotificationChannel(alerts);
     }
@@ -163,7 +225,7 @@ public class OfficeAlertsService extends Service {
 
     private void startForegroundWithStatus() {
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_STATUS)
-            .setContentTitle("GDX Dispatch")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText("Phone alerts are on")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
@@ -217,8 +279,9 @@ public class OfficeAlertsService extends Service {
             String token = p.getString(KEY_TOKEN, "");
             if (serverUrl.isEmpty() || token.isEmpty()) break;
             long started = System.currentTimeMillis();
+            String scope = scopeForPackage(getPackageName());
             try {
-                Response r = fetchFeed(serverUrl, token, p.getString(KEY_CURSOR, null));
+                Response r = fetchFeed(serverUrl, token, p.getString(KEY_CURSOR, null), scope);
                 if (r.code == 403) {
                     if (forbiddenSince == 0) forbiddenSince = started;
                 } else {
@@ -229,13 +292,13 @@ public class OfficeAlertsService extends Service {
                 if (refused) {
                     // A rotation saves the new token before revoking the old
                     // one; a refusal of the old token is not a turn-off.
-                    if (!token.equals(prefs(this).getString(KEY_TOKEN, ""))) continue;
+                    if (!clearIfCurrent(prefs(this), token)) continue;
                     Log.i(TAG, "Server refused the device token (" + r.code + "); turning alerts off");
                     turnOffAfterRefusal();
                     return;
                 }
                 if (r.code != 200) throw new IOException("HTTP " + r.code);
-                handle(r.body);
+                handle(r.body, token, scope);
                 backoff = BACKOFF_MIN_MS;
                 // Never spin if something in between answers at once.
                 if (System.currentTimeMillis() - started < 1_000) pause(2_000);
@@ -266,13 +329,20 @@ public class OfficeAlertsService extends Service {
         }
     }
 
-    private Response fetchFeed(String serverUrl, String token, @Nullable String cursor) throws IOException {
+    static String feedUrl(String serverUrl, @Nullable String cursor, String scope)
+        throws java.io.UnsupportedEncodingException {
         StringBuilder url = new StringBuilder(serverUrl)
-            .append("/api/notifications/device-alerts/feed?wait=").append(WAIT_SECONDS);
+            .append("/api/notifications/device-alerts/feed?wait=").append(WAIT_SECONDS)
+            .append("&scope=").append(scope);
         if (cursor != null && !cursor.isEmpty()) {
             url.append("&after=").append(URLEncoder.encode(cursor, "UTF-8"));
         }
-        HttpURLConnection conn = (HttpURLConnection) new URL(url.toString()).openConnection();
+        return url.toString();
+    }
+
+    private Response fetchFeed(String serverUrl, String token, @Nullable String cursor, String scope)
+        throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(feedUrl(serverUrl, cursor, scope)).openConnection();
         inFlight = conn;
         try {
             conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -300,7 +370,7 @@ public class OfficeAlertsService extends Service {
 
     // A short wake lock only while a response is handled: Doze can defer the
     // next request, but never cut a notification off half-posted.
-    private void handle(String body) throws Exception {
+    private void handle(String body, String token, String scope) throws Exception {
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         PowerManager.WakeLock lock = pm == null ? null
             : pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GDX::OfficeAlerts");
@@ -312,6 +382,7 @@ public class OfficeAlertsService extends Service {
             String stored = p.getString(KEY_SEEN, "");
             if (!stored.isEmpty()) seen.addAll(Arrays.asList(stored.split(",")));
 
+            List<JSONObject> fresh = new ArrayList<>();
             JSONArray items = json.optJSONArray("items");
             if (items != null) {
                 for (int i = 0; i < items.length(); i++) {
@@ -319,17 +390,18 @@ public class OfficeAlertsService extends Service {
                     String id = item.optString("id", "");
                     // Every response re-sends two minutes of history.
                     if (id.isEmpty() || seen.contains(id)) continue;
-                    postAlert(id, item.optString("title", "GDX Dispatch"),
-                        item.optString("message", ""), item.optString("category", ""));
                     seen.add(id);
+                    if (belongsInScope(scope, item.optString("category", ""))) fresh.add(item);
                 }
             }
             List<String> keep = new ArrayList<>(seen);
             if (keep.size() > SEEN_LIMIT) keep = keep.subList(keep.size() - SEEN_LIMIT, keep.size());
-            p.edit()
-                .putString(KEY_CURSOR, json.optString("cursor", p.getString(KEY_CURSOR, "")))
-                .putString(KEY_SEEN, String.join(",", keep))
-                .apply();
+            recordIfCurrent(p, token, stopping, () -> {
+                for (JSONObject item : fresh) {
+                    postAlert(item.optString("id", ""), item.optString("title", getString(R.string.app_name)),
+                        item.optString("message", ""), item.optString("category", ""));
+                }
+            }, json.optString("cursor", p.getString(KEY_CURSOR, "")), String.join(",", keep));
         } finally {
             if (lock != null && lock.isHeld()) lock.release();
         }
@@ -338,8 +410,8 @@ public class OfficeAlertsService extends Service {
     private void postAlert(String id, String title, String message, String category) {
         int notificationId = id.hashCode();
         Notification publicVersion = new NotificationCompat.Builder(this, CHANNEL_ALERTS)
-            .setContentTitle("GDX Dispatch")
-            .setContentText("New office notification")
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("New notification")
             .setSmallIcon(R.mipmap.ic_launcher)
             .build();
         Notification n = new NotificationCompat.Builder(this, CHANNEL_ALERTS)
@@ -367,11 +439,11 @@ public class OfficeAlertsService extends Service {
         }
     }
 
+    // The caller has already cleared the prefs, under PREFS_LOCK.
     private void turnOffAfterRefusal() {
-        prefs(this).edit().clear().apply();
         notify(TURNED_OFF_NOTIFICATION_ID, new NotificationCompat.Builder(this, CHANNEL_ALERTS)
             .setContentTitle("Phone alerts turned off")
-            .setContentText("Open GDX Dispatch to turn them back on.")
+            .setContentText("Open " + getString(R.string.app_name) + " to turn them back on.")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setAutoCancel(true)
             .setContentIntent(openAppIntent(TURNED_OFF_NOTIFICATION_ID, null))

@@ -202,6 +202,19 @@ goes in your own report; a question for the maintainer goes in an
 agent comments or 64 KB is parked by the ledger driver (`in_review`,
 unassigned) for the maintainer; do not work around it.
 
+**A superseded PR is closed, not asked about.** On a `PR fix:` run, check
+first whether `origin/main` already does what the branch does: the same bug
+fixed by another issue's PR, usually under a different SHA. If it does, there
+is nothing to rebuild. Run `gh pr close <n> --comment "Superseded by #<m>
+(<sha> on origin/main): <one line of evidence>"`, then set this issue and its
+parent `done` with the same evidence. Anything the branch has that main lacks
+(a stricter rule, an extra test) goes on your report's found-not-filed list
+for normal triage; do not port it in this run. Ask the maintainer
+(`ask_user_questions`) only when closing would drop something main lacks that
+touches money math, an auth or permission check, or data (a migration, a
+delete guard). Adopted 2026-10-14, after GDXA-934 waited a day on a yes for
+closing #1111, which #1112 had already landed.
+
 ## Report
 
 Files touched inside and outside your territory, listed separately, and which

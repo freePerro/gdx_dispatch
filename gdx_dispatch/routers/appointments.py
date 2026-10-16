@@ -311,6 +311,30 @@ def _conflict(message: str, code: str, **detail: Any) -> JSONResponse:
     return JSONResponse({"detail": message, "code": code, **detail}, status_code=409)
 
 
+def _finished_job_refusal(db: Session, job_id: Any, status: str | None) -> JSONResponse | None:
+    """409 when the write would leave an open visit on a finished job, else None.
+
+    The job's own visit routes refuse this (``visit_sync._check_open_job``),
+    and completion closes every open visit (F1); this router writes visits
+    beside that flow, so it could book one on a completed job. That visit then
+    drew the job on the dispatch board and the calendar as open work again
+    (2026-10-15: 36 such visits on prod, from before F1). Closing or
+    cancelling a visit is never refused."""
+    from gdx_dispatch.services.visit_sync import FINISHED_STAGES  # noqa: PLC0415
+
+    if (status or "").lower() in ("completed", "cancelled"):
+        return None
+    job = _job_of(db, job_id)
+    stage = str(getattr(job, "lifecycle_stage", "") or "").lower()
+    if stage not in FINISHED_STAGES:
+        return None
+    return _conflict(
+        f"The job is {stage}. Re-open it before booking or changing a day.",
+        "job_finished",
+        job_id=str(job.id),
+    )
+
+
 def _status_only_arrival(a: Appointment) -> bool:
     """An old visit marked "arrived" with no time (written before arrivals
     were always recorded)."""
@@ -478,6 +502,8 @@ def create_appointment(
     tenant_id = _tenant_id(request)
     job_uuid = _parse_uuid(payload.job_id, "job_id")
     customer_uuid = _parse_uuid(payload.customer_id, "customer_id")
+    if (refusal := _finished_job_refusal(db, job_uuid, "scheduled")) is not None:
+        return refusal
 
     # S97 slice 7 — auto-size the appointment block from labor matrix man-hours.
     # If the caller supplied the implicit 60-minute default end_at, prefer the
@@ -641,6 +667,16 @@ def update_appointment(
         and _status_only_arrival(a)
     ):
         return _ask_about_status_only(a)
+    # An edit may not leave an open visit on a finished job: relinking one to
+    # it, or reopening a closed one. A visit already open there (written before
+    # completion closed visits) stays editable, so it can still be closed.
+    target_job = _parse_uuid(data["job_id"], "job_id") if "job_id" in data else a.job_id
+    target_status = data.get("status", a.status)
+    already_open_here = target_job == old_job_id and (a.status or "").lower() not in ("completed", "cancelled")
+    if not already_open_here and (
+        refusal := _finished_job_refusal(db, target_job, target_status)
+    ) is not None:
+        return refusal
 
     arrival_change = None
     if data.get("arrived_at") is not None:
@@ -763,6 +799,12 @@ def on_my_way(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    """Office On My Way. The en-route write commits first; then the customer
+    is texted through the shared helper (core/on_my_way_sms), which never
+    raises, so a text that cannot go never fails the write. ``customer_notified``
+    is True only when a text was queued by this call."""
+    from gdx_dispatch.core.on_my_way_sms import send_on_my_way  # noqa: PLC0415
+
     tenant_id = _tenant_id(request)
     a = _get_scoped(db, appt_id, tenant_id)
     if a.status in ("completed", "cancelled"):
@@ -776,7 +818,19 @@ def on_my_way(
         db, a, tenant_id=tenant_id, user=user, action="appointment_en_route",
         request=request, job_ids=(a.job_id,),
     )
-    return _serialize(a)
+    out = _serialize(a)
+    # The office presses this for the assigned tech: the text names the tech,
+    # never the office user (unassigned or unknown reads "your technician").
+    from gdx_dispatch.models.tenant_models import Technician  # noqa: PLC0415
+
+    tech = db.get(Technician, a.tech_id) if a.tech_id else None
+    tech_first = ((tech.name or "").strip().split(" ")[0] if tech and (tech.name or "").strip() else "")
+    sms = send_on_my_way(
+        db, user=user, request=request, job_id=a.job_id, customer_id=a.customer_id, tech_name=tech_first,
+    )
+    out["customer_notified"] = sms.queued
+    out["customer_notified_reason"] = sms.reason
+    return out
 
 
 @router.post("/api/appointments/{appt_id}/arrived", response_model=None, dependencies=[Depends(_office)])

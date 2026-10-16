@@ -62,6 +62,12 @@ from gdx_dispatch.modules.ledger.money import to_cents
 log = logging.getLogger(__name__)
 
 ISSUED_STATUSES = ("sent", "paid")
+# Statuses that carry a receivable for the AR tie (reports.ar_control). The
+# one extra, "overdue", is never persisted (it is computed at read time) and
+# is listed only so a stray row is still held to the tie rather than silently
+# dropped from it (GDXA-1231).
+OVERDUE_STATUS = "overdue"
+RECEIVABLE_STATUSES = ISSUED_STATUSES + (OVERDUE_STATUS,)
 EVENT_ISSUED = "issued"
 
 
@@ -248,8 +254,34 @@ def _shop_effective_at(
     replay (backfill, resettle) of an evening row posted under the old UTC
     rule would mint a second key and post the money twice.
     """
-    posted = session.scalars(
-        select(GlJournalEntry.effective_at).where(
+    posted = _live_event_entry(session, source_type, source_id, event)
+    if posted is not None:
+        return posted.effective_at
+    if ts is None:
+        return shop_today_from_settings(session)
+    return shop_day_of(ts, shop_tz_name_from_settings(session))
+
+
+def _live_event_entry(
+    session: Session, source_type: str, source_id: str, event: str
+) -> GlJournalEntry | None:
+    """The earliest live entry for one (source, event), whatever its content.
+
+    A ONE-SHOT event — a P8 anchor, an opening-era payment-void compensator, a
+    credit memo, a refund, a credit application — records something that
+    happened once. Its poster runs again on every replay (``run_replay``) or
+    recalc (``repost_invoice_issuance``, ``resettle_invoice_payments``), and
+    the engine keys by CONTENT, so when an input moved since (the invoice's
+    job or customer, its total, a payment-method mapping, the 2300 balance a
+    refund splits against) a fresh key minted a SECOND live entry beside the
+    first and nothing reversed it: a doubled anchor holds AR the invoice does
+    not owe (GDXA-1238). Those posters return this entry instead of posting.
+    Earliest, so the guard and ``backfill.duplicate_one_shot_entries`` keep
+    the same one.
+    """
+    return session.scalars(
+        select(GlJournalEntry)
+        .where(
             GlJournalEntry.source_type == source_type,
             GlJournalEntry.source_id == source_id,
             GlJournalEntry.status == ENTRY_STATUS_POSTED,
@@ -257,12 +289,8 @@ def _shop_effective_at(
                 _escape_like(f"{source_type}:{source_id}:{event}:") + "%", escape="\\"
             ),
         )
+        .order_by(GlJournalEntry.created_at, GlJournalEntry.entry_no, GlJournalEntry.id)
     ).first()
-    if posted is not None:
-        return posted
-    if ts is None:
-        return shop_today_from_settings(session)
-    return shop_day_of(ts, shop_tz_name_from_settings(session))
 
 
 def post_invoice_issuance(session: Session, invoice, old_status, new_status, actor) -> None:
@@ -422,13 +450,22 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
         raise LedgerConfigError("gl_settings missing — accounting not initialized")
     method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
 
-    total_cents = to_cents(_dec(invoice.total))
-    remaining_ar = max(
-        total_cents
-        - _prior_nonvoided_paid_cents(session, invoice, payment)
-        - invoice_credited_cents(session, invoice),
-        0,
-    )
+    # GDXA-1220: a void invoice has no receivable. The void reversed its P1
+    # (and its adjustments) but left `total` alone, so the arithmetic below
+    # would still credit AR, and GL AR on the invoice went negative. Money
+    # that lands on a void anyway (#422: the Stripe recorder books it in
+    # full, the invoice stays void) is the customer's, so all of it is 2300.
+    is_void = str(getattr(invoice, "status", "") or "").lower() == "void"
+    if is_void:
+        remaining_ar = 0
+    else:
+        total_cents = to_cents(_dec(invoice.total))
+        remaining_ar = max(
+            total_cents
+            - _prior_nonvoided_paid_cents(session, invoice, payment)
+            - invoice_credited_cents(session, invoice),
+            0,
+        )
     ar_portion = min(amount_cents, remaining_ar)
     excess = amount_cents - ar_portion
 
@@ -471,7 +508,11 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
                 role=ROLE_CUSTOMER_CREDITS,
                 job_id=invoice.job_id,
                 customer_id=invoice.customer_id,
-                memo=f"overpayment on {invoice.invoice_number} → customer credit",
+                memo=(
+                    f"payment on voided invoice {invoice.invoice_number} → customer credit"
+                    if is_void
+                    else f"overpayment on {invoice.invoice_number} → customer credit"
+                ),
             )
         )
     return tuple(lines)
@@ -835,6 +876,9 @@ def post_credit_memo(session: Session, adjustment, invoice, actor: str | None = 
     amount_cents = to_cents(_dec(adjustment.amount))
     if amount_cents == 0:
         return None
+    live = _live_event_entry(session, "adjustment", str(adjustment.id), "credit_memo")
+    if live is not None:
+        return live  # one-shot (GDXA-1238)
     settings = ledger_service.get_gl_settings(session, invoice.company_id)
     return post_for_event(
         session,
@@ -887,6 +931,10 @@ def _refund_overpayment_cents(session: Session, invoice) -> int:
             Payment.voided_at.is_(None),
         )
     ).scalar_one_or_none() or 0
+    if str(getattr(invoice, "status", "") or "").lower() == "void":
+        # GDXA-1220: the same void rule as `build_payment_lines` — a void asks
+        # for nothing, so every live dollar on it is the customer's.
+        return max(to_cents(_dec(paid)), 0)
     over = (
         to_cents(_dec(paid))
         - to_cents(_dec(invoice.total or 0))
@@ -922,6 +970,12 @@ def post_refund(session: Session, adjustment, invoice, actor: str | None = None)
     amount_cents = to_cents(_dec(adjustment.amount))
     if amount_cents == 0:
         return None
+    # One-shot (GDXA-1238): the credit/revenue split below reads the 2300
+    # balance NOW, so a replay after other credit moved re-split it and posted
+    # the cash-out a second time. The refund posted is the refund that happened.
+    live = _live_event_entry(session, "adjustment", str(adjustment.id), "refund")
+    if live is not None:
+        return live
     settings = ledger_service.get_gl_settings(session, invoice.company_id)
     if settings is None:
         raise LedgerConfigError("gl_settings missing — accounting not initialized")
@@ -994,6 +1048,9 @@ def post_credit_application(session: Session, adjustment, invoice, actor: str | 
     amount_cents = to_cents(_dec(adjustment.amount))
     if amount_cents == 0:
         return None
+    live = _live_event_entry(session, "adjustment", str(adjustment.id), "credit_applied")
+    if live is not None:
+        return live  # one-shot (GDXA-1238)
     return post_for_event(
         session,
         PostingEvent(
@@ -1371,6 +1428,15 @@ def post_opening_balance(session: Session, invoice, *, actor: str | None = None)
         return None
     if _effective_at(invoice) >= cutover:
         return None  # post-cutover invoice: P1 territory, not P8
+    # The anchor is posted once (GDXA-1238). Every recalc of an era invoice
+    # comes through here (``repost_invoice_issuance``), and the content key
+    # carries the invoice's total, job and customer: change one and a second
+    # anchor posted beside the first, doubling the opening AR. Spec §5.7
+    # already holds the anchor immutable; post-cutover changes post their
+    # own entries against it.
+    live = _live_event_entry(session, "invoice", str(invoice.id), EVENT_OPENING)
+    if live is not None:
+        return live
     opening = opening_balance_cents(session, invoice, cutover)
     lines = build_opening_lines(invoice, opening)
     if not lines:
@@ -1389,16 +1455,35 @@ def post_opening_balance(session: Session, invoice, *, actor: str | None = None)
     )
 
 
+def ar_role_lines():
+    """``(source_type, source_id, amount_cents)`` for every journal line on
+    any AR-role account, deactivated ones included: a receivable posted to an
+    AR account that has since been deactivated is still owed, so it still
+    counts (GDXA-1231). The app cannot deactivate a system account today, so
+    there is one AR account in practice; this keeps the reads agreeing if a
+    direct DB edit ever makes two. Roles are seed-owned, so these are system
+    accounts.
+    The one AR-line read that ``invoice_ar_balance_cents``,
+    ``reports.ar_control`` and ``backfill.gl_ar_balance_cents`` share; an
+    install whose AR role was never seeded has no lines and reads zero
+    (GDXA-572) without a write."""
+    return (
+        select(GlJournalEntry.source_type, GlJournalEntry.source_id, GlJournalLine.amount_cents)
+        .join(GlJournalLine, GlJournalLine.entry_id == GlJournalEntry.id)
+        .join(GlAccount, GlJournalLine.account_id == GlAccount.id)
+        .where(GlAccount.role == ROLE_AR)
+    )
+
+
 def invoice_ar_balance_cents(session: Session, invoice) -> int:
-    """The invoice's attributable AR balance ON THE LEDGER: Σ AR-account line
-    amounts across every entry sourced from this invoice, its payments, or
-    its adjustments — reversals included, so reversed pairs net to zero.
-    Correct-by-construction input for the void settlement below."""
+    """The invoice's attributable AR balance ON THE LEDGER: Σ AR-role line
+    amounts (``ar_role_lines``) across every entry sourced from this invoice,
+    its payments, or its adjustments — reversals included, so reversed pairs
+    net to zero. Correct-by-construction input for the void settlement below.
+    ``reports.ar_control`` attributes lines the same way; the GDXA-1231 test
+    in test_gl_ar_control pins the two together."""
     from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Payment
 
-    ar_account = resolve_role_account_or_none(session, invoice.company_id, ROLE_AR)
-    if ar_account is None:
-        return 0  # no AR account has ever existed here, so no AR lines (GDXA-572)
     payment_ids = [
         str(pid)
         for pid in session.scalars(
@@ -1427,16 +1512,8 @@ def invoice_ar_balance_cents(session: Session, invoice) -> int:
             GlJournalEntry.source_id.in_(adjustment_ids or ["-"]),
         ),
     )
-    rows = session.execute(
-        select(GlJournalLine.amount_cents)
-        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
-        .where(
-            GlJournalEntry.company_id == invoice.company_id,
-            GlJournalLine.account_id == ar_account.id,
-            source_match,
-        )
-    ).all()
-    return sum(amount for (amount,) in rows)
+    rows = session.execute(ar_role_lines().where(source_match)).all()
+    return sum(amount for (_type, _id, amount) in rows)
 
 
 def settle_opening_on_void(session: Session, invoice, actor: str | None = None) -> None:
@@ -1508,6 +1585,13 @@ def _post_opening_payment_void(session: Session, payment, invoice, actor: str | 
     method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
     amount_cents = to_cents(_dec(payment.amount))
     if amount_cents == 0:
+        return
+    # One-shot (GDXA-1238): every resettle of the invoice calls this for the
+    # voided row, and a changed job, customer or method mapping posted a
+    # second AR debit.
+    if _live_event_entry(
+        session, "payment", str(payment.id), EVENT_OPENING_PAYMENT_VOID
+    ) is not None:
         return
     voided_on = _shop_effective_at(
         session, "payment", str(payment.id),

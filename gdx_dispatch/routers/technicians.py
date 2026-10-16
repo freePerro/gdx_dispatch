@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -15,17 +15,19 @@ from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import AppSettings, Technician, TechUnavailability, User
+from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
 
-try:
-    from gdx_dispatch.routers.auth import get_current_user
-except ImportError:  # fallback for missing auth module to allow router initialization
-    log.exception("technicians_auth_import_failed_using_fallback")
-    async def get_current_user() -> dict[str, Any]:
-        return {}
+# GDXA-981: a technician row carries the pay rate, so changing one is user
+# administration, not dispatch. Every write takes users.write (owner/admin by
+# default); reads take any authenticated user. get_current_user is listed
+# first so a missing or revoked token is a 401 before the permission check,
+# and require_permission reads the user it verified (has_permission's
+# precondition).
+_TECH_WRITE = [Depends(get_current_user), Depends(require_permission("users.write"))]
 
 
 router = APIRouter(prefix="/api/technicians", tags=["technicians"], dependencies=[Depends(require_module("dispatch"))])
@@ -75,19 +77,14 @@ def _tenant_id(request: Request) -> str:
     return str(tenant.get("id", ""))
 
 
-async def _current_user_dependency(request: Request) -> dict[str, Any]:
-    # OAuth2PasswordBearer can deadlock in some test runtimes; parse bearer token directly.
-    auth_header = request.headers.get("authorization", "")
-    token = ""
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header[7:].strip()
-    if not token:
-        return {}
-    # get_current_user(request, token) — request is required first arg for
-    # app-state denylist lookup. Prior call passed token as request, which
-    # hit AttributeError: 'str' object has no attribute 'app' on every
-    # /api/technicians call (regression since the denylist seam landed).
-    return await get_current_user(request, token)
+def _actor_id(current_user: dict[str, Any]) -> str:
+    """The authenticated user the audit row names. There is no "system"
+    default: every route here depends on get_current_user, so a user dict
+    without an id is a wiring defect and is refused, never recorded as nobody."""
+    actor = (current_user or {}).get("user_id") or (current_user or {}).get("sub")
+    if not actor:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return str(actor)
 
 
 def _to_skill_list(value: list[str] | str | None) -> list[str]:
@@ -220,7 +217,7 @@ def _is_verification_tech(tech: Technician) -> bool:
 def list_technicians(
     request: Request,
     include_verification: bool = False,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _ = current_user
@@ -270,14 +267,14 @@ def list_technicians(
     ])
 
 
-@router.post("", response_model=None)
+@router.post("", response_model=None, dependencies=_TECH_WRITE)
 def create_technician(
     payload: TechnicianCreate,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _ = current_user
+    actor = _actor_id(current_user)
     user_id = (payload.user_id or "").strip()
     if not user_id:
         return jsonable_response({"detail": "user_id is required"}, 400)
@@ -306,7 +303,7 @@ def create_technician(
     log_audit_event_sync(
         db=db,
         tenant_id=tenant_id,
-        user_id=str((current_user or {}).get("sub") or (current_user or {}).get("user_id") or "system"),
+        user_id=actor,
         action="technician_created",
         entity_type="technician",
         entity_id=str(tech.id),
@@ -322,7 +319,7 @@ def create_technician(
 @router.get("/skills", response_model=None)
 def list_all_skills_early(
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     """Return all unique skills across all technicians."""
@@ -344,7 +341,7 @@ def list_all_skills_early(
 def get_technician(
     technician_id: str,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _ = current_user
@@ -361,15 +358,15 @@ def get_technician(
     return jsonable_response(_tech_to_dict(tech))
 
 
-@router.patch("/{technician_id}", response_model=None)
+@router.patch("/{technician_id}", response_model=None, dependencies=_TECH_WRITE)
 def patch_technician(
     technician_id: str,
     payload: TechnicianPatch,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _ = current_user
+    actor = _actor_id(current_user)
     tenant_id = _tenant_id(request)
     tech = _get_technician(db, tenant_id, technician_id)
     if not tech:
@@ -398,7 +395,7 @@ def patch_technician(
     log_audit_event_sync(
         db=db,
         tenant_id=tenant_id,
-        user_id=str((current_user or {}).get("sub") or (current_user or {}).get("user_id") or "system"),
+        user_id=actor,
         action="technician_updated",
         entity_type="technician",
         entity_id=technician_id,
@@ -413,14 +410,14 @@ def patch_technician(
     return jsonable_response(_tech_to_dict(tech))
 
 
-@router.delete("/{technician_id}", response_model=None)
+@router.delete("/{technician_id}", response_model=None, dependencies=_TECH_WRITE)
 def delete_technician(
     technician_id: str,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _ = current_user
+    actor = _actor_id(current_user)
     tenant_id = _tenant_id(request)
     tech = _get_technician(db, tenant_id, technician_id)
     if not tech:
@@ -435,7 +432,7 @@ def delete_technician(
         log_audit_event_sync(
             db,
             tenant_id=tenant_id,
-            user_id=str((current_user or {}).get("sub") or (current_user or {}).get("user_id") or "system"),
+            user_id=actor,
             action="delete_technician",
             entity_type="technician",
             entity_id=str(technician_id),
@@ -455,7 +452,7 @@ def delete_technician(
 def list_technician_skills(
     technician_id: str,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _ = current_user
@@ -466,15 +463,15 @@ def list_technician_skills(
     return jsonable_response({"skills": _skills_from_db(tech.skills)})
 
 
-@router.post("/{technician_id}/skills", response_model=None)
+@router.post("/{technician_id}/skills", response_model=None, dependencies=_TECH_WRITE)
 def add_technician_skill(
     technician_id: str,
     payload: TechnicianSkillCreate,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _ = current_user
+    actor = _actor_id(current_user)
     tenant_id = _tenant_id(request)
     tech = _get_technician(db, tenant_id, technician_id)
     if not tech:
@@ -495,7 +492,7 @@ def add_technician_skill(
         log_audit_event_sync(
             db,
             tenant_id=tenant_id,
-            user_id=str((current_user or {}).get("sub") or (current_user or {}).get("user_id") or "system"),
+            user_id=actor,
             action="add_technician_skill",
             entity_type="technician_skill",
             entity_id=str(technician_id),
@@ -512,7 +509,7 @@ def add_technician_skill(
 def get_technician_availability(
     technician_id: str,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _ = current_user
@@ -531,15 +528,15 @@ def get_technician_availability(
     return jsonable_response([_unavail_to_dict(r) for r in rows])
 
 
-@router.post("/{technician_id}/unavailability", response_model=None)
+@router.post("/{technician_id}/unavailability", response_model=None, dependencies=_TECH_WRITE)
 def add_technician_unavailability(
     technician_id: str,
     payload: UnavailabilityCreate,
     request: Request,
-    current_user: Any = Depends(_current_user_dependency),
+    current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _ = current_user
+    actor = _actor_id(current_user)
     tenant_id = _tenant_id(request)
     tech = _get_technician(db, tenant_id, technician_id)
     if not tech:
@@ -565,7 +562,7 @@ def add_technician_unavailability(
         log_audit_event_sync(
             db,
             tenant_id=tenant_id,
-            user_id=str((current_user or {}).get("sub") or (current_user or {}).get("user_id") or "system"),
+            user_id=actor,
             action="add_technician_unavailability",
             entity_type="technician_unavailability",
             entity_id=str(technician_id),

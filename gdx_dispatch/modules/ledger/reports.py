@@ -499,6 +499,170 @@ def balance_sheet(session: Session, company_id: str, *, as_of: date) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# AR control tie (GDXA-1181, gl-phase3-trust-switch §3.2 criterion 3)
+# ---------------------------------------------------------------------------
+
+# The payload names at most this many drifted invoices; the count is exact.
+AR_DRIFT_ROW_LIMIT = 200
+# Likewise for era-settlement shortfalls; the count and the cents total are
+# over every one (GDXA-1244).
+AR_SHORTFALL_ROW_LIMIT = 200
+
+
+def ar_control(session: Session, company_id: str) -> dict:
+    """Tie the open-invoice balances to the AR control account, as of now.
+
+    The subledger is what the office and the customer see: each live
+    receivable invoice's ``balance_due`` (already floored at zero; a void
+    owes nothing). The control is the net of every journal line on any
+    AR-role account, deactivated ones included. Each AR line is attributed to
+    an invoice through its entry's source: the invoice itself, one of its
+    payments, or one of its adjustments, which is how
+    ``rules.invoice_ar_balance_cents`` attributes a single invoice.
+
+    ``difference_cents`` = control − subledger, and it always equals the sum
+    of the per-invoice drift plus the AR no invoice can claim. Catches what
+    the trial-balance zero-check cannot: an invoice that never posted, a
+    balance moved between invoices with no entry behind it, a balance edited
+    without a repost, AR posted by hand. It cannot catch a payment recorded on
+    the wrong invoice whose posting followed it: row and ledger agree there.
+    ``tied`` also requires no era-settlement shortfall: money both sides read
+    as zero because it posted nowhere (``backfill.era_settlement_shortfalls``).
+    Read-only; it posts nothing.
+    """
+    from gdx_dispatch.models.tenant_models import Invoice, InvoiceAdjustment, Payment
+    from gdx_dispatch.modules.ledger import service as ledger_service
+    from gdx_dispatch.modules.ledger.backfill import (
+        era_settlement_excess,
+        era_settlement_shortfalls,
+    )
+    from gdx_dispatch.modules.ledger.rules import RECEIVABLE_STATUSES, ar_role_lines
+
+    lines = session.execute(ar_role_lines()).all()
+
+    payment_invoice = {
+        str(pid): str(iid)
+        for pid, iid in session.execute(select(Payment.id, Payment.invoice_id)).all()
+    }
+    adjustment_invoice = {
+        str(aid): str(iid)
+        for aid, iid in session.execute(
+            select(InvoiceAdjustment.id, InvoiceAdjustment.invoice_id)
+        ).all()
+    }
+
+    control = 0
+    ledger_by_invoice: dict[str, int] = {}
+    payment_ar_by_invoice: dict[str, int] = {}
+    unattributed: dict[str, int] = {}
+    for source_type, source_id, amount in lines:
+        control += amount
+        invoice_id = None
+        if source_type == "invoice":
+            invoice_id = source_id
+        elif source_type == "payment":
+            invoice_id = payment_invoice.get(source_id)
+        elif source_type == "adjustment":
+            invoice_id = adjustment_invoice.get(source_id)
+        if invoice_id is None:
+            key = source_type or "manual"
+            unattributed[key] = unattributed.get(key, 0) + amount
+        else:
+            ledger_by_invoice[invoice_id] = ledger_by_invoice.get(invoice_id, 0) + amount
+            if source_type == "payment":
+                payment_ar_by_invoice[invoice_id] = (
+                    payment_ar_by_invoice.get(invoice_id, 0) + amount
+                )
+
+    subledger = 0
+    drift: list[dict] = []
+    seen: set[str] = set()
+    for inv in session.execute(
+        select(
+            Invoice.id,
+            Invoice.invoice_number,
+            Invoice.status,
+            Invoice.balance_due,
+            Invoice.deleted_at,
+        )
+    ).all():
+        key = str(inv.id)
+        seen.add(key)
+        live = inv.status in RECEIVABLE_STATUSES and inv.deleted_at is None
+        expected = to_cents(_dec(inv.balance_due)) if live else 0
+        subledger += expected
+        ledger = ledger_by_invoice.get(key, 0)
+        if ledger != expected:
+            row = {
+                "invoice_id": key,
+                "invoice_number": inv.invoice_number,
+                "status": inv.status,
+                "deleted": inv.deleted_at is not None,
+                "open_balance_cents": expected,
+                "ledger_ar_cents": ledger,
+                "drift_cents": ledger - expected,
+            }
+            if not live:
+                # Status or deletion zeroed the open balance; carry the row's
+                # own balance_due so the drift can be read against it.
+                row["balance_due_cents"] = to_cents(_dec(inv.balance_due))
+                # record_payment refuses only a void, and a draft posts no
+                # issuance, so a partial payment on a draft is a lone AR
+                # credit. The row stays drift (GDXA-1246). A deleted draft is
+                # not labelled: issuing it is not the remedy there.
+                if (
+                    inv.status == "draft"
+                    and inv.deleted_at is None
+                    and payment_ar_by_invoice.get(key, 0)
+                ):
+                    row["reason"] = "payment_on_draft"
+            drift.append(row)
+    # AR sourced from an invoice id that no longer resolves to a row.
+    for invoice_id, amount in ledger_by_invoice.items():
+        if invoice_id not in seen and amount:
+            unattributed["missing_invoice"] = unattributed.get("missing_invoice", 0) + amount
+
+    drift.sort(key=lambda r: (-abs(r["drift_cents"]), r["invoice_number"] or ""))
+    unattributed_cents = sum(unattributed.values())
+    # A late era payment larger than its opening anchor posts nothing for the
+    # excess, and balance_due floors at zero, so both sides above read 0 for
+    # it. That money is on no ledger line, so the book is not tied (GDXA-1223),
+    # until a refund has paid it back out (GDXA-1247).
+    excess = era_settlement_excess(session, company_id)
+    shortfalls = era_settlement_shortfalls(session, company_id, excess)
+    shortfall_cents = sum(r["uncovered_cents"] for r in shortfalls)
+    shortfalls.sort(
+        key=lambda r: (-r["uncovered_cents"], r["invoice_number"] or "", r["payment_id"])
+    )
+    settings = ledger_service.get_gl_settings(session, company_id)
+    return {
+        "ledger_posting_enabled": bool(settings and settings.ledger_posting_enabled),
+        "cutover_month": str(settings.cutover_month) if settings and settings.cutover_month else None,
+        "control_cents": control,
+        "subledger_cents": subledger,
+        "difference_cents": control - subledger,
+        "tied": (
+            control == subledger
+            and not drift
+            and unattributed_cents == 0
+            and shortfall_cents == 0
+        ),
+        "era_settlement_shortfall_cents": shortfall_cents,
+        "era_settlement_refunded_cents": sum(r["refunded_cents"] for r in excess),
+        "era_settlement_shortfall_count": len(shortfalls),
+        "era_settlement_shortfalls": shortfalls[:AR_SHORTFALL_ROW_LIMIT],
+        "drift_invoice_count": len(drift),
+        "drift": drift[:AR_DRIFT_ROW_LIMIT],
+        "unattributed_cents": unattributed_cents,
+        "unattributed_by_source": [
+            {"source_type": k, "amount_cents": v}
+            for k, v in sorted(unattributed.items())
+            if v
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Journal browser (spec §9 drill: report → entry → line → source document)
 # ---------------------------------------------------------------------------
 
