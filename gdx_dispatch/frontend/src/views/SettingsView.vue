@@ -238,6 +238,8 @@
                   id="invite-role"
                   v-model="inviteForm.role"
                   :options="roleOptions"
+                  option-label="label"
+                  option-value="value"
                   data-testid="invite-role-dropdown"
                 />
               </div>
@@ -1741,6 +1743,7 @@ import Password from "primevue/password";
 import { useToast } from "primevue/usetoast";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { usePermission } from "../composables/usePermission";
+import { normalizeRole } from "../constants/roles";
 const { confirmAsync } = useDestructiveConfirm();
 const { hasPermission } = usePermission();
 
@@ -2024,12 +2027,19 @@ const inviteResultLink = ref("");
 const inviteLinkCopied = ref(false);
 const inviteSaving = ref(false);
 const inviteError = ref("");
-const inviteForm = ref({ email: "", role: "Technician" });
-// Values the backend actually accepts (invite 422s anything else). The old
-// list was capitalized and included "Sales", which the backend has never
-// accepted — every invite from this dialog failed (fixed 2026-09-19; the
-// server now also lowercases defensively).
-const roleOptions = ["Admin", "Dispatcher", "Technician", "Viewer"];
+const inviteForm = ref({ email: "", role: "technician" });
+// Values the invite endpoint accepts: core/roles.ASSIGNABLE_ROLES, sent in
+// their stored lowercase form. Owner is left out because only an owner may
+// grant it, and this tab serves admins too. Sales was dropped on 2026-09-19
+// as "never accepted" when only the invite's own list lacked it; it is a real
+// role and the invite now takes it (GDXA-1200).
+const roleOptions = [
+  { label: "Admin", value: "admin" },
+  { label: "Dispatcher", value: "dispatcher" },
+  { label: "Technician", value: "technician" },
+  { label: "Sales", value: "sales" },
+  { label: "Viewer", value: "viewer" },
+];
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.trim().toLowerCase();
@@ -2042,9 +2052,12 @@ const filteredUsers = computed(() => {
   );
 });
 
+// Keyed on users.role in canonical form (normalizeRole folds case and the
+// short legacy spellings); the old capitalized keys never matched, so every
+// tag rendered "secondary".
+const ROLE_SEVERITY = { owner: "danger", admin: "danger", dispatcher: "info", technician: "success", sales: "warn" };
 function roleSeverity(role) {
-  const map = { Admin: "danger", Dispatcher: "info", Technician: "success", Sales: "warn" };
-  return map[role] || "secondary";
+  return ROLE_SEVERITY[normalizeRole(role)] || "secondary";
 }
 
 async function loadUsers() {
@@ -2073,7 +2086,7 @@ async function submitInvite() {
       role: inviteForm.value.role,
     });
     showInviteDialog.value = false;
-    inviteForm.value = { email: "", role: "Technician" };
+    inviteForm.value = { email: "", role: "technician" };
     // The response's reset link used to be discarded here, so the admin had
     // no way to deliver it (and until 2026-09-19 it was dead anyway — the
     // token was never stored). Show it once, copyable.

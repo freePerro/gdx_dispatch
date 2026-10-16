@@ -206,8 +206,10 @@ def enabled_module_keys(db: Session, company_id: str) -> set[str]:
         return set()
 
 
-def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
-    canonical_key = normalize_module_key(module_key)
+def _module_grant_state(canonical_key: str, request: Request, db: Session) -> bool:
+    """Is `canonical_key` granted to the request's tenant? Raises SQLAlchemyError
+    (logged, session rolled back) when the grant could not be read, so a gate
+    can tell "off" from "could not check" (GDXA-1197)."""
     tenant = getattr(request.state, "tenant", {}) or {}
     tenant_id = str(tenant.get("id", "")).strip()
     if not tenant_id:
@@ -225,9 +227,21 @@ def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
         # table held 0 rows on prod and only ever served tests).
         return _is_granted_in_company_table(db, tenant_id, canonical_key)
     except SQLAlchemyError:
-        import logging
         logging.getLogger("gdx_dispatch.modules").exception("module_check_failed key=%s tenant=%s", canonical_key, tenant_id)
-        db.rollback()
+        try:
+            db.rollback()
+        except SQLAlchemyError:
+            logging.getLogger("gdx_dispatch.modules").exception("module_check_rollback_failed")
+        raise
+
+
+def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
+    """Bool form for callers that branch on a module rather than gate a route:
+    a grant that could not be read counts as not enabled (fail closed)."""
+    try:
+        return _module_grant_state(normalize_module_key(module_key), request, db)
+    except SQLAlchemyError:
+        logging.getLogger("gdx_dispatch.modules").warning("module_check_fail_closed key=%s", module_key)
         return False
 
 
@@ -239,7 +253,14 @@ def require_module(module_key: str) -> Callable:
         tenant = getattr(request.state, "tenant", {}) or {}
         if not tenant.get("id"):
             raise HTTPException(status_code=400, detail="Missing tenant context")
-        if not is_module_enabled(canonical_key, request, db):
+        # A grant that could not be read is not a disabled module: answering
+        # 403 "not enabled" made a DB fault read as a definite off state to
+        # every client (GDXA-1197). 503 still refuses, and says "retry".
+        try:
+            enabled = _module_grant_state(canonical_key, request, db)
+        except SQLAlchemyError:
+            raise HTTPException(503, "Module check unavailable; try again shortly") from None
+        if not enabled:
             raise HTTPException(403, f"Module '{canonical_key}' is not enabled")
 
     return _dependency
@@ -309,9 +330,22 @@ def require_role(*roles: str) -> Callable:
             _stash_principal(request, claims)
             return
 
+        if not user and not claims:
+            raise _no_principal()
         raise HTTPException(status_code=403, detail="Insufficient role")
 
     return _dependency
+
+
+def _no_principal() -> HTTPException:
+    """The 401 an auth gate raises when the request carries no live principal
+    (no token, or one that is expired, revoked or not an access token) —
+    the same answer ``get_current_user`` gives."""
+    return HTTPException(
+        status_code=401,
+        detail="Invalid or expired access token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def _decode_bearer_claims(request: Request) -> dict:
@@ -326,7 +360,9 @@ def _decode_bearer_claims(request: Request) -> dict:
       without this check a refresh token stood in for an access token on any
       route gated only here, defeating the 15-minute access TTL (GDXA-1147).
     - the ``jti`` must not be on the revocation denylist (SS-7 Slice H parity),
-      so a token revoked by logout, offboarding or admin revoke stops here too.
+      so a token revoked by logout or ``/auth/admin/revoke`` stops here too.
+      Offboarding, demotion and password reset (``revoke_user_sessions``)
+      revoke only the refresh family, not this token (GDXA-1215).
 
     A token PyJWT rejects (bad signature, expired, malformed, unexpected
     ``aud``) returns {}: that is an answer, not an error. An error escaping
@@ -573,6 +609,12 @@ def require_permission(*required_keys: str) -> Callable:
     def _dependency(request: Request, db: Session = Depends(get_db)) -> None:
         if has_permission(request, db, *required):
             return
+        # A route's ``dependencies=[...]`` run before its parameter
+        # dependencies, so this gate runs before ``get_current_user`` could
+        # 401 an expired token. No principal is "who are you?", not "you may
+        # not": answer 401 so the client sends the user to log in again.
+        if not _resolve_request_user(request):
+            raise _no_principal()
         missing = sorted(required - _request_permissions(request, db))
         raise HTTPException(status_code=403, detail=f"Missing permission: {missing}")
 

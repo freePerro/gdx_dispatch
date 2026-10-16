@@ -155,10 +155,16 @@
           <div v-if="composeMode === 'reply'" class="reply-block">
             <h3>Reply</h3>
             <Textarea v-model="replyBody" rows="6" autoResize class="w-full" placeholder="Type your reply…" data-test="mi-reply-body" />
+            <EmailAttachmentPicker
+              v-model="replyAtts"
+              :job-id="detail?.linked_job_id"
+              :customer-id="detail?.linked_customer_id"
+              :disabled="replySaving"
+            />
             <div class="reply-actions">
               <Button label="Cancel" severity="secondary" text @click="composeMode = null" />
               <Button label="Draft with AI" icon="pi pi-sparkles" severity="secondary" outlined :loading="aiDrafting" @click="draftWithAi" data-test="mi-ai-draft" />
-              <Button label="Send reply" icon="pi pi-send" :loading="replySaving" :disabled="!replyBody.trim()" @click="sendReply" data-test="mi-reply-send" />
+              <Button label="Send reply" icon="pi pi-send" :loading="replySaving" :disabled="!replyBody.trim() || attachmentsOver(replyAtts)" @click="sendReply" data-test="mi-reply-send" />
             </div>
           </div>
 
@@ -166,10 +172,16 @@
             <h3>Forward</h3>
             <InputText v-model="forwardForm.to" class="w-full" placeholder="recipient@example.com" data-test="mi-forward-to" />
             <Textarea v-model="forwardForm.comment" rows="4" autoResize class="w-full" placeholder="Optional note…" data-test="mi-forward-comment" />
-            <p class="muted">The original attachments go with it.</p>
+            <EmailAttachmentPicker
+              v-model="forwardAtts"
+              :job-id="detail?.linked_job_id"
+              :customer-id="detail?.linked_customer_id"
+              :disabled="forwardSending"
+            />
+            <p class="muted">The original attachments go with it<span v-if="forwardAtts.length">, plus the files added here</span>.</p>
             <div class="reply-actions">
               <Button label="Cancel" severity="secondary" text @click="composeMode = null" />
-              <Button label="Forward" icon="pi pi-share-alt" :loading="forwardSending" :disabled="!forwardForm.to.trim()" @click="sendForward" data-test="mi-forward-send" />
+              <Button label="Forward" icon="pi pi-share-alt" :loading="forwardSending" :disabled="!forwardForm.to.trim() || attachmentsOver(forwardAtts)" @click="sendForward" data-test="mi-forward-send" />
             </div>
           </div>
         </div>
@@ -224,6 +236,7 @@
             <label>Body</label>
             <Textarea v-model="composeForm.body" rows="10" autoResize class="w-full" data-test="mi-compose-body" />
           </div>
+          <EmailAttachmentPicker v-model="composeAtts" :disabled="composeSaving" />
         </div>
         <template #footer>
           <Button label="Cancel" severity="secondary" text @click="composeOpen = false" />
@@ -231,7 +244,7 @@
             label="Send"
             icon="pi pi-send"
             :loading="composeSaving"
-            :disabled="!composeForm.to.trim() || !composeForm.subject.trim() || !composeForm.body.trim()"
+            :disabled="!composeForm.to.trim() || !composeForm.subject.trim() || !composeForm.body.trim() || attachmentsOver(composeAtts)"
             @click="sendCompose"
             data-test="mi-compose-send"
           />
@@ -259,10 +272,17 @@ import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import EmailBodyFrame from '../components/EmailBodyFrame.vue'
 import EmailAttachments from '../components/EmailAttachments.vue'
+import EmailAttachmentPicker from '../components/EmailAttachmentPicker.vue'
+import { MAX_TOTAL_BYTES, knownTotalBytes, sendErrorText, toAttachmentRefs } from '../utils/emailAttachments'
 import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 import { usePermission } from '../composables/usePermission'
 
 const api = useApi()
+// Sends show the server's reason in their own toast. The generic "Please try
+// again" one would sit beside an "it may already have gone — check Sent
+// Items" answer and invite the duplicate send that answer is there to stop.
+// A 401 still goes through, so an expired session still lands on login.
+const NO_GENERIC_TOAST = { suppressErrorToast: (e) => e?.status !== 401 }
 const toast = useToast()
 
 const messages = ref([])
@@ -291,6 +311,17 @@ const replySaving = ref(false)
 
 const composeOpen = ref(false)
 const composeForm = ref({ to: '', cc: '', subject: '', body: '' })
+// Files picked for each composer; sent as `attachment_refs`.
+const replyAtts = ref([])
+const forwardAtts = ref([])
+const composeAtts = ref([])
+function attachmentsOver(items) {
+  return knownTotalBytes(items) > MAX_TOTAL_BYTES
+}
+function withAttachments(payload, items) {
+  if (items.length) payload.attachment_refs = toAttachmentRefs(items)
+  return payload
+}
 const composeSaving = ref(false)
 
 // D1 — full body is live-fetched into bodyData; EmailBodyFrame renders it in
@@ -408,6 +439,8 @@ async function openMessage(m) {
   detailLoading.value = true
   composeMode.value = null
   replyBody.value = ''
+  replyAtts.value = []
+  forwardAtts.value = []
   try {
     const meta = await api.get(`/api/outlook/messages/${m.id}`)
     // Race guard: a fast re-tap must not let an earlier message's metadata
@@ -451,6 +484,7 @@ const forwardSending = ref(false)
 
 function startForward() {
   forwardForm.value = { to: '', comment: '' }
+  forwardAtts.value = []
   composeMode.value = 'forward'
 }
 
@@ -463,14 +497,15 @@ async function sendForward() {
   }
   forwardSending.value = true
   try {
-    await api.post(`/api/outlook/messages/${detail.value.id}/forward`, {
+    await api.post(`/api/outlook/messages/${detail.value.id}/forward`, withAttachments({
       to,
       comment: forwardForm.value.comment || '',
-    })
+    }, forwardAtts.value), NO_GENERIC_TOAST)
     toast.add({ severity: 'success', summary: 'Forwarded', life: 2500 })
     composeMode.value = null
+    forwardAtts.value = []
   } catch (err) {
-    toast.add({ severity: 'error', summary: 'Forward failed', detail: err.message, life: 4000 })
+    toast.add({ severity: 'error', summary: 'Forward problem', detail: sendErrorText(err), life: 10000 })
   } finally {
     forwardSending.value = false
   }
@@ -576,6 +611,7 @@ function startReply() {
   if (!detail.value) return
   composeMode.value = 'reply'
   replyBody.value = quotedTail()
+  replyAtts.value = []
 }
 
 // Split a comma/semicolon address string into the array SendMailIn wants.
@@ -608,17 +644,18 @@ async function sendReply() {
     const replySubj = subj.toLowerCase().startsWith('re:') ? subj : `Re: ${subj}`
     // SendMailIn is extra=forbid: `to` must be a list, body field is
     // `body_html` (not `body`). Sending strings/`body` here was the 422.
-    await api.post('/api/outlook/send', {
+    await api.post('/api/outlook/send', withAttachments({
       to,
       subject: replySubj,
       body_html: plaintextToHtml(replyBody.value),
       in_reply_to: detail.value.id,
-    })
+    }, replyAtts.value), NO_GENERIC_TOAST)
     toast.add({ severity: 'success', summary: 'Reply sent', life: 2500 })
     composeMode.value = null
     replyBody.value = ''
+    replyAtts.value = []
   } catch (err) {
-    toast.add({ severity: 'error', summary: 'Send failed', detail: err.message, life: 4000 })
+    toast.add({ severity: 'error', summary: 'Send problem', detail: sendErrorText(err), life: 10000 })
   } finally {
     replySaving.value = false
   }
@@ -674,6 +711,7 @@ async function markUnread() {
 
 function startCompose() {
   composeForm.value = { to: '', cc: '', subject: '', body: '' }
+  composeAtts.value = []
   composeOpen.value = true
 }
 
@@ -698,12 +736,13 @@ async function sendCompose() {
     }
     const cc = splitAddrs(form.cc)
     if (cc.length) payload.cc = cc
-    await api.post('/api/outlook/send', payload)
+    await api.post('/api/outlook/send', withAttachments(payload, composeAtts.value), NO_GENERIC_TOAST)
     toast.add({ severity: 'success', summary: 'Sent', life: 2500 })
     composeOpen.value = false
     composeForm.value = { to: '', cc: '', subject: '', body: '' }
+    composeAtts.value = []
   } catch (err) {
-    toast.add({ severity: 'error', summary: 'Send failed', detail: err.message, life: 4000 })
+    toast.add({ severity: 'error', summary: 'Send problem', detail: sendErrorText(err), life: 10000 })
   } finally {
     composeSaving.value = false
   }

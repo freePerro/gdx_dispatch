@@ -171,4 +171,4 @@ def test_accepted_tier_heading_over_its_lines(captured_html):  # noqa: F811
     html = captured_html["html"]
     assert "Accepted option: Better" in html
     assert html.index("Accepted option: Better") < html.index("CHI 2283 16x7")
-    assert 'class="totals"' in html and "2200.00" in html
+    assert 'class="totals"' in html and "$2,200.00" in html

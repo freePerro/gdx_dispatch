@@ -1025,18 +1025,19 @@ def _send_invoice_email(
     WRITES its outbound-email row — a commit released inside a SAVEPOINT and a
     write under `contained_read` are rule-2/rule-5 misuse, worse than the gap.
     So if either fails on Postgres, `return False` still reads to the caller as
-    "no email", and `mobile_send_invoice` then runs `transition_invoice_status`
-    (a GL posting) and `db.commit()` into an aborted transaction: 500, no
-    `sent_at`, no GL transition, no audit row. Closing it means restructuring
-    this function around the commit, which is money-billing's call, not a
-    containment change (GDXA-156 audit, round 2).
+    "no email" on a dead transaction. Since 2026-10-15 `mobile_send_invoice`
+    commits the draft→sent flip and its audit row BEFORE calling this, and
+    its tail rolls back a dead transaction (the desktop /send's GDXA-673
+    shape), so such a failure costs the outbound-email row, not the flip or
+    the audit trail. Containing the statements themselves would still mean
+    restructuring this function around the commit (GDXA-156 audit, round 2).
     """
     try:
         # Contained (GDXA-156) — see _invoice_customer. `return False` below
-        # reads to the caller as "no customer email", and it goes on to
-        # transition the invoice to `sent` and commit, so an uncontained failure
-        # would 500 the send and lose the GL transition and the audit row with
-        # it. Not an observed incident: prod carries `customers` (checked live,
+        # reads to the caller as "no customer email", and the caller then
+        # commits its delivery stamp, so an uncontained failure would kill the
+        # transaction under it (its tail rolls back and recovers since
+        # 2026-10-15; the flip and audit row are committed before this runs). Not an observed incident: prod carries `customers` (checked live,
         # GDXA-156 audit). Insurance on the mechanism.
         cust = _invoice_customer(db, invoice)
         if cust is None or not cust.email:
@@ -1195,15 +1196,15 @@ def mobile_send_invoice(
     if invoice.status == "void":
         return _jr({"detail": "invoice is void — it cannot be re-sent"}, 409)
 
-    delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
+    # Flip to sent and write the audit row BEFORE the email renders, in one
+    # commit, as the desktop /send does: the attached PDF is built from this
+    # row, and built first it printed "Draft" with no pay link while the email
+    # body beside it carried the link. The flip never depended on delivery.
+    # The audit row rides the same commit because `_send_invoice_email` can
+    # leave the transaction dead on Postgres (its docstring) — a committed
+    # flip must never be left without the row naming who sent it.
     if invoice.status == "draft":
         transition_invoice_status(db, invoice, "sent", actor=user_id)  # GL S5
-    if delivered:
-        invoice.sent_at = datetime.now(UTC)
-        invoice.sent_via = "email"
-    db.commit()
-    db.refresh(invoice)
-
     log_audit_event_sync(
         db=db,
         tenant_id=tenant_id,
@@ -1215,6 +1216,29 @@ def mobile_send_invoice(
         request=request,
     )
     db.commit()
+    db.refresh(invoice)
+
+    delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
+
+    # sent_at is a delivery fact. Same tail as the desktop /send (GDXA-673):
+    # if the email step left the transaction dead, the commit raises — roll
+    # back (flip and audit row are already committed above) and stamp a
+    # delivered email again on the clean transaction.
+    def _stamp_delivery() -> None:
+        if delivered:
+            invoice.sent_at = datetime.now(UTC)
+            invoice.sent_via = "email"
+
+    try:
+        _stamp_delivery()
+        db.commit()
+    except Exception:
+        log.exception("mobile_invoice_send_attempt_commit_failed invoice=%s", invoice_id)
+        db.rollback()
+        if delivered:
+            _stamp_delivery()
+            db.commit()
+    db.refresh(invoice)
     resend_payload = _serialize_invoice(invoice, db=db)
     resend_payload["email_sent"] = bool(delivered)
     return _jr(resend_payload)

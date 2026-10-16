@@ -1845,10 +1845,10 @@ async function openCapturedPicker(source) {
     if (e?.status === 401) {
       // suppressErrorToast also suppressed the global session-expiry handler —
       // don't dress a dead session up as a plugin failure.
+      // Logging out is enough: the gdx:auth-logout listener (router/index.js)
+      // sends the person to /login?reason=expired with a way back here.
       capturedPickerVisible.value = false;
-      toast.add({ severity: "warn", summary: "Session expired", detail: "Please log in again", life: 3000 });
       auth.logout();
-      router.push("/login");
       return;
     }
     // 403 (no grant) and 503 (plugin-host down / stale plugin) used to render

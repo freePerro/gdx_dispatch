@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- GDX Planner (the planner flavor): overrides src/main/res/values/strings.xml. -->
+<resources>
+    <string name="app_name">GDX Planner</string>
+    <string name="title_activity_main">GDX Planner</string>
+    <string name="package_name">com.gdx.planner</string>
+    <string name="custom_url_scheme">com.gdx.planner</string>
+    <string name="alerts_channel_description">Reminders you set on planner tasks</string>
+</resources>

@@ -43,6 +43,7 @@
                 <Tag v-else-if="task.priority === 'high'" value="HIGH" severity="warn" size="small" />
                 <span v-if="task.assignee_name" class="meta-item"><i class="pi pi-user"></i> {{ task.assignee_name }}</span>
                 <span v-if="task.due_date" class="meta-item"><i class="pi pi-calendar"></i> Due {{ shortDate(task.due_date) }}</span>
+                <span v-if="reminderPending(task)" class="meta-item" data-testid="task-reminder"><i class="pi pi-bell"></i> {{ reminderLabel(task.remind_at) }}</span>
                 <span v-if="task.created_at" class="meta-item"><i class="pi pi-clock"></i> Added {{ shortDate(task.created_at) }}</span>
                 <span v-if="jobLabelFor(task.job_id)" class="meta-item"><i class="pi pi-briefcase"></i> {{ jobLabelFor(task.job_id) }}</span>
                 <span v-if="customerLabelFor(task.customer_id)" class="meta-item"><i class="pi pi-user-edit"></i> {{ customerLabelFor(task.customer_id) }}</span>
@@ -105,6 +106,8 @@
             <Select v-model="taskForm.priority" :options="['low','medium','high','urgent']" placeholder="Priority" class="flex-1" />
             <DatePicker v-model="taskForm.due_date" dateFormat="yy-mm-dd" placeholder="Due date" :showIcon="true" class="flex-1" />
           </div>
+          <DatePicker v-model="taskForm.remind_at" showTime hourFormat="12" dateFormat="M d, yy" placeholder="Remind me (optional)"
+            icon="pi pi-bell" :showIcon="true" :showClear="true" class="w-full" data-testid="task-remind" />
           <Select v-model="taskForm.assigned_to" :options="userOptions" optionLabel="label" optionValue="value"
             placeholder="Assign to (optional)" :showClear="true" filter class="w-full" />
           <!-- Link to a job or customer. Either/neither/both. -->
@@ -129,6 +132,8 @@
             <Select v-model="selectedTask.status" :options="['todo','in-progress','done']" placeholder="Status" class="flex-1" />
           </div>
           <DatePicker v-model="selectedTask.due_date" dateFormat="yy-mm-dd" placeholder="Due date" :showIcon="true" :showClear="true" class="w-full" />
+          <DatePicker v-model="selectedTask.remind_at" showTime hourFormat="12" dateFormat="M d, yy" placeholder="Remind me"
+            icon="pi pi-bell" :showIcon="true" :showClear="true" class="w-full" data-testid="task-detail-remind" />
           <Select v-model="selectedTask.assigned_to" :options="userOptions" optionLabel="label" optionValue="value"
             placeholder="Assign to" :showClear="true" filter class="w-full" />
           <Select v-model="selectedTask.job_id" :options="jobOptions" optionLabel="label" optionValue="value"
@@ -197,6 +202,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useAuthStore } from "../stores/auth";
 import { formatDate, formatTime, localDateString, parseLocalDateString } from "../composables/useFormatters";
+import { remindAtIn, remindAtOut, reminderLabel, reminderPending } from "../lib/plannerReminders";
 import { useFormDraft } from "../composables/useFormDraft";
 import Badge from "primevue/badge";
 import Button from "primevue/button";
@@ -263,6 +269,7 @@ function emptyTaskForm() {
     description: "",
     priority: "low",  // Doug's default 2026-04-13 — high/urgent require active choice
     due_date: null,
+    remind_at: null,
     assigned_to: null,
     job_id: null,
     customer_id: null,
@@ -420,7 +427,7 @@ async function createTask() {
     // created normally (the server refuses it on Today with a 422).
     const assignee = taskForm.value.assigned_to;
     const onToday = activeTab.value === "today" && (!assignee || assignee === myUserId.value);
-    await api.post("/api/planner/tasks", { ...taskForm.value, due_date: due, today: onToday },
+    await api.post("/api/planner/tasks", { ...taskForm.value, due_date: due, remind_at: remindAtOut(taskForm.value.remind_at), today: onToday },
       { successMessage: onToday ? "Task added to Today" : "Task created" });
     // Clear and empty BEFORE closing: @hide flushes whatever the form holds,
     // so closing first would write the just-created task back as a draft.
@@ -468,6 +475,7 @@ function editTask(task) {
     // DatePicker needs a real Date; parse 'YYYY-MM-DD' as LOCAL so the edit
     // dialog doesn't walk the date back a day (see useFormatters).
     due_date: parseLocalDateString(task.due_date) || null,
+    remind_at: remindAtIn(task.remind_at),
     assigned_to: task.assigned_to || null,
     job_id: task.job_id || null,
     customer_id: task.customer_id || null,
@@ -486,6 +494,8 @@ async function saveTaskEdits() {
       priority: t.priority,
       status: t.status,
       due_date: t.due_date instanceof Date ? localDateString(t.due_date) : t.due_date,
+      // The same instant saved again changes nothing on the server.
+      remind_at: remindAtOut(t.remind_at),
       assigned_to: t.assigned_to,
       job_id: t.job_id,
       customer_id: t.customer_id,

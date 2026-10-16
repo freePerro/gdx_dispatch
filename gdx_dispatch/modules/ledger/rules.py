@@ -62,6 +62,12 @@ from gdx_dispatch.modules.ledger.money import to_cents
 log = logging.getLogger(__name__)
 
 ISSUED_STATUSES = ("sent", "paid")
+# Statuses that carry a receivable for the AR tie (reports.ar_control). The
+# one extra, "overdue", is never persisted (it is computed at read time) and
+# is listed only so a stray row is still held to the tie rather than silently
+# dropped from it (GDXA-1231).
+OVERDUE_STATUS = "overdue"
+RECEIVABLE_STATUSES = ISSUED_STATUSES + (OVERDUE_STATUS,)
 EVENT_ISSUED = "issued"
 
 
@@ -422,13 +428,22 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
         raise LedgerConfigError("gl_settings missing — accounting not initialized")
     method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
 
-    total_cents = to_cents(_dec(invoice.total))
-    remaining_ar = max(
-        total_cents
-        - _prior_nonvoided_paid_cents(session, invoice, payment)
-        - invoice_credited_cents(session, invoice),
-        0,
-    )
+    # GDXA-1220: a void invoice has no receivable. The void reversed its P1
+    # (and its adjustments) but left `total` alone, so the arithmetic below
+    # would still credit AR, and GL AR on the invoice went negative. Money
+    # that lands on a void anyway (#422: the Stripe recorder books it in
+    # full, the invoice stays void) is the customer's, so all of it is 2300.
+    is_void = str(getattr(invoice, "status", "") or "").lower() == "void"
+    if is_void:
+        remaining_ar = 0
+    else:
+        total_cents = to_cents(_dec(invoice.total))
+        remaining_ar = max(
+            total_cents
+            - _prior_nonvoided_paid_cents(session, invoice, payment)
+            - invoice_credited_cents(session, invoice),
+            0,
+        )
     ar_portion = min(amount_cents, remaining_ar)
     excess = amount_cents - ar_portion
 
@@ -471,7 +486,11 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
                 role=ROLE_CUSTOMER_CREDITS,
                 job_id=invoice.job_id,
                 customer_id=invoice.customer_id,
-                memo=f"overpayment on {invoice.invoice_number} → customer credit",
+                memo=(
+                    f"payment on voided invoice {invoice.invoice_number} → customer credit"
+                    if is_void
+                    else f"overpayment on {invoice.invoice_number} → customer credit"
+                ),
             )
         )
     return tuple(lines)
@@ -887,6 +906,10 @@ def _refund_overpayment_cents(session: Session, invoice) -> int:
             Payment.voided_at.is_(None),
         )
     ).scalar_one_or_none() or 0
+    if str(getattr(invoice, "status", "") or "").lower() == "void":
+        # GDXA-1220: the same void rule as `build_payment_lines` — a void asks
+        # for nothing, so every live dollar on it is the customer's.
+        return max(to_cents(_dec(paid)), 0)
     over = (
         to_cents(_dec(paid))
         - to_cents(_dec(invoice.total or 0))
@@ -1389,16 +1412,35 @@ def post_opening_balance(session: Session, invoice, *, actor: str | None = None)
     )
 
 
+def ar_role_lines():
+    """``(source_type, source_id, amount_cents)`` for every journal line on
+    any AR-role account, deactivated ones included: a receivable posted to an
+    AR account that has since been deactivated is still owed, so it still
+    counts (GDXA-1231). The app cannot deactivate a system account today, so
+    there is one AR account in practice; this keeps the reads agreeing if a
+    direct DB edit ever makes two. Roles are seed-owned, so these are system
+    accounts.
+    The one AR-line read that ``invoice_ar_balance_cents``,
+    ``reports.ar_control`` and ``backfill.gl_ar_balance_cents`` share; an
+    install whose AR role was never seeded has no lines and reads zero
+    (GDXA-572) without a write."""
+    return (
+        select(GlJournalEntry.source_type, GlJournalEntry.source_id, GlJournalLine.amount_cents)
+        .join(GlJournalLine, GlJournalLine.entry_id == GlJournalEntry.id)
+        .join(GlAccount, GlJournalLine.account_id == GlAccount.id)
+        .where(GlAccount.role == ROLE_AR)
+    )
+
+
 def invoice_ar_balance_cents(session: Session, invoice) -> int:
-    """The invoice's attributable AR balance ON THE LEDGER: Σ AR-account line
-    amounts across every entry sourced from this invoice, its payments, or
-    its adjustments — reversals included, so reversed pairs net to zero.
-    Correct-by-construction input for the void settlement below."""
+    """The invoice's attributable AR balance ON THE LEDGER: Σ AR-role line
+    amounts (``ar_role_lines``) across every entry sourced from this invoice,
+    its payments, or its adjustments — reversals included, so reversed pairs
+    net to zero. Correct-by-construction input for the void settlement below.
+    ``reports.ar_control`` attributes lines the same way; the GDXA-1231 test
+    in test_gl_ar_control pins the two together."""
     from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Payment
 
-    ar_account = resolve_role_account_or_none(session, invoice.company_id, ROLE_AR)
-    if ar_account is None:
-        return 0  # no AR account has ever existed here, so no AR lines (GDXA-572)
     payment_ids = [
         str(pid)
         for pid in session.scalars(
@@ -1427,16 +1469,8 @@ def invoice_ar_balance_cents(session: Session, invoice) -> int:
             GlJournalEntry.source_id.in_(adjustment_ids or ["-"]),
         ),
     )
-    rows = session.execute(
-        select(GlJournalLine.amount_cents)
-        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
-        .where(
-            GlJournalEntry.company_id == invoice.company_id,
-            GlJournalLine.account_id == ar_account.id,
-            source_match,
-        )
-    ).all()
-    return sum(amount for (amount,) in rows)
+    rows = session.execute(ar_role_lines().where(source_match)).all()
+    return sum(amount for (_type, _id, amount) in rows)
 
 
 def settle_opening_on_void(session: Session, invoice, actor: str | None = None) -> None:

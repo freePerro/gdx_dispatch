@@ -23,7 +23,13 @@ This directory contains the native **Android Studio project** that wraps the GDX
 
 ## 2. Directory Structure
 
-- `app/` — Main Android application module:
+- `app/` — Main Android application module. It builds two apps from one web
+  bundle, as product flavors in `app/build.gradle`: `dispatch` (GDX Dispatch,
+  `com.gdx.dispatch`) and `planner` (GDX Planner, `com.gdx.planner`, an
+  office-only planner with task-reminder alerts; `src/lib/appMode.js` picks the
+  mode from the application id at startup).
+  - `src/planner/res/` — GDX Planner's name, icon and alert-channel text,
+    layered over `src/main/res/`.
   - `src/main/AndroidManifest.xml` — Android permissions, application metadata, and main activity declaration.
   - `src/main/java/com/gdx/dispatch/MainActivity.java` — Native activity entrypoint.
   - `src/main/java/com/gdx/dispatch/location/` — Foreground GPS service and plugin.
@@ -46,21 +52,29 @@ npx cap sync android
 ```
 *(Or run the combined script: `npm run cap:build`)*
 
-### Compiling Debug APK
+### Compiling Debug APKs
 Using the environment's JDK 21 and Android SDK:
 ```bash
 cd gdx_dispatch/frontend/android
-JAVA_HOME=/home/doug/android-studio/jbr ANDROID_HOME=/home/doug/Android/Sdk ./gradlew assembleDebug
+JAVA_HOME=/home/doug/android-studio/jbr ANDROID_HOME=/home/doug/Android/Sdk ./gradlew assembleDispatchDebug
+JAVA_HOME=/home/doug/android-studio/jbr ANDROID_HOME=/home/doug/Android/Sdk ./gradlew assemblePlannerDebug
 ```
-Output APK: `gdx_dispatch/frontend/android/app/build/outputs/apk/debug/app-debug.apk`
+`./gradlew assembleDebug` builds both. Output APKs:
+- `app/build/outputs/apk/dispatch/debug/app-dispatch-debug.apk`
+- `app/build/outputs/apk/planner/debug/app-planner-debug.apk`
+
+The two install side by side; each has its own sign-in and its own alerts.
 
 ### Launching on Emulator
 To run on the local `Pixel_8` AVD:
 ```bash
 /home/doug/Android/Sdk/emulator/emulator -avd Pixel_8 &
 adb wait-for-device
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/dispatch/debug/app-dispatch-debug.apk
 adb shell am start -n com.gdx.dispatch/com.gdx.dispatch.MainActivity
+# GDX Planner (the activity class keeps the shared com.gdx.dispatch namespace):
+adb install -r app/build/outputs/apk/planner/debug/app-planner-debug.apk
+adb shell am start -n com.gdx.planner/com.gdx.dispatch.MainActivity
 ```
 
 ---
@@ -85,8 +99,12 @@ export GDX_KEY_PASSWORD=your_key_password
 
 JAVA_HOME=/home/doug/android-studio/jbr ANDROID_HOME=/home/doug/Android/Sdk ./gradlew bundleRelease
 ```
-The Google Play App Bundle will be output at:
-`gdx_dispatch/frontend/android/app/build/outputs/bundle/release/app-release.aab`
+`bundleRelease` builds both apps (`bundleDispatchRelease` or
+`bundlePlannerRelease` builds one). The Google Play App Bundles are output at:
+- `gdx_dispatch/frontend/android/app/build/outputs/bundle/dispatchRelease/app-dispatch-release.aab`
+- `gdx_dispatch/frontend/android/app/build/outputs/bundle/plannerRelease/app-planner-release.aab`
+
+GDX Planner is a separate Play Console app (`com.gdx.planner`).
 
 ---
 
@@ -94,4 +112,4 @@ The Google Play App Bundle will be output at:
 
 - **DO NOT delete this directory:** This project is intentionally tracked to provide reproducible Android builds for field technicians and Google Play releases.
 - **Do not commit `.apk`, `.aab`, `.jks`, `.keystore`, `.gradle/`, or `build/`:** These are ignored by `android/.gitignore`.
-- **Preserve `com.gdx.dispatch` package ID:** This matches the Google Play Console application identifier.
+- **Preserve `com.gdx.dispatch` package ID:** This matches the Google Play Console application identifier. GDX Planner's `com.gdx.planner` is set only on its flavor; the Java namespace stays `com.gdx.dispatch` for both.

@@ -29,6 +29,12 @@ log = logging.getLogger("gdx_dispatch.modules.outlook.graph_client")
 # Graph throttles with 429 (+ a Retry-After header) and occasionally returns
 # transient 503/504. These are retried with backoff; everything else raises.
 _RETRYABLE_STATUS = frozenset({429, 503, 504})
+#: Graph refuses a throttled call before doing any of it, so a 429 is always
+#: safe to retry; a 503/504 may follow work already done. Microsoft: on a 429
+#: "the requests fail", and the client should wait Retry-After and "retry the
+#: request" (https://learn.microsoft.com/en-us/graph/throttling, updated
+#: 2025-08-06, read 2026-10-16).
+RETRY_THROTTLED_ONLY = frozenset({429})
 
 
 class OutlookGraphAPIError(RuntimeError):
@@ -94,7 +100,12 @@ class OutlookGraphClient:
         params: dict | None = None,
         json: dict | None = None,
         accept_binary: bool = False,
+        retry_on: frozenset[int] = _RETRYABLE_STATUS,
     ) -> httpx.Response:
+        """One Graph call, retried on ``retry_on`` (throttling and transient
+        5xx by default). A call that creates something should pass
+        :data:`RETRY_THROTTLED_ONLY`: a 503/504 can come back after Graph did
+        the work, and a retry would do it twice."""
         url = path if path.startswith("http") else f"{self._base_url}{path}"
         headers = {
             "Authorization": f"Bearer {self._access_token}",
@@ -106,7 +117,7 @@ class OutlookGraphClient:
         attempt = 0
         while True:
             resp = self._client.request(method, url, headers=headers, params=params, json=json)
-            if resp.status_code in _RETRYABLE_STATUS and attempt < self._max_retries:
+            if resp.status_code in retry_on and attempt < self._max_retries:
                 delay = self._retry_delay(resp, attempt)
                 log.warning(
                     "graph_throttled status=%s endpoint=%s retry=%d/%d after=%.1fs",

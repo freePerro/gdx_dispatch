@@ -747,6 +747,19 @@ def report_balance_sheet(
     )
 
 
+@router.get("/reports/ar-control")
+def report_ar_control(
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.read")),
+) -> dict:
+    """Open-invoice balances tied to the AR control account (GDXA-1181).
+    Current state only: ``balance_due`` has no history to read as of a date."""
+    from gdx_dispatch.modules.ledger import reports
+
+    return reports.ar_control(db, _tenant_id(user))
+
+
 @router.get("/journal")
 def journal_browser(
     limit: int = 50,

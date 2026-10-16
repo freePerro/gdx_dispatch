@@ -16,19 +16,36 @@ client and the same auth posture:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import Iterator
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.email_attachments import (
+    MAX_EMAIL_ATTACHMENTS_BYTES,
+    AttachmentRef,
+    attachment_audit_meta,
+    attachments_over_budget,
+    decode_base64_attachment,
+    resolve_attachment_refs,
+)
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.modules.outlook import graph_send
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import OutlookMessage
-from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired, with_outlook_client
+from gdx_dispatch.modules.outlook.token_refresh import (
+    OutlookReconnectRequired,
+    OutlookTransientRetry,
+    with_outlook_client,
+)
 from gdx_dispatch.modules.outlook.visibility import can_view, mailbox_owner_id
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -59,7 +76,10 @@ class SendMailIn(BaseModel):
     customer_id: UUID | None = None            # auto-tag the resulting sync row
     job_id: UUID | None = None
     save_to_sent_items: bool = True
-    attachments: list[OutboundAttachment] | None = None
+    attachments: list[OutboundAttachment] | None = Field(default=None, max_length=25)
+    # Picked in the composer: device files ride as bytes, stored photos,
+    # documents and estimate/invoice PDFs by id (core/email_attachments.py).
+    attachment_refs: list[AttachmentRef] | None = Field(default=None, max_length=25)
 
 
 class SendMailOut(BaseModel):
@@ -251,6 +271,122 @@ def _build_reply_body(payload: SendMailIn) -> dict:
     return {"message": msg}
 
 
+def _outgoing_attachments(
+    request: Request,
+    tenant_db: Session,
+    user: dict[str, Any],
+    tid: UUID,
+    inline: list[OutboundAttachment] | None,
+    refs: list[AttachmentRef] | None,
+) -> list[dict[str, Any]]:
+    """Every file this send carries, as wire dicts with ``size_bytes``, or an
+    HTTP error before anything reaches Graph. The legacy inline list and the
+    picked refs share one size cap."""
+    out: list[dict[str, Any]] = []
+    for a in inline or ():
+        size = len(decode_base64_attachment(a.name, a.content_base64))
+        out.append({
+            "name": a.name,
+            "content_type": a.content_type,
+            "content_base64": a.content_base64,
+            "size_bytes": size,
+            "kind": "inline",
+            "ref_id": None,
+        })
+    used = sum(a["size_bytes"] for a in out)
+    if used > MAX_EMAIL_ATTACHMENTS_BYTES:
+        # Over Graph's 4MB request this list now goes through a draft, so
+        # the cap the composer's refs answer to applies to it too.
+        raise attachments_over_budget(used, MAX_EMAIL_ATTACHMENTS_BYTES)
+    if refs:
+        out.extend(resolve_attachment_refs(
+            tenant_db, request, user, str(tid), refs,
+            budget_bytes=max(0, MAX_EMAIL_ATTACHMENTS_BYTES - used),
+        ))
+    return out
+
+
+@contextlib.contextmanager
+def _graph_errors(action: str, uid: UUID) -> Iterator[None]:
+    """Graph failures as the HTTP answers the composers show: reconnect (409),
+    a big set that needs a Sent Items copy (422), and otherwise a reason that
+    says whether the mail may have gone. Only the call that sends can leave
+    that unknown (``graph_send.SendUnconfirmed``); a failure before it —
+    token refresh, draft, attach — sent nothing, and says so, so nobody hunts
+    Sent Items for mail that never left."""
+    try:
+        yield
+    except graph_send.AttachmentsNeedSentItems as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OutlookReconnectRequired as exc:
+        log.warning("%s: reconnect required for %s: %s", action, uid, exc)
+        raise HTTPException(
+            status_code=409,
+            detail="Outlook reconnect required — open Settings → Integrations → Outlook.",
+        ) from exc
+    except graph_send.SendUnconfirmed as exc:
+        # A 5xx or timeout on the send itself: Graph may have sent it, and
+        # "rejected" or "try again" would invite a duplicate.
+        log.warning("%s: unconfirmed for %s: %s", action, uid, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Outlook didn't confirm the {action} — check Sent Items before "
+                   f"trying again, it may already have gone.",
+        ) from exc
+    except OutlookTransientRetry as exc:
+        # The token expired mid-send and was refreshed; Graph refused the call
+        # with a 401, so nothing went out.
+        log.warning("%s: token refreshed mid-call for %s", action, uid)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Outlook signed in again partway through — the {action} did not go out. Try again.",
+        ) from exc
+    except OutlookGraphAPIError as exc:
+        log.warning("%s: graph error for %s: %s", action, uid, exc)
+        if exc.status_code >= 500:
+            detail = (f"Outlook had a problem ({exc.status_code}) before the {action} "
+                      f"went out — nothing was sent. Try again.")
+        else:
+            detail = f"Microsoft Graph rejected {action}: {exc.status_code}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except httpx.HTTPError as exc:
+        log.warning("%s: no answer before sending for %s: %r", action, uid, exc)
+        raise HTTPException(
+            status_code=504,
+            detail=f"Outlook didn't answer before the {action} went out — nothing was sent. Try again.",
+        ) from exc
+
+
+def _audit_mail(
+    tenant_db: Session,
+    *,
+    action: str,
+    uid: UUID,
+    tid: UUID,
+    entity_id: str | None,
+    details: dict[str, Any],
+    attachments: list[dict[str, Any]],
+) -> None:
+    """Who sent what, with which files. Runs after Graph accepted the message,
+    so a failure here is logged, never turned into an error: answering 500 for
+    mail that already left would invite the sender to send it twice."""
+    try:
+        log_audit_event_sync(
+            db=tenant_db,
+            tenant_id=str(tid),
+            user_id=str(uid),
+            action=action,
+            entity_type="email",
+            entity_id=entity_id,
+            details={**details, "attachments": attachment_audit_meta(attachments)},
+        )
+        tenant_db.commit()
+    except Exception:  # noqa: BLE001 — see docstring
+        log.exception("%s: audit write failed user=%s", action, uid)
+        with contextlib.suppress(Exception):
+            tenant_db.rollback()
+
+
 @router.post(
     "/send",
     response_model=SendMailOut,
@@ -258,6 +394,7 @@ def _build_reply_body(payload: SendMailIn) -> dict:
 )
 def send_mail(
     payload: SendMailIn,
+    request: Request,
     user: dict[str, Any] = Depends(get_user_for_send),
     control_db: Session = Depends(get_db_for_send),
     tenant_db: Session = Depends(get_db_for_send),
@@ -307,34 +444,40 @@ def send_mail(
             ):
                 parent_graph_id = parent.graph_message_id
 
-    try:
-        with with_outlook_client(control_db, tenant_db, uid, tid) as gc:
-            if parent_graph_id:
-                # Real RFC2822 threading: Graph wires In-Reply-To + References.
-                gc._request(
-                    "POST",
-                    f"/me/messages/{parent_graph_id}/reply",
-                    json=_build_reply_body(payload),
-                )
-            else:
-                gc._request(
-                    "POST", "/me/sendMail",
-                    json=_build_graph_body(payload, _job_number(tenant_db, payload.job_id)),
-                )
-    except OutlookReconnectRequired as exc:
-        log.warning("send_mail: reconnect required for %s: %s", uid, exc)
-        raise HTTPException(
-            status_code=409,
-            detail="Outlook reconnect required — open Settings → Integrations → Outlook.",
-        ) from exc
-    except OutlookGraphAPIError as exc:
-        log.warning("send_mail: graph error for %s: %s", uid, exc)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Microsoft Graph rejected send: {exc.status_code}",
-        ) from exc
+    # Resolved before Graph is touched: an unreachable pick or an oversized
+    # set stops the send with nothing delivered.
+    attachments = _outgoing_attachments(
+        request, tenant_db, user, tid, payload.attachments, payload.attachment_refs
+    )
+    with _graph_errors("send", uid), with_outlook_client(control_db, tenant_db, uid, tid) as gc:
+        if parent_graph_id:
+            # Real RFC2822 threading: Graph wires In-Reply-To + References.
+            message = _build_reply_body(payload)["message"]
+            message.pop("attachments", None)
+            route = graph_send.send_reply(gc, parent_graph_id, message, attachments)
+        else:
+            message = _build_graph_body(payload, _job_number(tenant_db, payload.job_id))["message"]
+            message.pop("attachments", None)
+            route = graph_send.send_new(
+                gc, message, attachments, save_to_sent_items=payload.save_to_sent_items
+            )
 
-    log.info("send_mail: ok user=%s recipients=%d", uid, len(payload.to))
+    log.info("send_mail: ok user=%s recipients=%d attachments=%d route=%s",
+             uid, len(payload.to), len(attachments), route)
+    _audit_mail(
+        tenant_db,
+        action="outlook_mail_replied" if parent_graph_id else "outlook_mail_sent",
+        uid=uid,
+        tid=tid,
+        entity_id=str(payload.in_reply_to) if parent_graph_id else None,
+        details={
+            "recipient_count": len(payload.to) + len(payload.cc or ()) + len(payload.bcc or ()),
+            "customer_id": str(payload.customer_id) if payload.customer_id else None,
+            "job_id": str(payload.job_id) if payload.job_id else None,
+            "route": route,
+        },
+        attachments=attachments,
+    )
     return SendMailOut(ok=True, detail=None)
 
 
@@ -346,6 +489,8 @@ class ForwardMailIn(BaseModel):
     to: list[EmailStr] = Field(min_length=1, max_length=50)
     cc: list[EmailStr] | None = None
     comment: str = Field(default="", max_length=100_000)
+    # Files added to the forward, on top of the original's own attachments.
+    attachment_refs: list[AttachmentRef] | None = Field(default=None, max_length=25)
 
 
 @router.post(
@@ -354,6 +499,7 @@ class ForwardMailIn(BaseModel):
     dependencies=[Depends(require_module("email"))],
 )
 def forward_message(
+    request: Request,
     message_id: UUID,
     payload: ForwardMailIn,
     user: dict[str, Any] = Depends(get_user_for_send),
@@ -388,31 +534,35 @@ def forward_message(
             detail="only the mailbox owner can forward this message",
         )
 
-    body: dict[str, Any] = {
-        "comment": payload.comment or "",
-        "toRecipients": [{"emailAddress": {"address": str(a)}} for a in payload.to],
-    }
-    if payload.cc:
-        # Graph's forward action has no ccRecipients field — the cc list rides
-        # on the message object instead.
-        body["message"] = {
-            "ccRecipients": [{"emailAddress": {"address": str(a)}} for a in payload.cc]
-        }
-    try:
-        with with_outlook_client(control_db, tenant_db, uid, tid) as gc:
-            gc._request("POST", f"/me/messages/{msg.graph_message_id}/forward", json=body)
-    except OutlookReconnectRequired as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="Outlook reconnect required — open Settings → Integrations → Outlook.",
-        ) from exc
-    except OutlookGraphAPIError as exc:
-        log.warning("forward_message: graph error for %s: %s", uid, exc)
-        raise HTTPException(
-            status_code=502, detail=f"Microsoft Graph rejected forward: {exc.status_code}",
-        ) from exc
+    attachments = _outgoing_attachments(
+        request, tenant_db, user, tid, None, payload.attachment_refs
+    )
+    with _graph_errors("forward", uid), with_outlook_client(control_db, tenant_db, uid, tid) as gc:
+        # Graph's forward actions have no ccRecipients field — graph_send
+        # carries the cc list on the message object instead.
+        route = graph_send.send_forward(
+            gc,
+            msg.graph_message_id,
+            to=[str(a) for a in payload.to],
+            cc=[str(a) for a in payload.cc] if payload.cc else None,
+            comment=payload.comment or "",
+            attachments=attachments,
+        )
 
-    log.info("forward_message: ok user=%s message=%s recipients=%d", uid, message_id, len(payload.to))
+    log.info("forward_message: ok user=%s message=%s recipients=%d attachments=%d",
+             uid, message_id, len(payload.to), len(attachments))
+    _audit_mail(
+        tenant_db,
+        action="outlook_mail_forwarded",
+        uid=uid,
+        tid=tid,
+        entity_id=str(message_id),
+        attachments=attachments,
+        details={
+            "recipient_count": len(payload.to) + len(payload.cc or ()),
+            "route": route,
+        },
+    )
     return SendMailOut(ok=True, detail=None)
 
 

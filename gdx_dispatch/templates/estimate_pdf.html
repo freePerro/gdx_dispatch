@@ -81,6 +81,13 @@
     {{ data.customer.address or '' }}
   </div>
 
+  {% if data.job_name %}
+  <div class="section">
+    <strong>Job Name</strong><br>
+    {{ data.job_name }}
+  </div>
+  {% endif %}
+
   {% if data.jobsite_address %}
   <div class="section">
     <strong>Jobsite</strong><br>
@@ -128,14 +135,14 @@
        hidden — the customer still sees the tax broken out (invoice compliance /
        no mystery Total). Only the per-line Unit Price / Line Total columns above
        are gated by hide_line_prices. #}
-    <tr><td class="label">Subtotal</td><td class="num">${{ '%.2f'|format(data.subtotal or 0) }}</td></tr>
+    <tr><td class="label">Subtotal</td><td class="num">{{ (data.subtotal or 0) | money }}</td></tr>
     {% if (data.discount or 0) > 0 %}
-    <tr><td class="label">Discount</td><td class="num">-${{ '%.2f'|format(data.discount or 0) }}</td></tr>
+    <tr><td class="label">Discount</td><td class="num">-{{ (data.discount or 0) | abs | money }}</td></tr>
     {% endif %}
-    <tr><td class="label">Tax{% if (data.tax_rate_pct or 0) > 0 %} ({{ '%g'|format(data.tax_rate_pct) }}%){% endif %}</td><td class="num">${{ '%.2f'|format(data.tax or 0) }}</td></tr>
-    <tr class="grand"><td>Total</td><td class="num">${{ '%.2f'|format(data.total or 0) }}</td></tr>
+    <tr><td class="label">Tax{% if (data.tax_rate_pct or 0) > 0 %} ({{ '%g'|format(data.tax_rate_pct) }}%){% endif %}</td><td class="num">{{ (data.tax or 0) | money }}</td></tr>
+    <tr class="grand"><td>Total</td><td class="num">{{ (data.total or 0) | money }}</td></tr>
     {% if (data.deposit_pct or 0) > 0 %}
-    <tr><td class="label">{{ data.deposit_pct }}% Down</td><td class="num">${{ '%.2f'|format(data.deposit_amount or 0) }}</td></tr>
+    <tr><td class="label">{{ data.deposit_pct }}% Down</td><td class="num">{{ (data.deposit_amount or 0) | money }}</td></tr>
     {% endif %}
   </table>
   {% endif %}

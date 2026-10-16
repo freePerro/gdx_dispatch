@@ -15,11 +15,18 @@ import InputText from 'primevue/inputtext'
 import TreeSelect from 'primevue/treeselect'
 import EmailBodyFrame from '../components/EmailBodyFrame.vue'
 import EmailAttachments from '../components/EmailAttachments.vue'
+import EmailAttachmentPicker from '../components/EmailAttachmentPicker.vue'
+import { MAX_TOTAL_BYTES, knownTotalBytes, sendErrorText, toAttachmentRefs } from '../utils/emailAttachments'
 import LeadIntakeForm from '../components/LeadIntakeForm.vue'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApi()
+// Sends show the server's reason on their own status line. The generic
+// "Please try again" toast would sit beside an "it may already have gone —
+// check Sent Items" answer and invite the duplicate send that answer is there
+// to stop. A 401 still goes through, so an expired session lands on login.
+const NO_GENERIC_TOAST = { suppressErrorToast: (e) => e?.status !== 401 }
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -71,6 +78,14 @@ const composeSending = ref(false)
 // REPLY auto-link back to the job (tagger job_thread strategy). Set from the
 // message being replied to, or from ?job_id= when composing from a job page.
 const composeJobId = ref(null)
+// Files picked for the composer / the forward dialog; sent as attachment_refs.
+// The customer scopes "From records" when the message is linked to one.
+const composeAtts = ref([])
+const composeCustomerId = ref(null)
+const forwardAtts = ref([])
+function attachmentsOver(items) {
+  return knownTotalBytes(items) > MAX_TOTAL_BYTES
+}
 const composeJobLabel = ref('')
 // "Reply by email" from the Leads page (?lead_id= / ?landing_lead_id=).
 // The SEND is the contact event — on success we call record-contact on the
@@ -379,6 +394,8 @@ function startNewCompose() {
   composeStatus.value = null
   composeJobId.value = null
   composeJobLabel.value = ''
+  composeCustomerId.value = null
+  composeAtts.value = []
   composeLeadId.value = null
   composeLandingLeadId.value = null
   composeLeadEmail.value = ''
@@ -403,6 +420,8 @@ function startReply() {
   composeStatus.value = null
   composeJobId.value = detail.value.linked_job_id || null
   composeJobLabel.value = detail.value.linked_job_label || ''
+  composeCustomerId.value = detail.value.linked_customer_id || null
+  composeAtts.value = []
   composeLeadId.value = null
   composeLandingLeadId.value = null
   composeLeadEmail.value = ''
@@ -436,6 +455,8 @@ function startReplyAll() {
   composeStatus.value = null
   composeJobId.value = d.linked_job_id || null
   composeJobLabel.value = d.linked_job_label || ''
+  composeCustomerId.value = d.linked_customer_id || null
+  composeAtts.value = []
   composeLeadId.value = null
   composeLandingLeadId.value = null
   composeLeadEmail.value = ''
@@ -453,30 +474,39 @@ function startReplyAll() {
 const forwardOpen = ref(false)
 const forwardForm = ref({ to: '', cc: '', comment: '' })
 const forwardSending = ref(false)
+// Shown inside the dialog: the page's own error line sits behind the modal,
+// where a "check Sent Items" answer would go unread before a second click.
+const forwardError = ref('')
 
 function startForward() {
   if (!detail.value) return
   forwardForm.value = { to: '', cc: '', comment: '' }
+  forwardError.value = ''
+  forwardAtts.value = []
   forwardOpen.value = true
 }
 
 async function sendForward() {
   const to = splitAddrs(forwardForm.value.to)
   if (!to.length) {
-    error.value = 'Forward needs at least one recipient.'
+    forwardError.value = 'Forward needs at least one recipient.'
     return
   }
+  forwardError.value = ''
   forwardSending.value = true
   try {
     const payload = { to, comment: forwardForm.value.comment || '' }
     const cc = splitAddrs(forwardForm.value.cc)
     if (cc.length) payload.cc = cc
+    if (forwardAtts.value.length) payload.attachment_refs = toAttachmentRefs(forwardAtts.value)
     await api.post(`/api/outlook/messages/${detail.value.id}/forward`, payload, {
       successMessage: 'Forwarded.',
+      ...NO_GENERIC_TOAST,
     })
     forwardOpen.value = false
+    forwardAtts.value = []
   } catch (err) {
-    error.value = err.message || 'Forward failed'
+    forwardError.value = sendErrorText(err, 'Forward failed')
   } finally {
     forwardSending.value = false
   }
@@ -498,6 +528,12 @@ function composeFingerprint() {
 
 async function saveDraft() {
   const form = composeForm.value
+  // A saved draft carries no files yet; saving one would drop the picks
+  // without a word.
+  if (composeAtts.value.length) {
+    composeStatus.value = { ok: false, message: 'Drafts save without attachments. Send it, or remove the files to save a draft.' }
+    return
+  }
   if (draftSavedFingerprint.value === composeFingerprint()) {
     composeStatus.value = { ok: true, message: 'Already saved to Drafts — nothing changed since.' }
     return
@@ -585,7 +621,8 @@ async function sendCompose() {
     }
     // P2.5 — server stamps the [Job #…] subject marker so the reply links back.
     if (composeJobId.value) payload.job_id = composeJobId.value
-    const r = await api.post('/api/outlook/send', payload)
+    if (composeAtts.value.length) payload.attachment_refs = toAttachmentRefs(composeAtts.value)
+    const r = await api.post('/api/outlook/send', payload, NO_GENERIC_TOAST)
     composeStatus.value = { ok: !!r.ok, message: r.ok ? 'Sent.' : (r.detail || 'Send failed') }
     if (r.ok) {
       // Lead-originated compose: the successful send IS the contact event.
@@ -606,11 +643,12 @@ async function sendCompose() {
       composeLandingLeadId.value = null
       composeLeadEmail.value = ''
       composeForm.value = { to: '', cc: '', subject: '', body: '' }
+      composeAtts.value = []
       composeMode.value = null
       await fetchMessages()
     }
   } catch (err) {
-    composeStatus.value = { ok: false, message: err.message || 'Send failed' }
+    composeStatus.value = { ok: false, message: sendErrorText(err) }
   } finally {
     composeSending.value = false
   }
@@ -1302,9 +1340,15 @@ onMounted(async () => {
             Body
             <textarea v-model="composeForm.body" data-test="compose-body" rows="14" />
           </label>
+          <EmailAttachmentPicker
+            v-model="composeAtts"
+            :job-id="composeJobId"
+            :customer-id="composeCustomerId"
+            :disabled="composeSending"
+          />
         </div>
         <div class="compose-actions">
-          <Button :disabled="composeSending" data-test="compose-send" @click="sendCompose">
+          <Button :disabled="composeSending || attachmentsOver(composeAtts)" data-test="compose-send" @click="sendCompose">
             {{ composeSending ? 'Sending…' : 'Send' }}
           </Button>
           <Button
@@ -1556,10 +1600,17 @@ onMounted(async () => {
           <textarea v-model="forwardForm.comment" rows="5" data-test="forward-comment" placeholder="Optional note above the forwarded message" />
         </label>
       </div>
-      <p class="muted" style="font-size:0.8rem">The original attachments are forwarded with it.</p>
+      <EmailAttachmentPicker
+        v-model="forwardAtts"
+        :job-id="detail?.linked_job_id"
+        :customer-id="detail?.linked_customer_id"
+        :disabled="forwardSending"
+      />
+      <p class="muted" style="font-size:0.8rem">The original attachments are forwarded with it<span v-if="forwardAtts.length">, plus the files added here</span>.</p>
+      <p v-if="forwardError" class="status-error" role="alert" data-test="forward-error">{{ forwardError }}</p>
       <template #footer>
         <Button label="Cancel" outlined @click="forwardOpen = false" />
-        <Button label="Forward" :loading="forwardSending" data-test="forward-send" @click="sendForward" />
+        <Button label="Forward" :loading="forwardSending" :disabled="attachmentsOver(forwardAtts)" data-test="forward-send" @click="sendForward" />
       </template>
     </Dialog>
 

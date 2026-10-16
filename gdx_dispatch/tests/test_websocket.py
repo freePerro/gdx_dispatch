@@ -3,17 +3,29 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import jwt
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from starlette.websockets import WebSocketDisconnect
 
+from gdx_dispatch.core import database
+from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.tenant import single_tenant
 from gdx_dispatch.core.websocket import ConnectionManager, manager
+from gdx_dispatch.models.tenant_models import User
+from gdx_dispatch.routers import dispatch_ws
 from gdx_dispatch.routers.dispatch_ws import dispatch_board_ws
 
 # Match the JWT_SECRET set in gdx_dispatch/tests/conftest.py so signatures verify.
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret")
 ALG = "HS256"
+TENANT = single_tenant()["id"]
+DISPATCHER_ID = str(uuid4())
 
 
 class DummyWebSocket:
@@ -22,6 +34,7 @@ class DummyWebSocket:
         self.accepted = False
         self.closed_code: int | None = None
         self.sent: list[dict] = []
+        self.state = SimpleNamespace()
 
     async def accept(self) -> None:
         self.accepted = True
@@ -38,7 +51,7 @@ class DummyWebSocket:
         self.sent.append(message)
 
 
-def make_token(tenant_id: str, sub: str = "dispatcher-1") -> str:
+def make_token(tenant_id: str, sub: str = DISPATCHER_ID) -> str:
     exp = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
     claims = {
         "sub": sub,
@@ -55,10 +68,26 @@ def clear_manager_registry() -> None:
     manager._connections.clear()
 
 
+@pytest.fixture(autouse=True)
+def board_db(monkeypatch):
+    """The handler's user-row check and role lookup read a throwaway DB
+    holding one dispatcher, the subject make_token signs for."""
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    factory = sessionmaker(bind=engine)
+    with factory() as db:
+        db.add(User(id=UUID(DISPATCHER_ID), email="d@example.com", username="d", role="dispatcher", company_id=TENANT))
+        db.commit()
+    monkeypatch.setattr(dispatch_ws, "SessionLocal", factory)
+    monkeypatch.setattr(database, "app_engine", engine)
+    yield
+    engine.dispose()
+
+
 def test_connect() -> None:
     async def _run() -> None:
         ws = DummyWebSocket()
-        await dispatch_board_ws(ws, token=make_token("tenant-a"))
+        await dispatch_board_ws(ws, token=make_token(TENANT))
         assert ws.accepted is True
 
     asyncio.run(_run())
@@ -84,7 +113,7 @@ def test_tenant_isolation() -> None:
 
 def test_job_assigned_broadcast() -> None:
     async def _run() -> None:
-        tenant_id = "tenant-a"
+        tenant_id = TENANT
         listener = DummyWebSocket()
         await manager.connect(listener, tenant_id)
 
@@ -102,7 +131,7 @@ def test_job_assigned_broadcast() -> None:
 
 def test_disconnect_cleanup() -> None:
     async def _run() -> None:
-        tenant_id = "tenant-cleanup"
+        tenant_id = TENANT
         ws = DummyWebSocket()
 
         await dispatch_board_ws(ws, token=make_token(tenant_id))
@@ -145,7 +174,7 @@ def test_multiple_clients() -> None:
 
 def test_job_status_changed_broadcast() -> None:
     async def _run() -> None:
-        tenant_id = "tenant-a"
+        tenant_id = TENANT
         listener = DummyWebSocket()
         await manager.connect(listener, tenant_id)
 
@@ -161,7 +190,7 @@ def test_job_status_changed_broadcast() -> None:
 
 def test_technician_location_broadcast() -> None:
     async def _run() -> None:
-        tenant_id = "tenant-a"
+        tenant_id = TENANT
         listener = DummyWebSocket()
         await manager.connect(listener, tenant_id)
 

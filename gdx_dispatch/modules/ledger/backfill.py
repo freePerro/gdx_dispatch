@@ -28,18 +28,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.ledger import service as ledger_service
-from gdx_dispatch.modules.ledger.coa import LedgerConfigError, resolve_role_account
+from gdx_dispatch.modules.ledger.coa import LedgerConfigError
 from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 from gdx_dispatch.modules.ledger.models import (
-    ROLE_AR,
     GlJournalEntry,
-    GlJournalLine,
     GlPeriodLock,
 )
 from gdx_dispatch.modules.ledger.money import to_cents
@@ -51,6 +49,7 @@ from gdx_dispatch.modules.ledger.rules import (
     _dec,
     _effective_at,
     _existed_at_cutover,
+    ar_role_lines,
     has_opening_anchor,
     invoice_ar_balance_cents,
     opening_balance_cents,
@@ -193,7 +192,8 @@ def run_replay(session: Session, company_id: str) -> PhaseResult:
     result = PhaseResult()
     entries_at_start = _entry_count(session, company_id)
 
-    invoices = [i for i in _company_invoices(session, company_id) if i.status != "void"]
+    all_invoices = _company_invoices(session, company_id)
+    invoices = [i for i in all_invoices if i.status != "void"]
     by_id = {i.id: i for i in invoices}
 
     # Issuances (post-cutover invoices; era invoices anchor inside repost).
@@ -248,7 +248,37 @@ def run_replay(session: Session, company_id: str) -> PhaseResult:
 
     # Payments — resettle per invoice reposts every payment at current state
     # (and skips opening-era rows on anchored invoices).
-    for invoice in invoices:
+    #
+    # GDXA-1220: a void invoice still holding a LIVE payment (money the Stripe
+    # recorder booked after the void, #422) is resettled too. Before the fix
+    # that payment credited 1200 AR on an invoice with no AR left; the replay
+    # is what moves an entry already posted that way onto 2300. Void invoices
+    # with no live payment stay out, exactly as before.
+    #
+    # Pre-cutover-era voids stay out too, and are named for hand review: a
+    # late-learned era payment on one resettles through `post_era_settlement`,
+    # which credits AR from 3950 and does not know about voids — on an
+    # invoice with no anchor that drives AR negative (audit 2026-10-15,
+    # executed). What such money should post to is an accounting decision,
+    # not something a replay may guess.
+    from gdx_dispatch.models.tenant_models import Payment
+
+    voids_with_live_money = []
+    for i in all_invoices:
+        if i.status != "void" or session.scalar(
+            select(Payment.id).where(
+                Payment.invoice_id == i.id, Payment.voided_at.is_(None)
+            ).limit(1)
+        ) is None:
+            continue
+        if pre_cutover_era(session, i):
+            result.refused.append(
+                f"void pre-cutover invoice {i.invoice_number} holds a live "
+                "payment — not replayed; review by hand"
+            )
+            continue
+        voids_with_live_money.append(i)
+    for invoice in [*invoices, *voids_with_live_money]:
         try:
             resettle_invoice_payments(session, invoice, actor=ACTOR)
         except PeriodLockedError as exc:
@@ -277,17 +307,80 @@ def run_replay(session: Session, company_id: str) -> PhaseResult:
 
 
 def gl_ar_balance_cents(session: Session, company_id: str) -> int:
-    """The AR account's total balance across every entry (reversals net out)."""
-    ar_account = resolve_role_account(session, company_id, ROLE_AR)
-    rows = session.execute(
-        select(GlJournalLine.amount_cents)
-        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
-        .where(
-            GlJournalEntry.company_id == company_id,
-            GlJournalLine.account_id == ar_account.id,
-        )
-    ).all()
-    return sum(amount for (amount,) in rows)
+    """The AR control balance across every entry (reversals net out), on every
+    AR-role account, so it totals the same lines the per-invoice
+    ``invoice_ar_balance_cents`` rows attribute (GDXA-1231)."""
+    rows = session.execute(ar_role_lines()).all()
+    return sum(amount for (_type, _id, amount) in rows)
+
+
+def era_settlement_shortfalls(session: Session, company_id: str) -> list[dict]:
+    """Late-learned era payments the anchor pool couldn't cover, one row per
+    payment with the uncovered cents.
+
+    The uncovered part posts NOTHING (post_era_settlement caps at the pool),
+    and balance_due clamps at zero too, so an operational-vs-ledger compare
+    reads both sides as 0. Surface every uncovered cent; silence here would
+    read as "reconciled" when money vanished (2026-08-17 audit). Shared by
+    ``reconciliation_report`` and ``reports.ar_control`` so the two cannot
+    disagree about it (GDXA-1223)."""
+    from gdx_dispatch.models.tenant_models import Payment
+    from gdx_dispatch.modules.ledger.rules import (
+        _cutover_date,
+        _late_era_allocation,
+    )
+
+    shortfalls: list[dict] = []
+    cutover = _cutover_date(session, company_id)
+    if cutover is None:
+        return shortfalls
+    # ar_control runs this on every Ledger page load: one query narrows it to
+    # the invoices holding a payment that could be late-era, instead of four
+    # per era invoice. A superset on purpose: the day of slack absorbs how
+    # created_at is stored, and _late_era_allocation decides exactly.
+    recorded_since = datetime.combine(cutover - timedelta(days=1), time.min)
+    candidates = set(
+        session.scalars(
+            select(Payment.invoice_id).where(
+                Payment.payment_date < cutover,
+                or_(Payment.created_at.is_(None), Payment.created_at >= recorded_since),
+            )
+        ).all()
+    )
+    for invoice in _company_invoices(session, company_id):
+        if invoice.id not in candidates or invoice.status not in ISSUED_STATUSES:
+            continue
+        if not pre_cutover_era(session, invoice):
+            continue
+        allocation = _late_era_allocation(session, invoice, cutover)
+        if not allocation:
+            continue
+        by_id = {
+            p.id: p
+            for p in session.scalars(
+                select(Payment).where(Payment.invoice_id == invoice.id)
+            ).all()
+        }
+        for pid, allocated in allocation.items():
+            p = by_id.get(pid)
+            if p is None or p.voided_at is not None:
+                continue
+            uncovered = to_cents(_dec(p.amount)) - allocated
+            if uncovered > 0:
+                shortfalls.append(
+                    {
+                        "invoice_id": str(invoice.id),
+                        "invoice_number": invoice.invoice_number,
+                        "payment_id": str(pid),
+                        "payment_date": (
+                            p.payment_date.isoformat() if p.payment_date else None
+                        ),
+                        "amount_cents": to_cents(_dec(p.amount)),
+                        "allocated_cents": allocated,
+                        "uncovered_cents": uncovered,
+                    }
+                )
+    return shortfalls
 
 
 def reconciliation_report(session: Session, company_id: str) -> dict:
@@ -295,56 +388,14 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
     The §5.7 hand-check — compare the per-invoice rows against QBO's AR
     aging before flipping the flag; the totals row is the running monthly
     check afterwards."""
-    from gdx_dispatch.models.tenant_models import Payment
-    from gdx_dispatch.modules.ledger.rules import (
-        _cutover_date,
-        _late_era_allocation,
-    )
-
     rows = []
     op_total = 0
     gl_attributed = 0
-    era_settlement_shortfalls = []
-    cutover = _cutover_date(session, company_id)
     for invoice in _company_invoices(session, company_id):
         if invoice.status not in ISSUED_STATUSES:
             continue
         op_cents = to_cents(_dec(invoice.balance_due))
         gl_cents = invoice_ar_balance_cents(session, invoice)
-        # Late-learned era payments the anchor pool couldn't cover post
-        # NOTHING (post_era_settlement caps at the pool) — and the delta
-        # arithmetic below is blind to them because balance_due clamps at
-        # zero too. Surface every uncovered cent; silence here would read
-        # as "reconciled" when money vanished (2026-08-17 audit).
-        if cutover is not None and pre_cutover_era(session, invoice):
-            allocation = _late_era_allocation(session, invoice, cutover)
-            if allocation:
-                by_id = {
-                    p.id: p
-                    for p in session.scalars(
-                        select(Payment).where(Payment.invoice_id == invoice.id)
-                    ).all()
-                }
-                for pid, allocated in allocation.items():
-                    p = by_id.get(pid)
-                    if p is None or p.voided_at is not None:
-                        continue
-                    uncovered = to_cents(_dec(p.amount)) - allocated
-                    if uncovered > 0:
-                        era_settlement_shortfalls.append(
-                            {
-                                "invoice_number": invoice.invoice_number,
-                                "payment_id": str(pid),
-                                "payment_date": (
-                                    p.payment_date.isoformat()
-                                    if p.payment_date
-                                    else None
-                                ),
-                                "amount_cents": to_cents(_dec(p.amount)),
-                                "allocated_cents": allocated,
-                                "uncovered_cents": uncovered,
-                            }
-                        )
         op_total += op_cents
         gl_attributed += gl_cents
         # The `legacy_credit_suspects` probe lived here. It flagged every
@@ -376,7 +427,7 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
     return {
         "rows": rows,
         "mismatches": mismatches,
-        "era_settlement_shortfalls": era_settlement_shortfalls,
+        "era_settlement_shortfalls": era_settlement_shortfalls(session, company_id),
         "totals": {
             "operational_ar_cents": op_total,
             "gl_attributed_ar_cents": gl_attributed,

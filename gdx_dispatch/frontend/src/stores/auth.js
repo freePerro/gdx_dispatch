@@ -172,11 +172,17 @@ export const useAuthStore = defineStore('auth', () => {
   // skate by on the prior session's still-valid HttpOnly cookie. Best
   // effort — a 401/network-error here doesn't block the local clear.
   async function _serverLogout() {
+    // The bearer this tab uses rides along so the server revokes it too
+    // (GDXA-1215): after another tab refreshes, the cookie holds a newer
+    // token than this tab's. Read here, before logout() clears it — fetch()
+    // starts synchronously, ahead of the first await.
+    const headers = { 'Content-Type': 'application/json' };
+    if (accessToken.value) headers.Authorization = `Bearer ${accessToken.value}`;
     try {
       await fetch('/auth/logout', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         // logout() does NOT await this and the refresh-401 path throws +
         // navigates immediately after. Without keepalive the browser
         // cancels the in-flight request on page/route unload and the
@@ -356,8 +362,14 @@ export const useAuthStore = defineStore('auth', () => {
       });
 
       if (!response.ok) {
-        logout();
-        throw new Error('Token refresh failed');
+        // Only the server refusing the refresh (every refusal in
+        // routers/auth/core.py is a 401) ends the session. A gateway 5xx
+        // during a deploy, or a 429, says nothing about the session: keep it,
+        // and carry the status so the caller reports what actually happened.
+        if (response.status === 401 || response.status === 403) logout();
+        const err = new Error('Token refresh failed');
+        err.status = response.status;
+        throw err;
       }
 
       const data = await response.json();

@@ -20,6 +20,7 @@ from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.permissions import PLATFORM_LOCKED_ROLES, assert_can_assign_role
+from gdx_dispatch.core.roles import ASSIGNABLE_ROLES, normalize_role
 from gdx_dispatch.core.upload_limits import assert_body_within_limit, assert_upload_within_limit
 from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, RolePermission, User
@@ -81,6 +82,12 @@ class UserCreate(BaseModel):
 class UserPatch(BaseModel):
     role: str | None = Field(default=None, min_length=1, max_length=50)
     active: bool | None = None
+
+
+# The shared assignable vocabulary (core/roles.ASSIGNABLE_ROLES) plus "user",
+# which only the invite has ever accepted (it is UserInvite.role's default),
+# kept so no invite that works today starts to 422 (GDXA-1200).
+_INVITE_ROLES: frozenset[str] = frozenset(ASSIGNABLE_ROLES) | {"user"}
 
 
 class UserInvite(BaseModel):
@@ -190,8 +197,9 @@ def invite_user(
     # Normalize case: the Settings invite dialog has always sent capitalized
     # roles ("Technician"), so every UI invite 422ed here (silent-success
     # sweep 2026-09-19 — same broken surface as the dead reset link).
-    role = (body.role or "").strip().lower()
-    if role not in ("admin", "owner", "dispatcher", "technician", "viewer", "user"):
+    # normalize_role also folds the short "tech"/"dispatch" spellings.
+    role = normalize_role(body.role)
+    if role not in _INVITE_ROLES:
         raise HTTPException(status_code=422, detail="invalid role")
 
     tenant_id = str((getattr(getattr(request, "state", None), "tenant", {}) or {}).get("id", ""))
