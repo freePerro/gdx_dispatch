@@ -2937,9 +2937,9 @@ def get_invoice_activity(
     # email counts only if outbound_emails shows it went out, was not bounced,
     # and its exact HTML contains this invoice's /pay link (a zero-balance or
     # unconfigured send carries none); a text counts only on a confirmed send.
-    # A mobile email is not tagged with its invoice in outbound_emails, so it
-    # cannot count — the panel under-claims rather than guess. Nothing before
-    # views were first recorded counts either.
+    # A mobile email counts since GDXA-1278 tagged it with its invoice; one
+    # sent before that is untagged and cannot — the panel under-claims rather
+    # than guess. Nothing before views were first recorded counts either.
     #
     # A bounce voids every email sent before it. The detector's main path
     # (subject match) writes invoice_email_rejected and never stamps
