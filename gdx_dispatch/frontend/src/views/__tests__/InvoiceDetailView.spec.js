@@ -2039,3 +2039,108 @@ describe('InvoiceDetailView — credit-memo pre-fill from a restated closeout (G
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: 'Nothing to credit here' }));
   });
 });
+
+describe('InvoiceDetailView — composer attachments (2026-10-16)', () => {
+  // The picker's own loading is pinned in EmailAttachmentPicker.spec.js.
+  const Picker = {
+    props: ['modelValue', 'jobId', 'customerId', 'disabled'],
+    template: '<div data-testid="picker-stub" :data-job="jobId" :data-customer="customerId" />',
+  };
+  const PICK = { kind: 'job_photo', id: 'ph-1', name: 'door.jpg', size_bytes: 900 };
+
+  async function openComposer(sendAnswer) {
+    mockApi(buildInvoicePayload({ job_id: 'job-42' }));
+    apiPost.mockImplementation((url) => (
+      url === '/api/invoices/inv-1/send' ? sendAnswer() : Promise.resolve({})
+    ));
+    const w = mount(InvoiceDetailView, { global: { stubs: { ...baseStubs, EmailAttachmentPicker: Picker } } });
+    await flushPromises();
+    await w.get('[data-testid="send-invoice-btn"]').trigger('click');
+    await flushPromises();
+    return w;
+  }
+  const sendCall = () => apiPost.mock.calls.find(([u]) => u === '/api/invoices/inv-1/send');
+  const errorToasts = () => toastAdd.mock.calls.map(([a]) => a).filter((a) => a.severity === 'error');
+
+  it('the picker is offered for this job and customer, and the picks go as attachment_refs', async () => {
+    const w = await openComposer(() => Promise.resolve({ email_sent: true }));
+    const picker = w.get('[data-testid="picker-stub"]');
+    expect(picker.attributes('data-job')).toBe('job-42');
+    expect(picker.attributes('data-customer')).toBe('cust-1');
+
+    w.vm.composerPicked = [PICK];
+    await flushPromises();
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    expect(sendCall()[1].attachment_refs).toEqual([{ kind: 'job_photo', id: 'ph-1' }]);
+  });
+
+  it('Send is disabled while the picks are over the email cap', async () => {
+    const w = await openComposer(() => Promise.resolve({ email_sent: true }));
+    w.vm.composerPicked = [{ ...PICK, size_bytes: 19_000_000 }];
+    await flushPromises();
+    expect(w.get('[data-testid="composer-send"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('an unconfirmed Outlook send says to check Sent Items, not to retry', async () => {
+    const w = await openComposer(() => Promise.resolve({ email_sent: false, email_skip_reason: 'outlook_send_unconfirmed' }));
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    expect(errorToasts()[0].detail).toContain('Check Sent Items before sending again');
+  });
+
+  it('a refused pick is said once, with the server reason', async () => {
+    const w = await openComposer(() => Promise.reject(Object.assign(new Error('Attachment not found: door.jpg'), { status: 404 })));
+    w.vm.composerPicked = [PICK];
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    expect(errorToasts()).toHaveLength(1);
+    expect(errorToasts()[0].detail).toBe('Attachment not found: door.jpg');
+  });
+
+  it('a 401 is left to the sign-in redirect, with no "Send failed" over it', async () => {
+    const w = await openComposer(() => Promise.reject(Object.assign(new Error('Unauthorized'), { status: 401 })));
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    expect(errorToasts()).toHaveLength(0);
+    const opts = sendCall()[2];
+    expect(opts.suppressErrorToast({ status: 401 })).toBe(false);
+    expect(opts.suppressErrorToast({ status: 404 })).toBe(true);
+  });
+
+  it('the mail-client fallback says the added files did not come along', async () => {
+    const w = await openComposer(() => Promise.resolve({ email_sent: false, email_skip_reason: 'no_email_provider_connected' }));
+    w.vm.composerPicked = [PICK];
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    const info = toastAdd.mock.calls.map(([a]) => a).find((a) => a.summary === 'Opening your mail client');
+    expect(info.detail).toContain('The files you added are not attached there');
+  });
+
+  it('a delivered send whose PDF gave way to the picks warns instead of a plain success', async () => {
+    const w = await openComposer(() => Promise.resolve({ email_sent: true, pdf_attached: false }));
+    w.vm.composerPicked = [PICK];
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    const sent = toastAdd.mock.calls.map(([a]) => a).find((a) => a.summary === 'Sent');
+    expect(sent.severity).toBe('warn');
+    expect(sent.detail).toContain('invoice PDF was not attached');
+  });
+
+  it('a send with no picks does not blame files nobody added', async () => {
+    const w = await openComposer(() => Promise.resolve({ email_sent: true, pdf_attached: false }));
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    const sent = toastAdd.mock.calls.map(([a]) => a).find((a) => a.summary === 'Sent');
+    expect(sent.severity).toBe('success');
+  });
+
+  it('a delivered send with its PDF is a plain success', async () => {
+    const w = await openComposer(() => Promise.resolve({ email_sent: true, pdf_attached: true }));
+    w.vm.composerPicked = [PICK];
+    await w.get('[data-testid="composer-send"]').trigger('click');
+    await flushPromises();
+    const sent = toastAdd.mock.calls.map(([a]) => a).find((a) => a.summary === 'Sent');
+    expect(sent.severity).toBe('success');
+  });
+});

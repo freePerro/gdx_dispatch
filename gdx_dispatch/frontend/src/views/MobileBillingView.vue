@@ -156,9 +156,19 @@
               @submit="recordPayment"
             />
           </div>
+
+          <!-- Files to go beside the invoice PDF when it is sent. -->
+          <div v-if="canSend" class="send-attach-row" data-test="mb-send-attach">
+            <EmailAttachmentPicker
+              v-model="sendPicked"
+              :job-id="detail.job_id"
+              :customer-id="detail.customer_id"
+              :disabled="actionSaving"
+            />
+          </div>
         </div>
         <template #footer>
-          <Button v-if="detail && canSend" label="Send" icon="pi pi-send" :loading="actionSaving" @click="sendInvoice" data-test="mb-send" />
+          <Button v-if="detail && canSend" :label="sendPicked.length ? `Send with ${sendPicked.length} file${sendPicked.length === 1 ? '' : 's'}` : 'Send'" icon="pi pi-send" :loading="actionSaving" :disabled="sendPickedOver" @click="sendInvoice" data-test="mb-send" />
           <Button v-if="detail && smsEnabled && canMarkPaid" label="Text" icon="pi pi-comment" severity="secondary" outlined @click="smsOpen = true" data-test="mb-text" />
           <Button label="Close" severity="secondary" @click="closeDetail" />
         </template>
@@ -189,6 +199,8 @@ import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity
 import { usePermission } from '../composables/usePermission'
 import { useAuthStore } from '../stores/auth'
 import PaymentCaptureForm from '../components/PaymentCaptureForm.vue'
+import EmailAttachmentPicker from '../components/EmailAttachmentPicker.vue'
+import { INVOICE_PDF_LEFT_OUT_TEXT, MAX_TOTAL_BYTES, knownTotalBytes, sendErrorText, sendSkipText, toAttachmentRefs } from '../utils/emailAttachments'
 
 const api = useApi()
 const toast = useToast()
@@ -387,8 +399,13 @@ async function fetchInvoices() {
   }
 }
 
+// Files picked to go beside the invoice PDF on Send; per invoice opened.
+const sendPicked = ref([])
+const sendPickedOver = computed(() => knownTotalBytes(sendPicked.value) > MAX_TOTAL_BYTES)
+
 async function openDetail(inv) {
   detail.value = null
+  sendPicked.value = []
   detailOpen.value = true
   detailLoading.value = true
   try {
@@ -412,17 +429,35 @@ async function sendInvoice() {
     // 2026-07-20 (audit catch): read the delivery result instead of toasting
     // success unconditionally; the redundant status PATCH is gone (the server
     // flips status itself).
-    const res = await api.post(`/api/invoices/${detail.value.id}/send`, {})
+    const res = await api.post(
+      `/api/invoices/${detail.value.id}/send`,
+      sendPicked.value.length ? { attachment_refs: toAttachmentRefs(sendPicked.value) } : {},
+      // A refused pick (404/413) or a lost connection is said once, below; a
+      // 401 keeps useApi's sign-in redirect.
+      { suppressErrorToast: (e) => e?.status !== 401 },
+    )
     const data = res?.data || res
     if (data && data.email_sent === false) {
-      toast.add({ severity: 'warn', summary: 'Marked sent — email not delivered', detail: data.email_skip_reason || 'No email provider accepted the message', life: 5000 })
+      const unconfirmed = data.email_skip_reason === 'outlook_send_unconfirmed'
+      toast.add({
+        severity: 'warn',
+        summary: unconfirmed ? 'Marked sent — the email may have gone' : 'Marked sent — email not delivered',
+        detail: sendSkipText(data.email_skip_reason, data.email_skip_reason || 'No email provider accepted the message'),
+        life: unconfirmed ? 10000 : 5000,
+      })
+    } else if (sendPicked.value.length && data?.pdf_attached === false) {
+      toast.add({ severity: 'warn', summary: 'Invoice sent without its PDF', detail: INVOICE_PDF_LEFT_OUT_TEXT, life: 10000 })
+      sendPicked.value = []
     } else {
       toast.add({ severity: 'success', summary: 'Invoice sent', life: 2500 })
+      sendPicked.value = []
     }
     detail.value = await api.get(`/api/invoices/${detail.value.id}`)
     await fetchInvoices()
   } catch (err) {
-    toast.add({ severity: 'error', summary: 'Send failed', detail: err.message, life: 4000 })
+    if (err?.status !== 401) {
+      toast.add({ severity: 'error', summary: 'Send failed', detail: sendErrorText(err), life: 8000 })
+    }
   } finally {
     actionSaving.value = false
   }

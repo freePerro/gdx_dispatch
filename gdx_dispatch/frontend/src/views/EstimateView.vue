@@ -1141,6 +1141,12 @@
                 <small class="muted">{{ formatBytes(att.file_size) }}</small>
               </label>
             </div>
+            <EmailAttachmentPicker
+              v-model="composerPicked"
+              :job-id="estimate.job_id"
+              :customer-id="composer.customer_id"
+              :disabled="composerSending"
+            />
             <ComposerPdfPreview :pdf="composer.pdf" />
           </div>
           <div v-if="composer.previewHtml" class="form-field">
@@ -1157,7 +1163,7 @@
             :loading="composerPreviewing" :disabled="composerLoading"
             data-testid="composer-preview-btn" @click="previewComposer" />
           <Button label="Send" icon="pi pi-send" severity="primary"
-            :loading="composerSending" :disabled="composerLoading || !composerHasRecipient"
+            :loading="composerSending" :disabled="composerLoading || !composerHasRecipient || composerPickedOver"
             data-testid="composer-send" @click="sendComposer" />
         </template>
       </Dialog>
@@ -1261,6 +1267,8 @@ import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
 import EstimateLeadRequestPanel from "../components/EstimateLeadRequestPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
+import EmailAttachmentPicker from "../components/EmailAttachmentPicker.vue";
+import { MAX_TOTAL_BYTES, knownTotalBytes, sendErrorText, sendSkipText, toAttachmentRefs } from "../utils/emailAttachments";
 import {
   composerSendPayload,
   isValidRecipientEmail,
@@ -1331,6 +1339,10 @@ const showComposer = ref(false);
 const composerLoading = ref(false);
 const composerSending = ref(false);
 const composerPreviewing = ref(false);
+// Files picked beside the estimate PDF: job photos and documents, the
+// customer's documents, their other estimates and invoices, device files.
+const composerPicked = ref([]);
+const composerPickedOver = computed(() => knownTotalBytes(composerPicked.value) > MAX_TOTAL_BYTES);
 const composer = ref({
   to: "", subject: "", body_text: "", pdf: null, extras: [],
   recipients: [], contact_id: "", previewHtml: "", prefillBody: "",
@@ -3450,6 +3462,7 @@ async function emailEstimate() {
   }
   composerLoading.value = true;
   showComposer.value = true;
+  composerPicked.value = [];
   composer.value = {
     to: "", subject: "", body_text: "", pdf: null, extras: [],
     recipients: [], contact_id: "", previewHtml: "", prefillBody: "",
@@ -3747,7 +3760,10 @@ async function sendComposer() {
       `/api/estimates/${route.params.id}/send`,
       composerSendPayload(composer.value, {
         extra_attachment_ids: composer.value.extras.filter((e) => e._include).map((e) => e.id),
+        ...(composerPicked.value.length ? { attachment_refs: toAttachmentRefs(composerPicked.value) } : {}),
       }),
+      // A refused pick (404/413) or a lost connection is said once, below.
+      { suppressErrorToast: (e) => e?.status !== 401 },
     );
     const payload = result?.data || result;
     // A delivered send bumps the version; without this the next edit after
@@ -3770,8 +3786,11 @@ async function sendComposer() {
       toast.add({
         severity: "info",
         summary: "Opening your mail client",
-        detail: "No email provider is connected for this user — using your default mail client instead.",
-        life: 5000,
+        // The mail client gets the PDF only; files added in the composer
+        // would otherwise vanish without a word.
+        detail: "No email provider is connected for this user — using your default mail client instead."
+          + (composerPicked.value.length ? " The files you added are not attached there — attach them yourself." : ""),
+        life: composerPicked.value.length ? 10000 : 5000,
       });
       await _emailViaMailtoFallback(composer.value, {
         name: composer.value.pdf.name,
@@ -3783,12 +3802,13 @@ async function sendComposer() {
       toast.add({
         severity: "error",
         summary: "Send failed",
-        detail: payload.email_skip_reason || "The email could not be delivered",
-        life: 6000,
+        detail: sendSkipText(payload.email_skip_reason, payload.email_skip_reason || "The email could not be delivered"),
+        life: 10000,
       });
     }
   } catch (err) {
-    toast.add({ severity: "error", summary: "Send failed", detail: err?.message || "", life: 5000 });
+    if (err?.status === 401) return;
+    toast.add({ severity: "error", summary: "Send failed", detail: sendErrorText(err), life: 8000 });
   } finally {
     composerSending.value = false;
   }

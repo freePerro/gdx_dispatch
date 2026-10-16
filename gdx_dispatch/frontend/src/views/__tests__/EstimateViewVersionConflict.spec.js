@@ -190,7 +190,7 @@ describe('EstimateView — optimistic concurrency on the header autosave', () =>
     wrapper.vm.composer.to = 'customer@example.com';
     await wrapper.vm.sendComposer();
     await settle();
-    expect(apiPost).toHaveBeenCalledWith('/api/estimates/est-1/send', expect.anything());
+    expect(apiPost).toHaveBeenCalledWith('/api/estimates/est-1/send', expect.anything(), expect.anything());
 
     wrapper.vm.form.notes = 'typo fix after sending';
     await settle();

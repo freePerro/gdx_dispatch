@@ -472,9 +472,9 @@ def _shrink_photo_for_pdf(src: Path, cache_key: str) -> Path:
     """Downscaled, UPRIGHT JPEG copy for PDF embedding, cached in the tmp dir.
 
     The email send path SKIPS the whole PDF attachment above
-    MAX_INLINE_ATTACHMENT_BYTES (2.5 MB) — embedding a handful of full-size
-    photos would silently strip the invoice from its own email. 1200px q78
-    keeps a photo ~100-200 KB on the page. Falls back to the original file
+    MAX_ATTACHMENT_BYTES — embedding a handful of full-size photos could strip
+    the invoice from its own email, and every megabyte is one the customer
+    downloads on a phone. 1200px q78 keeps a photo ~100-200 KB on the page. Falls back to the original file
     when Pillow can't process it (WeasyPrint may still manage).
 
     ``upright()`` first, and then a save with NO ``exif=``: a phone photo

@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.email_attachments import AttachmentRef, attachment_audit_meta, resolve_attachment_refs
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.money_format import format_money
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
@@ -129,6 +130,8 @@ class StatementSendIn(BaseModel):
     end: date | None = None
     to_email: str | None = Field(default=None, max_length=320)
     contact_id: str | None = Field(default=None, max_length=64)
+    # Files the sender picked beside the statement PDF (core/email_attachments.py).
+    attachment_refs: list[AttachmentRef] | None = Field(default=None, max_length=25)
 
 
 def _email_html(db: Session, statement: dict[str, Any], greeting: str) -> tuple[str, str]:
@@ -182,6 +185,7 @@ def send_statement(
     payload: StatementSendIn,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ) -> dict[str, Any]:
     """Email the statement.
 
@@ -192,12 +196,16 @@ def send_statement(
     leaves an outbound_emails row; a refused one never gets that far."""
     from gdx_dispatch.core.email_recipients import override_recipient, resolve_recipient
     from gdx_dispatch.core.transactional_email import (
-        MAX_INLINE_ATTACHMENT_BYTES,
+        MAX_ATTACHMENT_BYTES,
         recently_sent,
         send_transactional_email,
     )
 
     customer = _customer_or_404(db, customer_id)
+    # Picked files load (or 404/413) before anything is sent or recorded.
+    picked = resolve_attachment_refs(
+        db, request, user, str(customer.company_id or ""), payload.attachment_refs,
+    ) if payload.attachment_refs else []
     rng = _range(db, payload.preset, payload.start, payload.end)
     statement = build_statement(db, customer, rng)
 
@@ -216,9 +224,9 @@ def send_statement(
         skip_reason = "duplicate_send_suppressed"
     else:
         try:
-            attachments: list[dict[str, Any]] | None = None
+            attachments: list[dict[str, Any]] = []
             pdf_bytes = render_statement_pdf(db, statement)
-            if len(pdf_bytes) <= MAX_INLINE_ATTACHMENT_BYTES:
+            if len(pdf_bytes) <= MAX_ATTACHMENT_BYTES - sum(a["size_bytes"] for a in picked):
                 attachments = [{
                     "name": _pdf_filename(rng),
                     "content_type": "application/pdf",
@@ -235,7 +243,7 @@ def send_statement(
                 to_name=recipient.to_name,
                 subject=subject,
                 html_body=body,
-                attachments=attachments,
+                attachments=[*attachments, *picked] or None,
                 kind="statement",
                 entity_type="customer",
                 entity_id=str(customer.id),
@@ -291,6 +299,7 @@ def send_statement(
             "provider": provider,
             "skip_reason": skip_reason,
             "pdf_attached": pdf_attached,
+            "attachments": attachment_audit_meta(picked) or None,
         },
     )
     db.commit()

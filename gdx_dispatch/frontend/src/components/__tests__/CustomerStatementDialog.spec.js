@@ -54,6 +54,10 @@ const stubs = {
   Message: { inheritAttrs: false, template: '<div :data-testid="$attrs[\'data-testid\']"><slot /></div>' },
   Select: true,
   ProgressSpinner: true,
+  EmailAttachmentPicker: {
+    props: ['modelValue', 'customerId'],
+    template: '<div data-testid="picker-stub" :data-customer="customerId" />',
+  },
 };
 
 function statement(overrides = {}) {
@@ -72,6 +76,10 @@ function statement(overrides = {}) {
     ...overrides,
   };
 }
+
+// The dialog says a send failure in its own result line, so useApi's toast is
+// suppressed for everything but a 401.
+const TOAST_OFF = { suppressErrorToast: expect.any(Function) };
 
 async function open(data = statement()) {
   apiGet.mockResolvedValueOnce(data);
@@ -116,7 +124,7 @@ describe('CustomerStatementDialog', () => {
     await flushPromises();
     // The previewed dates, not the preset key: re-resolving "last_90" after
     // midnight would send a different range than the one on screen.
-    expect(apiPost).toHaveBeenCalledWith('/api/customers/c-1/statement/send', { start: '2026-06-18', end: '2026-09-15', to_email: 'ap@builder.example' });
+    expect(apiPost).toHaveBeenCalledWith('/api/customers/c-1/statement/send', { start: '2026-06-18', end: '2026-09-15', to_email: 'ap@builder.example' }, TOAST_OFF);
     expect(w.find('[data-testid="statement-result"]').text()).toContain('No email account is connected');
   });
 
@@ -125,7 +133,7 @@ describe('CustomerStatementDialog', () => {
     apiPost.mockResolvedValueOnce({ email_sent: true, to_email: 'owner@example.com' });
     await w.find('[data-testid="statement-send"]').trigger('click');
     await flushPromises();
-    expect(apiPost).toHaveBeenCalledWith('/api/customers/c-1/statement/send', { start: '2026-06-18', end: '2026-09-15' });
+    expect(apiPost).toHaveBeenCalledWith('/api/customers/c-1/statement/send', { start: '2026-06-18', end: '2026-09-15' }, TOAST_OFF);
   });
 
   it('confirms a successful send by address', async () => {
@@ -202,7 +210,49 @@ describe('CustomerStatementDialog', () => {
     apiPost.mockResolvedValueOnce({ email_sent: true, to_email: 'owner@example.com' });
     await w.find('[data-testid="statement-send"]').trigger('click');
     await flushPromises();
-    expect(apiPost).toHaveBeenCalledWith('/api/customers/c-1/statement/send', { start: '2026-05-01', end: '2026-07-31' });
+    expect(apiPost).toHaveBeenCalledWith('/api/customers/c-1/statement/send', { start: '2026-05-01', end: '2026-07-31' }, TOAST_OFF);
+  });
+
+  it('sends the picked files beside the statement and clears them after', async () => {
+    const w = await open();
+    expect(w.find('[data-testid="picker-stub"]').attributes('data-customer')).toBe('c-1');
+    w.vm.$.setupState.picked = [{ kind: 'invoice_pdf', id: 'inv-7', name: 'invoice-7.pdf' }];
+    apiPost.mockResolvedValueOnce({ email_sent: true, pdf_attached: true, to_email: 'owner@example.com' });
+    await w.find('[data-testid="statement-send"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).toHaveBeenCalledWith('/api/customers/c-1/statement/send', {
+      start: '2026-06-18', end: '2026-09-15', attachment_refs: [{ kind: 'invoice_pdf', id: 'inv-7' }],
+    }, TOAST_OFF);
+    expect(w.vm.$.setupState.picked).toEqual([]);
+    const opts = apiPost.mock.calls[0][2];
+    expect(opts.suppressErrorToast({ status: 413 })).toBe(true);
+    expect(opts.suppressErrorToast({ status: 401 })).toBe(false);
+  });
+
+  it('a refused pick is explained in the result line', async () => {
+    const w = await open();
+    w.vm.$.setupState.picked = [{ kind: 'document', id: 'd-1', name: 'gone.pdf' }];
+    apiPost.mockRejectedValueOnce(Object.assign(new Error('Attachment not found: gone.pdf'), { status: 404 }));
+    await w.find('[data-testid="statement-send"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="statement-result"]').text()).toContain('Attachment not found: gone.pdf');
+    // The picks stay, so the office can drop the bad one and send again.
+    expect(w.vm.$.setupState.picked).toHaveLength(1);
+  });
+
+  it('an unconfirmed Outlook send says to check Sent Items, not to retry', async () => {
+    const w = await open();
+    apiPost.mockResolvedValueOnce({ email_sent: false, email_skip_reason: 'outlook_send_unconfirmed' });
+    await w.find('[data-testid="statement-send"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="statement-result"]').text()).toContain('Check Sent Items before sending again');
+  });
+
+  it('Send is disabled while the picks are over the email cap', async () => {
+    const w = await open();
+    w.vm.$.setupState.picked = [{ kind: 'upload', name: 'big.mov', size_bytes: 19_000_000 }];
+    await flushPromises();
+    expect(w.find('[data-testid="statement-send"]').attributes('disabled')).toBeDefined();
   });
 
   it('shows the server refusal instead of a blank dialog', async () => {
