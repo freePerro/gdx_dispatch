@@ -1529,7 +1529,7 @@ def _receipt_recently_sent(db: Session, invoice_id: str, payment_id: str, *, wit
                     AuditLog.created_at >= utcnow() - timedelta(seconds=within_seconds),
                 )
             ).scalars().all()
-    except Exception:
+    except Exception:  # noqa: BLE001  # noqa: silent-failure — fails open like recently_sent: a broken guard never blocks a receipt; logged
         log.exception("mobile_receipt_recently_sent_check_failed invoice=%s", invoice_id)
         return False
     return any(isinstance(d, dict) and d.get("payment_id") == payment_id for d in rows)
