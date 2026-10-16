@@ -20,7 +20,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant_settings import Tenant
-from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
+from gdx_dispatch.modules.outlook.graph_client import RETRY_THROTTLED_ONLY, OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSubscription
 from gdx_dispatch.modules.outlook.token_refresh import with_outlook_client
 
@@ -89,7 +89,7 @@ def create_subscription(
     }
     try:
         with with_outlook_client(control_db, tenant_db, user_id, tenant_id) as gc:
-            resp = gc._request("POST", "/subscriptions", json=body)
+            resp = gc._request("POST", "/subscriptions", json=body, retry_on=RETRY_THROTTLED_ONLY)
         graph_body = resp.json()
     except OutlookGraphAPIError as exc:
         raise SubscriptionError(f"create_subscription failed: {exc}") from exc

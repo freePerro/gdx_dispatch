@@ -207,7 +207,7 @@ def test_send_reset_link_goes_through_the_designated_outlook_sender(env, monkeyp
     @contextmanager
     def fake_client(control_db, tenant_db, user_id, tenant_id):
         assert user_id == sender
-        yield SimpleNamespace(_request=lambda method, path, json=None: calls.append((method, path, json)))
+        yield SimpleNamespace(_request=lambda method, path, json=None, retry_on=None: calls.append((method, path, json)))
 
     monkeypatch.setattr(tr, "with_outlook_client", fake_client)
     monkeypatch.setattr(database_mod, "SessionLocal", MagicMock())

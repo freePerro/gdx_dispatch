@@ -237,6 +237,76 @@ def test_a_401_from_the_upload_url_is_not_read_as_our_token_expiring():
     assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
 
 
+class _ChunkAnswers(_Graph):
+    """The first PUT answers each of ``answers`` in turn (a status, or an
+    exception to raise), then the session behaves."""
+
+    def __init__(self, *answers):
+        super().__init__()
+        self.answers = list(answers)
+
+    def __call__(self, req):
+        if req.method == "PUT" and self.answers:
+            self.calls.append(req)
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return httpx.Response(answer, headers={"Retry-After": "7"} if answer == 429 else {}, text="busy")
+        return super().__call__(req)
+
+
+@pytest.mark.parametrize("answer", [429, 503, 504, httpx.ConnectError("refused")])
+def test_a_chunk_put_is_retried_on_the_same_range(answer):
+    graph = _ChunkAnswers(answer)
+    delays: list[float] = []
+    gc = _client(graph)
+    gc._sleep = delays.append
+    size = 3_500_000
+    graph_send.send_new(gc, MSG, [_att("big.pdf", size)])
+    puts = [r.headers["Content-Range"] for r in graph.calls if r.method == "PUT"]
+    assert puts[0] == puts[1] == f"bytes 0-2949119/{size}"
+    assert graph.received["bytes"] == size
+    assert graph.lines()[-1] == "POST /v1.0/me/messages/D1/send"
+    assert delays == ([7.0] if answer == 429 else [1.0])  # Retry-After honoured
+
+
+def test_a_chunk_put_that_keeps_being_refused_is_a_graph_error_and_the_draft_goes():
+    graph = _ChunkAnswers(*[httpx.ConnectError("refused") for _ in range(4)])
+    with pytest.raises(OutlookGraphAPIError) as caught:
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert caught.value.status_code == 504 and caught.value.endpoint == "uploadSession"
+    assert not isinstance(caught.value, graph_send.SendUnconfirmed)  # nothing was sent
+    assert len([r for r in graph.calls if r.method == "PUT"]) == 4  # first try + max_retries
+    assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
+
+
+@pytest.mark.parametrize("timeout", [httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow")])
+def test_a_chunk_put_timeout_is_not_retried(timeout):
+    # Each timeout already cost the full client timeout; four in a row would
+    # outlast the proxy while the worker went on to /send.
+    graph = _ChunkAnswers(timeout)
+    with pytest.raises(OutlookGraphAPIError) as caught:
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert caught.value.status_code == 504
+    assert len([r for r in graph.calls if r.method == "PUT"]) == 1
+    assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
+
+
+def test_a_chunk_put_still_throttled_after_the_retries_surfaces_the_429():
+    graph = _ChunkAnswers(*[429] * 4)
+    with pytest.raises(OutlookGraphAPIError) as caught:
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert caught.value.status_code == 429
+    assert "POST /v1.0/me/messages/D1/send" not in graph.lines()
+
+
+def test_a_504_on_create_upload_session_is_not_retried():
+    graph = _Once("/createUploadSession", 504)
+    with pytest.raises(OutlookGraphAPIError):
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert len([ln for ln in graph.lines() if ln.endswith("/createUploadSession")]) == 1
+
+
 def test_a_429_is_still_retried_because_graph_did_nothing():
     graph = _Once("/attachments", 429)
     graph_send.send_new(_client(graph), MSG, [_att("a.pdf", 2_000_000), _att("b.pdf", 1_000_000)])

@@ -39,7 +39,7 @@ from gdx_dispatch.core.email_attachments import (
 )
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook import graph_send
-from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
+from gdx_dispatch.modules.outlook.graph_client import RETRY_THROTTLED_ONLY, OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import OutlookMessage
 from gdx_dispatch.modules.outlook.token_refresh import (
     OutlookReconnectRequired,
@@ -620,7 +620,7 @@ def create_draft(
         body["ccRecipients"] = [{"emailAddress": {"address": str(a)}} for a in payload.cc]
     try:
         with with_outlook_client(control_db, tenant_db, uid, tid) as gc:
-            resp = gc._request("POST", "/me/messages", json=body)
+            resp = gc._request("POST", "/me/messages", json=body, retry_on=RETRY_THROTTLED_ONLY)
     except OutlookReconnectRequired as exc:
         raise HTTPException(
             status_code=409,

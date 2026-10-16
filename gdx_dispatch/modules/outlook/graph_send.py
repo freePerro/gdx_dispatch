@@ -33,7 +33,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from gdx_dispatch.modules.outlook.graph_client import RETRY_THROTTLED_ONLY, OutlookGraphAPIError
+from gdx_dispatch.modules.outlook.graph_client import (
+    _RETRYABLE_STATUS,
+    RETRY_THROTTLED_ONLY,
+    OutlookGraphAPIError,
+)
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.graph_send")
 
@@ -136,6 +140,7 @@ def _attach(gc: Any, draft_id: str, att: dict[str, Any]) -> None:
                 "contentType": att.get("content_type") or "application/octet-stream",
             }
         },
+        retry_on=RETRY_THROTTLED_ONLY,
     )
     upload_url = (resp.json() or {}).get("uploadUrl") or ""
     if not _upload_url_ok(upload_url):
@@ -145,14 +150,45 @@ def _attach(gc: Any, draft_id: str, att: dict[str, Any]) -> None:
     while start < total:
         chunk = data[start:start + UPLOAD_CHUNK_BYTES]
         end = start + len(chunk) - 1
-        put = gc._client.put(
-            upload_url,
-            content=chunk,
-            headers={
-                "Content-Type": "application/octet-stream",
-                "Content-Range": f"bytes {start}-{end}/{total}",
-            },
-        )
+        _put_chunk(gc, upload_url, chunk, f"bytes {start}-{end}/{total}")
+        start = end + 1
+
+
+def _put_chunk(gc: Any, upload_url: str, chunk: bytes, content_range: str) -> None:
+    """One byte-range PUT to the upload session, retried like a Graph read.
+
+    Not through ``gc._request``: the uploadUrl is pre-authenticated and must
+    not carry our token. A chunk names its own byte range, so re-sending one
+    cannot add a byte twice. What the session answers to a range it already
+    holds is undocumented; any error there deletes the draft with nothing
+    sent. A refused connection fails at once and is retried; no timeout is,
+    connect included, because each already cost the full client timeout and
+    stacking them would outlast the proxy in front of the send."""
+    attempt = 0
+    while True:
+        try:
+            put = gc._client.put(
+                upload_url,
+                content=chunk,
+                headers={"Content-Type": "application/octet-stream", "Content-Range": content_range},
+            )
+        except httpx.HTTPError as exc:
+            if isinstance(exc, httpx.ConnectError) and attempt < gc._max_retries:
+                delay = min(2.0 ** attempt, gc._retry_max_delay_s)
+                log.warning("graph_send: upload chunk %s failed (%r), retry %d after %.1fs",
+                            content_range, exc, attempt + 1, delay)
+                gc._sleep(delay)
+                attempt += 1
+                continue
+            raise OutlookGraphAPIError(504, f"upload session did not answer: {exc!r}",
+                                       endpoint="uploadSession") from exc
+        if put.status_code in _RETRYABLE_STATUS and attempt < gc._max_retries:
+            delay = gc._retry_delay(put, attempt)
+            log.warning("graph_send: upload chunk %s answered %s, retry %d after %.1fs",
+                        content_range, put.status_code, attempt + 1, delay)
+            gc._sleep(delay)
+            attempt += 1
+            continue
         if put.status_code >= 400:
             # The uploadUrl carries its own authorization, not our token: a
             # 401 here is the session refusing, not our token expiring, and
@@ -160,7 +196,7 @@ def _attach(gc: Any, draft_id: str, att: dict[str, Any]) -> None:
             status = 502 if put.status_code == 401 else put.status_code
             raise OutlookGraphAPIError(status, f"upload session answered {put.status_code}: {put.text[:500]}",
                                        endpoint="uploadSession")
-        start = end + 1
+        return
 
 
 def _send_draft(gc: Any, create_path: str, create_body: dict[str, Any] | None,
