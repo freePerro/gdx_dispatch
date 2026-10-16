@@ -1099,6 +1099,7 @@ POST /api/phone-com/blocked-calls
 POST /api/phone-com/calls/originate
 POST /api/phone-com/calls/{call_id}/mark-heard
 POST /api/phone-com/messages
+POST /api/phone-com/messages/photo
 POST /api/phone-com/messages/schedule
 POST /api/phone-com/messages/threads/{thread_key}/mark-read
 POST /api/phone-com/scheduled/{scheduled_id}/cancel

@@ -598,6 +598,7 @@ gdx_dispatch/frontend/src/views/PhoneComCallsView.vue        comms-email-phone
 gdx_dispatch/frontend/src/views/PhoneComColdLeadsView.vue    comms-email-phone
 gdx_dispatch/frontend/src/views/PhoneComFaxesView.vue        comms-email-phone
 gdx_dispatch/frontend/src/views/PhoneComMessagesView.vue     comms-email-phone
+gdx_dispatch/frontend/src/composables/useSmsPhotos.js       comms-email-phone
 gdx_dispatch/frontend/src/views/OutboundEmailLogView.vue     comms-email-phone
 gdx_dispatch/frontend/src/views/admin/OutlookSettingsView.vue comms-email-phone
 gdx_dispatch/frontend/src/components/EmailAttachments.vue    comms-email-phone
