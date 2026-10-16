@@ -58,9 +58,13 @@ describe('SessionUnlockView', () => {
     const { wrapper, replace } = await mountLocked();
     expect(wrapper.find('[data-test="mobile-pin-dialog"]').exists()).toBe(true);
     for (const d of '1234') await wrapper.find(`[data-test="key-${d}"]`).trigger('click');
-    await flushPromises();
-    expect(isSessionLocked()).toBe(false);
-    expect(replace).toHaveBeenCalledWith(expect.objectContaining({ path: '/unlock', force: true }));
+    // verifyQuickPin awaits crypto.subtle.digest, which settles on Node's
+    // threadpool rather than as a microtask, so flushPromises() can return
+    // before it does under load (GDXA-1306). Poll instead.
+    await vi.waitFor(() => expect(isSessionLocked()).toBe(false));
+    await vi.waitFor(() =>
+      expect(replace).toHaveBeenCalledWith(expect.objectContaining({ path: '/unlock', force: true })),
+    );
   });
 
   it('Forgot PIN turns the PIN off, signs out and goes to the password login', async () => {
