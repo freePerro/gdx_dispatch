@@ -1,4 +1,4 @@
-"""Migration 126: ``app_settings.on_my_way_sms_enabled``.
+"""Migration 128: ``app_settings.on_my_way_sms_enabled``.
 
 On both engines: an existing settings row reads false (nobody is texted until
 an admin opts in), up/down/up, rerunnable, a no-op on a ``create_all``
@@ -14,13 +14,13 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, inspect
 
-MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/126_on_my_way_sms_opt_in.py"
+MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/128_on_my_way_sms_opt_in.py"
 TABLE = "app_settings"
 COLUMN = "on_my_way_sms_enabled"
 
 
 def _load(conn):
-    spec = importlib.util.spec_from_file_location("m126", MIGRATION)
+    spec = importlib.util.spec_from_file_location("m128", MIGRATION)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.op = Operations(MigrationContext.configure(conn))
@@ -41,16 +41,16 @@ def _value(conn):
     return conn.exec_driver_sql("SELECT on_my_way_sms_enabled FROM app_settings WHERE id = 1").scalar_one()
 
 
-def test_it_chains_onto_125_and_is_the_only_reviser() -> None:
+def test_it_chains_onto_127_and_is_the_only_reviser() -> None:
     source = MIGRATION.read_text()
-    assert 'revision = "126_on_my_way_sms_opt_in"' in source
-    assert 'down_revision = "125_planner_task_reminders"' in source
-    assert len("126_on_my_way_sms_opt_in") <= 32  # alembic_version.version_num is VARCHAR(32)
+    assert 'revision = "128_on_my_way_sms_opt_in"' in source
+    assert 'down_revision = "127_closeout_is_restatement"' in source
+    assert len("128_on_my_way_sms_opt_in") <= 32  # alembic_version.version_num is VARCHAR(32)
     revising = [
         p.name for p in MIGRATION.parent.glob("*.py")
-        if re.search(r'^down_revision = "125_planner_task_reminders"', p.read_text(), re.M)
+        if re.search(r'^down_revision = "127_closeout_is_restatement"', p.read_text(), re.M)
     ]
-    assert revising == ["126_on_my_way_sms_opt_in.py"], revising
+    assert revising == ["128_on_my_way_sms_opt_in.py"], revising
 
 
 def test_no_unescaped_percent_signs() -> None:
@@ -58,7 +58,7 @@ def test_no_unescaped_percent_signs() -> None:
 
 
 def test_sqlite_existing_row_reads_off_and_round_trips(tmp_path) -> None:
-    eng = create_engine(f"sqlite:///{tmp_path / 'm126.db'}", future=True)
+    eng = create_engine(f"sqlite:///{tmp_path / 'm128.db'}", future=True)
     with eng.begin() as c:
         _legacy_schema(c)
         m = _load(c)
@@ -100,7 +100,7 @@ def test_on_a_create_all_database_upgrade_is_a_no_op(tmp_path) -> None:
 
 def test_postgres_existing_row_reads_false_and_round_trips(pg_test_db) -> None:
     eng = create_engine(pg_test_db, future=True)
-    schema = "m126_test"
+    schema = "m128_test"
     try:
         with eng.connect() as c:
             c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")

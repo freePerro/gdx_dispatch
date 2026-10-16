@@ -85,7 +85,7 @@ class AppSettings(Base):
     automation_sender_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # GDXA-1201 — text the customer when a tech sets off (core/on_my_way_sms).
     # An OPTION, default OFF: before it existed nothing was texted, so turning
-    # it on is a deliberate act on the Phone.com settings card. Migration 126.
+    # it on is a deliberate act on the Phone.com settings card. Migration 128.
     on_my_way_sms_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )

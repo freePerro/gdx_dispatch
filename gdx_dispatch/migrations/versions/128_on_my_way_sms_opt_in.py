@@ -19,16 +19,16 @@ configuration, re-enterable in a click; texts already queued or sent stay in
 ``scheduled_sms`` and ``phone_com_messages``. Code that reads the column must
 be rolled back first.
 
-Revision ID: 126_on_my_way_sms_opt_in
-Revises: 125_planner_task_reminders
+Revision ID: 128_on_my_way_sms_opt_in
+Revises: 127_closeout_is_restatement
 Create Date: 2026-10-15
 """
 import contextlib
 
 from alembic import op
 
-revision = "126_on_my_way_sms_opt_in"
-down_revision = "125_planner_task_reminders"
+revision = "128_on_my_way_sms_opt_in"
+down_revision = "127_closeout_is_restatement"
 branch_labels = None
 depends_on = None
 
