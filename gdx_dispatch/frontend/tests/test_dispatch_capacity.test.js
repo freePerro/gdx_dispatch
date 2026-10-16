@@ -264,11 +264,11 @@ describe("DispatchView — duration prompt gate", () => {
     patchMock.mockResolvedValue({ ok: true });
   });
 
-  function setupBoard(jobOverrides = {}) {
+  function setupBoard(jobOverrides = {}, extraJobs = []) {
     const d = new Date();
     const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const TECHS = [{ id: "tech-1", user_id: "Mike" }];
-    const JOBS = [{
+    const job = (overrides) => ({
       id: 101,
       status: "Scheduled",
       customer_name: "Acme",
@@ -278,7 +278,9 @@ describe("DispatchView — duration prompt gate", () => {
       technician_id: null,
       scheduled_at: `${today}T09:00:00`,
       ...jobOverrides,
-    }];
+      ...overrides,
+    });
+    const JOBS = [job({}), ...extraJobs.map(job)];
     getMock.mockImplementation((url) => {
       const u = String(url || '');
       if (u.includes('/api/technicians')) return Promise.resolve(TECHS);
@@ -387,6 +389,62 @@ describe("DispatchView — duration prompt gate", () => {
     await flushAll();
     expect(wrapper.vm.durationPromptHours).toBe("1.5");
     expect(wrapper.vm.durationPromptEstimate).toBe(null);
+  });
+
+  // GDXA-1268 — a late answer for the job whose prompt was replaced must not
+  // land in the next job's prompt (the durationPrefillSeq guard).
+  it("a late suggestion for an earlier job never lands in a later job's prompt", async () => {
+    setupBoard(
+      { scheduled_duration_hours: null, effective_duration_hours: null },
+      [{ id: 102, customer_name: "Beta" }],
+    );
+    let releaseA;
+    const base = getMock.getMockImplementation();
+    getMock.mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('/api/jobs/101/suggested-duration')) {
+        return new Promise((r) => { releaseA = () => r({ estimate_status: "accepted", man_hours: 6 }); });
+      }
+      if (u.includes('/api/jobs/102/suggested-duration')) {
+        return Promise.resolve({ estimate_id: null, man_hours: null });
+      }
+      return base(url);
+    });
+    const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });
+    await flushAll();
+    await wrapper.vm.assignJob(101, "tech-1");
+    await wrapper.vm.assignJob(102, "tech-1");
+    await flushAll();
+    expect(wrapper.vm.durationPromptJobId).toBe(102);
+    releaseA();
+    await flushAll();
+    expect(wrapper.vm.durationPromptJobId).toBe(102);
+    expect(wrapper.vm.durationPromptHours).toBe("");
+    expect(wrapper.vm.durationPromptEstimate).toBe(null);
+    expect(wrapper.find('[data-testid="dispatch-duration-prompt-from-estimate"]').exists()).toBe(false);
+  });
+
+  it("drops the estimate note once the scheduler changes the prefilled hours", async () => {
+    setupBoard({ scheduled_duration_hours: null, effective_duration_hours: null });
+    withSuggestion({ estimate_status: "accepted", man_hours: 6 });
+    const wrapper = mount(DispatchView, { global: { stubs: dispatchStubs } });
+    await flushAll();
+    await wrapper.vm.assignJob(101, "tech-1");
+    await flushAll();
+    const note = () => wrapper.find('[data-testid="dispatch-duration-prompt-from-estimate"]');
+    expect(note().exists()).toBe(true);
+    // The job has a date here; the note claims only what is true of it.
+    expect(note().text()).toContain("has no estimated time yet");
+    expect(note().text()).not.toContain("scheduled");
+    wrapper.vm.durationPromptHours = "4";
+    await flushAll();
+    expect(note().exists()).toBe(false);
+    expect(wrapper.text()).toContain("has no estimated time yet");
+    expect(wrapper.text()).not.toContain("crew of 1");
+    // Typing the figure back makes the note true again.
+    wrapper.vm.durationPromptHours = "6";
+    await flushAll();
+    expect(note().exists()).toBe(true);
   });
 
   it("bypasses the duration prompt when scheduled_duration_hours is set", async () => {

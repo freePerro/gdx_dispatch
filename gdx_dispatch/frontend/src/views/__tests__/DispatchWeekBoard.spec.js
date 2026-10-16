@@ -339,6 +339,24 @@ describe("DispatchView — week board", () => {
     expect(wallOf(call[1].scheduled_at)).toEqual([TODAY, 12, 30]);
   });
 
+  it("stops marking a slot chosen once the start time is typed over (GDXA-1268)", async () => {
+    const w = await mountBoard();
+    w.vm.onDragStart(INTAKE, null);
+    const drop = cell(w, "tech-1", TODAY).trigger("drop");
+    await flushAll();
+    const slot0 = () => w.find('[data-testid="week-slot-0"]');
+    expect(slot0().classes()).toContain("is-selected");
+    w.vm.$.setupState.slotPromptTime = "09:15";
+    await flushAll();
+    expect(w.findAll(".week-slot-option.is-selected")).toHaveLength(0);
+    expect(slot0().find(".pi-circle-fill").exists()).toBe(false);
+    w.vm.$.setupState.slotPromptTime = "07:30";
+    await flushAll();
+    expect(slot0().classes()).toContain("is-selected");
+    await w.find('[data-testid="week-slot-cancel"]').trigger("click");
+    await drop; await flushAll();
+  });
+
   it("moves nothing when the placement question is cancelled", async () => {
     const w = await mountBoard();
     w.vm.onDragStart(INTAKE, null);
