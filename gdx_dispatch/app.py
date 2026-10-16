@@ -155,6 +155,7 @@ collections_router = _load_router("gdx_dispatch.routers", "collections")
 invoice_reminders_router = _load_router("gdx_dispatch.routers", "invoice_reminders")
 
 outbound_emails_router = _load_router("gdx_dispatch.routers", "outbound_emails")
+email_attachments_router = _load_router("gdx_dispatch.routers", "email_attachments")
 
 tasks_router = _load_router("gdx_dispatch.routers", "tasks")
 
@@ -1097,6 +1098,7 @@ def create_app() -> FastAPI:
     app.include_router(collections_router.router if hasattr(collections_router, "router") else collections_router)
     app.include_router(invoice_reminders_router.router if hasattr(invoice_reminders_router, "router") else invoice_reminders_router)
     app.include_router(outbound_emails_router.router if hasattr(outbound_emails_router, "router") else outbound_emails_router)
+    app.include_router(email_attachments_router.router if hasattr(email_attachments_router, "router") else email_attachments_router)
     app.include_router(tasks_router.router if hasattr(tasks_router, "router") else tasks_router)
     app.include_router(appointments_router.router if hasattr(appointments_router, "router") else appointments_router)
     app.include_router(gps_router.router if hasattr(gps_router, "router") else gps_router)
