@@ -1163,7 +1163,7 @@ import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity
 import { useTenantModules } from "../composables/useTenantModules";
 import SmsLinkDialog from "../components/SmsLinkDialog.vue";
 import InvoiceActivityPanel from "../components/InvoiceActivityPanel.vue";
-import { openAuthedFile } from "../composables/useAuthedFile";
+import { downloadAuthedFile, openAuthedFile } from "../composables/useAuthedFile";
 import { useTenantTimezone } from "../composables/useTenantTimezone";
 import Button from "primevue/button";
 import Column from "primevue/column";
@@ -2161,11 +2161,7 @@ async function sendComposer() {
         detail: "No email provider is connected for this user — using your default mail client instead.",
         life: 5000,
       });
-      await _emailViaMailtoFallback(composer.value, {
-        name: composer.value.pdf.name,
-        content_type: composer.value.pdf.content_type,
-        content_base64: composer.value.pdf.content_base64,
-      });
+      await _emailViaMailtoFallback(composer.value, composer.value.pdf.name);
       showComposer.value = false;
     } else {
       toast.add({
@@ -2182,19 +2178,22 @@ async function sendComposer() {
   }
 }
 
-async function _emailViaMailtoFallback(c, pdfAtt) {
+async function _emailViaMailtoFallback(c, pdfName) {
   // Save PDF locally so the user can drag-attach into their default mail
   // client. mailto: itself doesn't carry attachments — we surface both.
-  const bytes = Uint8Array.from(atob(pdfAtt.content_base64), (ch) => ch.charCodeAt(0));
-  const blob = new Blob([bytes], { type: pdfAtt.content_type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = pdfAtt.name;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  // A FRESH render, not the composer's copy: that one was built when the
+  // dialog opened, while the invoice was still a draft with no pay token, so
+  // it read "Draft" with no pay link. /send has flipped and minted by now.
+  try {
+    await downloadAuthedFile(`/api/invoices/${route.params.id}/pdf`, pdfName);
+  } catch (e) {
+    toast.add({
+      severity: "warn",
+      summary: "PDF not downloaded",
+      detail: "Use Download PDF to attach it to your email.",
+      life: 7000,
+    });
+  }
   const mailto = `mailto:${encodeURIComponent(c.to)}?subject=${encodeURIComponent(c.subject)}&body=${encodeURIComponent(c.body_text)}`;
   window.location.href = mailto;
   try {

@@ -1142,3 +1142,124 @@ def test_truck_invoice_is_dated_the_shop_day_not_the_utc_day(session_factory):
         assert body["due_date"] == (date(2026, 9, 13) + timedelta(days=30)).isoformat()
     finally:
         db.close()
+
+
+def test_mobile_send_pdf_renders_sent_with_pay_link(session_factory, monkeypatch):
+    """The truck's first send attached a PDF built while the row was still a
+    draft: "Payment Status: Draft", no pay link, beside an email body that
+    carried the link. The flip now precedes the render,
+    as on the desktop /send. Only the provider and the PDF engine are faked;
+    the payload the PDF is built from is the real one."""
+    from gdx_dispatch.core import payments, pdf_generator
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://pay.example.test")
+    monkeypatch.setattr(payments, "stripe_configured", lambda: True)
+    rendered: dict = {}
+
+    def _fake_pdf(invoice_data, tenant_branding, template_config=None):
+        rendered.update(invoice_data)
+        return b"%PDF-1.4 test"
+
+    monkeypatch.setattr(pdf_generator, "generate_invoice_pdf", _fake_pdf)
+    sent: dict = {}
+
+    def _fake_send(**kwargs):
+        sent.update(kwargs)
+        return True, "test-provider", None
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        inv = _as_json(mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id, send_email=False),
+            request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        # The seed's customer is raw-SQL inserted with a dashed id, which
+        # SQLite's dashless Uuid column never matches — give the invoice an
+        # ORM customer with an address to mail.
+        from gdx_dispatch.models.tenant_models import Customer as _Cust
+
+        cust = _Cust(id=uuid4(), company_id="tenant-a", name="Acme", email="a@example.com")
+        db.add(cust)
+        row = db.get(_Inv, UUID(inv["id"]))
+        row.customer_id = cust.id
+        row.verified_at = datetime.now(UTC)
+        row.verified_by_user_id = "office-user"
+        db.commit()
+        assert row.status == "draft"
+
+        with patch("gdx_dispatch.core.transactional_email.send_transactional_email", _fake_send):
+            send = mobile_invoicing.mobile_send_invoice(
+                invoice_id=inv["id"], request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert send.status_code == 200
+        db.refresh(row)
+        assert row.status == "sent" and row.public_token
+        assert sent.get("attachments"), "no PDF was attached — the test proves nothing"
+        assert rendered["status"] == "sent"
+        assert rendered["status_label"] == "Unpaid"
+        assert rendered["pay_url"] == f"https://pay.example.test/pay/{row.public_token}"
+        # The PDF's link and the email body's link are the same token.
+        assert rendered["pay_url"] in sent["html_body"]
+    finally:
+        db.close()
+
+
+def test_mobile_send_dead_transaction_keeps_flip_and_audit(session_factory, monkeypatch):
+    """The flip is committed before the email now, so it must carry its audit
+    row in the same commit: `_send_invoice_email` can swallow a failure that
+    leaves the transaction dead (its docstring). Before the audit row moved,
+    that left a committed `sent` naming nobody. The tail rolls back and
+    recovers, as the desktop /send does (GDXA-673)."""
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+
+    def _poisoning_send(db, invoice, *, tenant_id, user_id=None):
+        # A swallowed flush failure: the session is left needing rollback,
+        # and the caller is told only "not delivered".
+        try:
+            db.add(_Inv(id=uuid4(), company_id="tenant-a"))  # NOT NULLs unset
+            db.flush()
+        except Exception:
+            pass
+        return False
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            inv = _as_json(mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id, send_email=False),
+                request=_request(), current_user=_TEST_USER, db=db,
+            ))
+        row = db.get(_Inv, UUID(inv["id"]))
+        row.verified_at = datetime.now(UTC)
+        row.verified_by_user_id = "office-user"
+        db.commit()
+        monkeypatch.setattr(mobile_invoicing, "_send_invoice_email", _poisoning_send)
+        send = mobile_invoicing.mobile_send_invoice(
+            invoice_id=inv["id"], request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert send.status_code == 200
+        assert _as_json(send)["email_sent"] is False
+    finally:
+        db.close()
+
+    fresh = session_factory()
+    try:
+        row = fresh.get(_Inv, UUID(inv["id"]))
+        assert row.status == "sent"
+        assert row.sent_at is None  # nothing was delivered
+        audits = fresh.scalars(select(AuditLog).where(
+            AuditLog.entity_id == inv["id"], AuditLog.action == "mobile_invoice_sent",
+        )).all()
+        assert len(audits) == 1 and audits[0].user_id == _TEST_USER["user_id"]
+    finally:
+        fresh.close()
