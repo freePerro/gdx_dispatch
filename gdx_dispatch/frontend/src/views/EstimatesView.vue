@@ -99,7 +99,7 @@
                  "Send to customer" tooltip claimed a delivery that never
                  happened (2026-08-13, same audit as the bounce detector). -->
             <Button
-              v-if="data.status === 'Draft'"
+              v-if="data.status === 'Draft' && canSend"
               v-tooltip="'Mark as sent — does not email. Open the estimate to email it.'"
               aria-label="Mark as sent (does not email)"
               icon="pi pi-send"
@@ -161,6 +161,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
+import { usePermission } from "../composables/usePermission";
 import { useListPrefs } from "../composables/useListPrefs";
 import { useTableExport } from "../composables/useTableExport";
 import { formatDate, formatMoney } from "../composables/useFormatters";
@@ -176,6 +177,9 @@ const router = useRouter();
 const api = useApi();
 const { confirmDestructive } = useDestructiveConfirm();
 const toast = useToast();
+const { hasPermission } = usePermission();
+// /mark-sent needs estimates.send (GDXA-1314).
+const canSend = computed(() => hasPermission("estimates.send"));
 
 // --- State ---
 const loading = ref(false);

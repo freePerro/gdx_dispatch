@@ -114,6 +114,16 @@
 # any staff user who can text can text a photo). It is that send with one
 # picture attached, through the same _send_and_record and its audit trail; a
 # permission key would 403 every technician on the mobile composer it serves.
+#
+# 367 → 345 (2026-10-16, GDXA-1314): twenty-two estimate writes in
+# routers/estimates.py and modules/proposals/router.py. PRUNED, gated:
+# /send, /mark-sent and /email-preview now require estimates.send (the key
+# their /send-sms twins already required), and every other estimate and
+# proposal-tier write requires estimates.write. Left open on purpose, and still
+# listed below and open to every signed-in role, viewer included: /accept and
+# /decline (the technician's phone records the customer's answer there) and
+# /deposit-invoice (dispatcher and accounting hold opposite halves of the keys
+# it would need).
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -154,11 +164,6 @@ DELETE /api/developer/keys/{key_id}
 DELETE /api/diagnosis/{diagnosis_id}
 DELETE /api/document-folders/{folder_id}
 DELETE /api/documents/{document_id}
-DELETE /api/estimates/{estimate_id}
-DELETE /api/estimates/{estimate_id}/attachments/{document_id}
-DELETE /api/estimates/{estimate_id}/lines/{line_id}
-DELETE /api/estimates/{estimate_id}/proposal-tiers/{tier_id}
-DELETE /api/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}
 DELETE /api/expenses/{expense_id}
 DELETE /api/expenses/{expense_id}/receipts/{receipt_id}
 DELETE /api/follow-ups/{follow_up_id}
@@ -208,11 +213,6 @@ PATCH /api/dispatch-settings
 PATCH /api/document-folders/{folder_id}
 PATCH /api/document-folders/{folder_id}/move
 PATCH /api/estimates-features
-PATCH /api/estimates/{estimate_id}
-PATCH /api/estimates/{estimate_id}/attachments/{document_id}
-PATCH /api/estimates/{estimate_id}/lines/{line_id}
-PATCH /api/estimates/{estimate_id}/proposal-tiers/{tier_id}
-PATCH /api/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}
 PATCH /api/expenses/{expense_id}
 PATCH /api/inbound-email/{email_id}/read
 PATCH /api/inventory/parts/{item_id}
@@ -293,21 +293,9 @@ POST /api/dispatch/geocode-missing
 POST /api/dispatch/optimize
 POST /api/document-folders
 POST /api/documents
-POST /api/estimates
-POST /api/estimates/expire-stale
 POST /api/estimates/{estimate_id}/accept
-POST /api/estimates/{estimate_id}/attachments
-POST /api/estimates/{estimate_id}/convert-to-job
 POST /api/estimates/{estimate_id}/decline
 POST /api/estimates/{estimate_id}/deposit-invoice
-POST /api/estimates/{estimate_id}/duplicate
-POST /api/estimates/{estimate_id}/email-preview
-POST /api/estimates/{estimate_id}/lines
-POST /api/estimates/{estimate_id}/mark-sent
-POST /api/estimates/{estimate_id}/proposal-tiers
-POST /api/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines
-POST /api/estimates/{estimate_id}/reopen
-POST /api/estimates/{estimate_id}/send
 POST /api/expenses
 POST /api/expenses/promote-from-receipt
 POST /api/expenses/{expense_id}/lines
