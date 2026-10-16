@@ -872,6 +872,10 @@
            add the tech. Nothing changes the crew without this answer. -->
       <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
 
+      <!-- A job with no date dropped onto a tech: hours and the whole crew
+           before anything is written (Doug, 2026-10-16). -->
+      <ScheduleDropDialog :prompt="schedulePrompt" :technicians="assignableTechnicians" :all-technicians="technicians" @answer="answerSchedulePrompt" />
+
       <!-- Sprint dispatch-capacity (2026-05-20) — duration prompt on drop -->
       <Dialog
         v-model:visible="durationPromptOpen"
@@ -1062,6 +1066,8 @@ import Card from 'primevue/card';
 import Dialog from 'primevue/dialog';
 import CrewChangeDialog from '../components/CrewChangeDialog.vue';
 import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange';
+import ScheduleDropDialog from '../components/ScheduleDropDialog.vue';
+import { scheduleDropPatch, useScheduleDropPrompt } from '../composables/useScheduleDrop';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
@@ -2359,6 +2365,7 @@ async function onWeekCellDrop(event, techId, dayStr) {
     await placePartialJob(jobId, techId, iso, dayStr);
     return;
   }
+  if (await scheduleUndatedDrop(jobId, techId, iso, source)) return;
   // A job with a crew is drawn in every crew member's row, so a drop in any
   // of those rows is a date move. It must not go through assignJob: one
   // assigned_tech_id replaces the whole crew on the server, which took the
@@ -2409,6 +2416,45 @@ function takeDragOrigin() {
 }
 
 const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techName(id));
+const { prompt: schedulePrompt, ask: askSchedule, answer: answerSchedulePrompt } = useScheduleDropPrompt();
+
+// A job with no date dropped onto a tech is being booked, not moved: ask the
+// hours and the whole crew first, then write date, crew and hours in one
+// PATCH, as the job page's Schedule dialog does (Doug, 2026-10-16). True when
+// handled (booked or cancelled); false sends a dated job on to the move paths.
+// Callers have already routed visit cards and partial jobs elsewhere.
+async function scheduleUndatedDrop(jobId, techId, scheduledAt, knownJob = null) {
+  if (!techId || !scheduledAt) return false;
+  const job = knownJob || findBoardJob(jobId);
+  if (!job || job.scheduled_at) return false;
+  const wall = toShopWallClock(scheduledAt, tenantTimezone.value);
+  const timed = wall.getHours() !== 0 || wall.getMinutes() !== 0;
+  const answer = await askSchedule({
+    jobLabel: displayCustomer(job),
+    whenLabel: timed
+      ? formatScheduled(scheduledAt)
+      : `${formatShopDay(`${wall.getFullYear()}-${String(wall.getMonth() + 1).padStart(2, '0')}-${String(wall.getDate()).padStart(2, '0')}`)}, no set time`,
+    techId,
+    crew: crewOf(job),
+    hours: Number(job.scheduled_duration_hours) > 0 ? job.scheduled_duration_hours : job.effective_duration_hours,
+  });
+  if (!answer) return true; // cancelled: nothing moves
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${jobId}`, scheduleDropPatch(answer, scheduledAt));
+    } catch { /* api composable already toasts */ }
+    await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
+  });
+  return true;
+}
+
+// The day a column drop with no slot lands on: shop midnight of the board
+// day, the tray (the same day _doAssignJobInner gives an undated job).
+function boardDayStartIso() {
+  const d = new Date(selectedDate.value || new Date());
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
 const { confirmAsync } = useDestructiveConfirm();
 
 // Dropping a crew job into the queue or a holding area takes every tech off
@@ -2486,6 +2532,8 @@ async function handleDrop(techId, event) {
     await moveVisitCard(card, techId, card.scheduled_at);
     return;
   }
+  if (!partialJobIds.value.has(String(dropJobId))
+    && await scheduleUndatedDrop(dropJobId, techId, boardDayStartIso())) return;
   if (await placeCrewJob(dropJobId, techId, null, from)) return;
   await assignJob(dropJobId, techId);
 }
@@ -2717,6 +2765,7 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     await placePartialJob(jobId, techId, startISO);
     return;
   }
+  if (await scheduleUndatedDrop(jobId, techId, startISO)) return;
   // A crew job moved along a helper's column was checked against the lead
   // only, fell through to assignJob and lost its crew (Doug, 2026-10-15).
   if (await placeCrewJob(jobId, techId, startISO, from)) return;
@@ -2761,6 +2810,7 @@ async function onTimelinePlaceTray({ jobId, techId }) {
     await placePartialJob(jobId, techId, d.toISOString(), boardDay);
     return;
   }
+  if (await scheduleUndatedDrop(jobId, techId, d.toISOString())) return;
   if (await placeCrewJob(jobId, techId, d.toISOString(), from)) return;
   await assignJob(jobId, techId, d.toISOString());
 }

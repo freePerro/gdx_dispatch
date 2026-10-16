@@ -84,6 +84,7 @@ const stubs = {
   SelectButton: { props: ["modelValue", "options"], template: "<div />" },
   Tag: { props: ["value"], template: "<span>{{ value }}</span>" },
   InputText: { props: ["modelValue"], template: "<input />" },
+  MultiSelect: { props: ["modelValue", "options"], emits: ["update:modelValue"], template: "<div />" },
   TechTimelineColumn,
   TechEfficiencyPanel: { template: "<div />" },
   JobStateChip: { template: "<span />" },
@@ -313,8 +314,11 @@ describe("DispatchView — week board", () => {
     const w = await mountBoard();
     await dragOnto(w, INTAKE, "tech-2", OTHER_DAY);
     expect(w.find('[data-testid="week-slot-prompt"]').exists()).toBe(false);
+    // An undated job is being booked: hours and crew are asked first.
+    await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
+    await flushAll();
     const call = patchMock.mock.calls.find(([u]) => u === "/api/jobs/job-2");
-    expect(call[1]).toMatchObject({ assigned_tech_id: "tech-2" });
+    expect(call[1]).toMatchObject({ assigned_tech_ids: ["tech-2"], lead_tech_id: "tech-2" });
     expect(wallOf(call[1].scheduled_at)).toEqual([OTHER_DAY, 7, 30]);
   });
 
@@ -333,9 +337,11 @@ describe("DispatchView — week board", () => {
     await w.find('[data-testid="week-slot-1"]').trigger("click");
     expect(w.vm.$.setupState.slotPromptTime).toBe("12:30");
     await w.find('[data-testid="week-slot-confirm"]').trigger("click");
+    await flushAll();
+    await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
     await drop; await flushAll();
     const call = patchMock.mock.calls.find(([u]) => u === "/api/jobs/job-2");
-    expect(call[1]).toMatchObject({ assigned_tech_id: "tech-1" });
+    expect(call[1]).toMatchObject({ assigned_tech_ids: ["tech-1"], lead_tech_id: "tech-1" });
     expect(wallOf(call[1].scheduled_at)).toEqual([TODAY, 12, 30]);
   });
 
