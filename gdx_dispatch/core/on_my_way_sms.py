@@ -128,10 +128,13 @@ def send_on_my_way(
     job_id: UUID | str | None = None,
     customer_id: UUID | str | None = None,
     eta_minutes: int | None = None,
+    tech_name: str | None = None,
 ) -> OnMyWayResult:
     """Queue the on-my-way text for ``job_id`` (its customer), or for
     ``customer_id`` when there is no job. ``user`` is the signed-in caller —
-    the text is sent as them. See the module docstring for the contract."""
+    the text is sent as them. ``tech_name`` names who is on the way when that
+    is not the caller (the office pressing for a tech); ``""`` reads "your
+    technician". See the module docstring for the contract."""
     from gdx_dispatch.core.audit import audit_best_effort
     from gdx_dispatch.core.link_sms import as_uuid
 
@@ -200,7 +203,7 @@ def send_on_my_way(
 
         body = render_body(
             customer_name=customer.name,
-            tech_name=_tech_name(db, actor),
+            tech_name=_tech_name(db, actor) if tech_name is None else tech_name,
             company=company_name(db),
             eta_minutes=eta_minutes,
         )

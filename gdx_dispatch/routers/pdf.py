@@ -290,9 +290,33 @@ def _invoice_jobsite(job: Job | None, customer: Customer | None, db: Session | N
     if not full:
         return ""
     billing = normalize_address(customer.address if customer is not None else "")
-    if billing and billing in (normalize_address(site.address), normalize_address(full)):
+    if _billing_covers_site(billing, normalize_address(site.address), full):
         return ""
     return full
+
+
+def _billing_covers_site(billing: str, street: str, full: str) -> bool:
+    """Is the (normalized) free-text billing address the job site, written shorter?
+
+    Equal to the site's street or full address, or a whole-word prefix of the
+    full address that covers at least its first two comma parts whole — street
+    and town ("123 Main St, Anytown" against "123 Main St, Anytown, MN 55555").
+    `full` is the composed display address, so the parts are the same whether
+    the row splits its town into columns or keeps it all in `address`, as the
+    estimate-conversion bind does. Part of the town ("123 Main St, Other"
+    against "Other City") is another place, so that site prints."""
+    from gdx_dispatch.core.job_site import normalize_address  # noqa: PLC0415
+
+    if not billing:
+        return False
+    parts = [p for p in (normalize_address(s) for s in full.split(",")) if p]
+    whole = " ".join(parts)
+    if billing in (street, whole):
+        return True
+    if len(parts) < 2:
+        return False
+    head = " ".join(parts[:2])
+    return (billing == head or billing.startswith(head + " ")) and whole.startswith(billing + " ")
 
 
 # Customer words for the invoice's EFFECTIVE status (routers/invoices

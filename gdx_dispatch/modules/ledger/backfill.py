@@ -447,10 +447,14 @@ def era_settlement_shortfalls(
     reads both sides as 0. Surface every uncovered cent; silence here would
     read as "reconciled" when money vanished (2026-08-17 audit). Money that
     came in on no ledger line and went back out as a refund is no longer
-    missing, so a refund nets it (GDXA-1247). Shared by
-    ``reconciliation_report`` and ``reports.ar_control`` so the two cannot
-    disagree about it (GDXA-1223). Pass ``excess`` when the caller already
-    holds ``era_settlement_excess`` for the same session."""
+    missing, so a refund nets it (GDXA-1247). ``reconciliation_report`` and
+    ``reports.ar_control`` both take their shortfall rows from this one
+    computation (GDXA-1223). ``ar_control`` counts and sums all of them, then
+    orders them largest uncovered first and lists at most
+    ``AR_SHORTFALL_ROW_LIMIT``; ``reconciliation_report`` lists every row in
+    this order. Pass
+    ``excess`` when the caller already holds ``era_settlement_excess`` for
+    the same session."""
     if excess is None:
         excess = era_settlement_excess(session, company_id)
     return [r for r in excess if r["uncovered_cents"] > 0]
