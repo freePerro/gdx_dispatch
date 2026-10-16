@@ -948,7 +948,9 @@ def create_app() -> FastAPI:
     # production ever stamped it. This outer middleware (added later = runs
     # FIRST) stamps a minimal verified principal on exactly the requests the
     # cache handles (POST + Idempotency-Key + Bearer), so the replay cache
-    # finally functions for the offline queue's replays. It never rejects.
+    # finally functions for the offline queue's replays. It rejects only a
+    # verified token the route's 401 gates refuse (GDXA-1302: revoked,
+    # ineligible user, failed lookup), so a cached reply never reaches it.
     try:
         from gdx_dispatch.core.middleware.principal_stamp import PrincipalStampMiddleware
         app.add_middleware(PrincipalStampMiddleware)
