@@ -51,6 +51,16 @@ from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
 
+# Every route that changes an estimate carries require_permission: estimates.send
+# on the ones that put it in front of the customer (or record that it was),
+# estimates.write on the rest (GDXA-1314). Until then most of them took
+# get_current_user alone, so any signed-in technician could email a customer.
+# Three are still open to EVERY signed-in role, viewer included: /accept and
+# /decline, because the technician's phone calls them with the customer in the
+# driveway (MobileEstimatesView) and techs hold no estimates.* write key; and
+# /deposit-invoice, which dispatchers (estimates.write, no invoices.write) and
+# accounting (the reverse) may both need. Narrowing them takes a key that
+# either side can hold, and which roles get it is a role decision, not this fix.
 router = APIRouter(prefix="/api/estimates", tags=["estimates"], dependencies=[Depends(require_module("estimates"))])
 
 
@@ -957,7 +967,7 @@ def stage_estimate_created_audit(
     )
 
 
-@router.post("", response_model=None, status_code=201)
+@router.post("", response_model=None, status_code=201, dependencies=[Depends(require_permission("estimates.write"))])
 def create_estimate(
     payload: EstimateCreateIn,
     request: Request,
@@ -1290,7 +1300,7 @@ def get_estimate(
     return out
 
 
-@router.patch("/{estimate_id}", response_model=None)
+@router.patch("/{estimate_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def patch_estimate(
     estimate_id: UUID,
     payload: EstimatePatchIn,
@@ -1376,7 +1386,7 @@ def patch_estimate(
     return _serialize_estimate(estimate, include_lines=True)
 
 
-@router.delete("/{estimate_id}", response_model=None)
+@router.delete("/{estimate_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def delete_estimate(
     estimate_id: UUID,
     current_user: dict = Depends(get_current_user),
@@ -1401,7 +1411,7 @@ def delete_estimate(
     return {"deleted": True}
 
 
-@router.post("/{estimate_id}/lines", response_model=None, status_code=201)
+@router.post("/{estimate_id}/lines", response_model=None, status_code=201, dependencies=[Depends(require_permission("estimates.write"))])
 def add_line(
     estimate_id: UUID,
     payload: EstimateLineCreateIn,
@@ -1508,7 +1518,7 @@ def add_line(
     return out
 
 
-@router.patch("/{estimate_id}/lines/{line_id}", response_model=None)
+@router.patch("/{estimate_id}/lines/{line_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def patch_line(
     estimate_id: UUID,
     line_id: UUID,
@@ -1654,7 +1664,7 @@ def patch_line(
     return out
 
 
-@router.delete("/{estimate_id}/lines/{line_id}", response_model=None)
+@router.delete("/{estimate_id}/lines/{line_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def delete_line(
     estimate_id: UUID,
     line_id: UUID,
@@ -1899,7 +1909,7 @@ class MarkEstimateSentIn(BaseModel):
     channel: str = Field(default="manual", pattern=r"^(manual|email|mail)$")
 
 
-@router.post("/{estimate_id}/mark-sent", response_model=None)
+@router.post("/{estimate_id}/mark-sent", response_model=None, dependencies=[Depends(require_permission("estimates.send"))])
 def mark_estimate_sent(
     estimate_id: UUID,
     payload: MarkEstimateSentIn | None = None,
@@ -2237,7 +2247,7 @@ class SendEstimateIn(BaseModel):
     extra_attachment_ids: list[str] | None = None
 
 
-@router.post("/{estimate_id}/email-preview", response_model=None)
+@router.post("/{estimate_id}/email-preview", response_model=None, dependencies=[Depends(require_permission("estimates.send"))])
 def estimate_email_preview(
     estimate_id: UUID,
     payload: SendEstimateIn | None = None,
@@ -2382,7 +2392,7 @@ def _emit_estimate_sent(db: Session, estimate: Estimate) -> None:
         log.exception("estimate_sent_event_emit_failed")
 
 
-@router.post("/{estimate_id}/send", response_model=None)
+@router.post("/{estimate_id}/send", response_model=None, dependencies=[Depends(require_permission("estimates.send"))])
 def send_estimate(
     estimate_id: UUID,
     payload: SendEstimateIn | None = None,
@@ -3193,9 +3203,6 @@ class ReassignCustomerIn(BaseModel):
 @router.post(
     "/{estimate_id}/reassign-customer",
     response_model=None,
-    # The rest of this router is gated by module membership alone, which is its
-    # own problem (filed separately) — but a new door that moves a document
-    # between customers is not the place to inherit it.
     dependencies=[Depends(require_permission("estimates.write"))],
 )
 def reassign_estimate_customer(
@@ -3342,7 +3349,7 @@ def reassign_estimate_customer(
     return out
 
 
-@router.post("/{estimate_id}/reopen", response_model=None)
+@router.post("/{estimate_id}/reopen", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def reopen_estimate(
     estimate_id: UUID,
     _: dict = Depends(get_current_user),
@@ -3397,7 +3404,7 @@ def reopen_estimate(
 # override parameter. Audit logged on both sides.
 
 
-@router.post("/{estimate_id}/convert-to-job", response_model=None)
+@router.post("/{estimate_id}/convert-to-job", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def convert_estimate_to_job(
     estimate_id: UUID,
     _: dict = Depends(get_current_user),
@@ -3444,7 +3451,7 @@ def convert_estimate_to_job(
     }
 
 
-@router.post("/{estimate_id}/duplicate", response_model=None, status_code=201)
+@router.post("/{estimate_id}/duplicate", response_model=None, status_code=201, dependencies=[Depends(require_permission("estimates.write"))])
 def duplicate_estimate(
     estimate_id: UUID,
     request: Request,
@@ -3655,7 +3662,7 @@ def estimate_conversion_rate(
 # Estimate Expiration (#199) — auto-mark expired after valid_until
 # ---------------------------------------------------------------------------
 
-@router.post("/expire-stale")
+@router.post("/expire-stale", dependencies=[Depends(require_permission("estimates.write"))])
 def expire_stale_estimates(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
@@ -3757,7 +3764,7 @@ def list_estimate_attachments(
     return [_serialize_attachment(d) for d in rows]
 
 
-@router.post("/{estimate_id}/attachments", response_model=None, status_code=201)
+@router.post("/{estimate_id}/attachments", response_model=None, status_code=201, dependencies=[Depends(require_permission("estimates.write"))])
 def upload_estimate_attachment(
     estimate_id: UUID,
     request: Request,
@@ -3856,7 +3863,7 @@ class AttachmentPatch(BaseModel):
     title: str | None = Field(default=None, max_length=255)
 
 
-@router.patch("/{estimate_id}/attachments/{document_id}", response_model=None)
+@router.patch("/{estimate_id}/attachments/{document_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def patch_estimate_attachment(
     estimate_id: UUID,
     document_id: UUID,
@@ -3900,7 +3907,7 @@ def patch_estimate_attachment(
     return _serialize_attachment(doc)
 
 
-@router.delete("/{estimate_id}/attachments/{document_id}", response_model=None)
+@router.delete("/{estimate_id}/attachments/{document_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def delete_estimate_attachment(
     estimate_id: UUID,
     document_id: UUID,

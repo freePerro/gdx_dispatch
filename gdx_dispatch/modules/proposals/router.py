@@ -13,7 +13,7 @@ from gdx_dispatch.core import customer_page_preview, estimate_sms
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import contained_read, get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.office_notifications import notify_estimate_decision
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.quantities import recorded_quantity
@@ -101,17 +101,17 @@ def get_proposal(estimate_id: UUID, _: None = Depends(require_module("proposals"
     tiers = db.execute(select(ProposalTier).where(ProposalTier.estimate_id == estimate_id).order_by(ProposalTier.display_order.asc(), ProposalTier.id.asc())).scalars().all()
     return [_tier_dict(db, t) for t in tiers]
 
-@router.post("/estimates/{estimate_id}/proposal-tiers", response_model=None)
+@router.post("/estimates/{estimate_id}/proposal-tiers", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def post_proposal_tier(estimate_id: UUID, payload: TierIn, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
     return _tier_dict(db, add_proposal_tier(estimate_id, payload.tier_name, payload.description, payload.total_price, payload.warranty_months, db, actor=resolve_audit_actor(current_user)))
 
-@router.patch("/estimates/{estimate_id}/proposal-tiers/{tier_id}", response_model=None)
+@router.patch("/estimates/{estimate_id}/proposal-tiers/{tier_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def patch_proposal_tier(estimate_id: UUID, tier_id: UUID, payload: TierPatch, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
     return _tier_dict(db, update_proposal_tier(estimate_id, tier_id, payload.model_dump(exclude_unset=True), db, actor=resolve_audit_actor(current_user)))
 
 # ── tier line items (2026-08-14: tiers built like estimates) ────────────────
 
-@router.post("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines", response_model=None, status_code=201)
+@router.post("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines", response_model=None, status_code=201, dependencies=[Depends(require_permission("estimates.write"))])
 def post_tier_line(estimate_id: UUID, tier_id: UUID, payload: TierLineIn, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
     row = add_tier_line(
         estimate_id, tier_id,
@@ -121,17 +121,17 @@ def post_tier_line(estimate_id: UUID, tier_id: UUID, payload: TierLineIn, _: Non
     )
     return _tier_line_dict(row)
 
-@router.patch("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}", response_model=None)
+@router.patch("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}", response_model=None, dependencies=[Depends(require_permission("estimates.write"))])
 def patch_tier_line(estimate_id: UUID, tier_id: UUID, line_id: UUID, payload: TierLinePatch, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
     row = update_tier_line(estimate_id, tier_id, line_id, payload.model_dump(exclude_unset=True), db, actor=resolve_audit_actor(current_user))
     return _tier_line_dict(row)
 
-@router.delete("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}", status_code=204)
+@router.delete("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}", status_code=204, dependencies=[Depends(require_permission("estimates.write"))])
 def del_tier_line(estimate_id: UUID, tier_id: UUID, line_id: UUID, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
     delete_tier_line(estimate_id, tier_id, line_id, db, actor=resolve_audit_actor(current_user))
     return Response(status_code=204)
 
-@router.delete("/estimates/{estimate_id}/proposal-tiers/{tier_id}", status_code=204)
+@router.delete("/estimates/{estimate_id}/proposal-tiers/{tier_id}", status_code=204, dependencies=[Depends(require_permission("estimates.write"))])
 def del_proposal_tier(estimate_id: UUID, tier_id: UUID, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
     delete_proposal_tier(estimate_id, tier_id, db, actor=resolve_audit_actor(current_user))
     return Response(status_code=204)
