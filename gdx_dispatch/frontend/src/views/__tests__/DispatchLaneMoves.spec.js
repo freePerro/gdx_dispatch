@@ -18,6 +18,9 @@
  *     is not parked where no lane would show it, and the board says why;
  *     one day of a multi-day job is offered no lane move it would refuse;
  *     Undo after "To schedule" restores date and crew.
+ * 10. A job in "Order Doors" / "Need to order" has "Doors ordered" on its
+ *     card menu and in the drawer: one POST, signed server-side, that marks
+ *     the doors and moves the job; the board re-reads to show where it went.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -27,6 +30,7 @@ import { formatDurationHours } from "../../utils/hours";
 
 const getMock = vi.fn();
 const patchMock = vi.fn();
+const postMock = vi.fn();
 const toastAdd = vi.fn();
 
 vi.mock("vue-router", () => ({
@@ -37,7 +41,7 @@ vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: toastAdd }) }));
 // The office answers Remove to "Remove every technician?".
 vi.mock("primevue/useconfirm", () => ({ useConfirm: () => ({ require: (o) => o.accept() }) }));
 vi.mock("../../composables/useApiWithToast", () => ({
-  useApiWithToast: () => ({ get: getMock, post: vi.fn(), patch: patchMock, del: vi.fn() }),
+  useApiWithToast: () => ({ get: getMock, post: postMock, patch: patchMock, del: vi.fn() }),
 }));
 vi.mock("../../composables/usePermission", async () => {
   const { ref } = await import("vue");
@@ -131,7 +135,7 @@ async function pick(w, jobId, label) {
 describe("DispatchView — holding lanes without a drag", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset();
+    getMock.mockReset(); patchMock.mockReset(); postMock.mockReset(); toastAdd.mockReset();
     patchMock.mockResolvedValue({});
     boardJobs = [];
     redLane = [];
@@ -154,7 +158,7 @@ describe("DispatchView — holding lanes without a drag", () => {
     boardJobs = [job()];
     const w = await mountBoard();
     await w.get('[data-testid="lane-job-menu-job-1"]').trigger("click");
-    expect(menuLabels(w)).toEqual(["Waiting on doors", "Release from Order Doors"]);
+    expect(menuLabels(w)).toEqual(["Doors ordered", "Waiting on doors", "Release from Order Doors"]);
   });
 
   it("Move to… parks the job the way a drop does: the tech comes off, the date stays", async () => {
@@ -247,7 +251,7 @@ describe("DispatchView — holding lanes without a drag", () => {
     w.vm.$.setupState.openLaneMenu({}, { ...job(), visit_id: "v-1" });
     await flushAll();
     const buttons = w.get('[data-testid="lane-menu"]').findAll("button").map((b) => b.text());
-    expect(buttons).toEqual(["Release from Order Doors"]);
+    expect(buttons).toEqual(["Doors ordered", "Release from Order Doors"]);
     expect(w.get('[data-testid="lane-menu"]').text()).toContain("move it on its Visits card");
   });
 
@@ -278,5 +282,49 @@ describe("DispatchView — holding lanes without a drag", () => {
     const chip = w.get('[data-testid="lane-job-ha-doors-job-1"]');
     expect(chip.text()).toContain(formatDurationHours(3));
     expect(chip.text()).not.toMatch(/\d{1,2}\/\d{1,2}/);
+  });
+
+  it("Doors ordered on an Order Doors card marks them and the board shows the job in Waiting on doors", async () => {
+    boardJobs = [job()];
+    postMock.mockImplementation(async () => {
+      boardJobs = [job({ holding_area_id: "ha-wait" })];
+      return { job_id: "job-1", parts_marked: 2, moved_from: "Order Doors", moved_to: "Waiting on doors", holding_area_id: "ha-wait" };
+    });
+    const w = await mountBoard();
+    await pick(w, "job-1", "Doors ordered");
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledWith("/api/jobs/job-1/doors-ordered", {});
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: "success", summary: "2 doors marked ordered, moved to Waiting on doors",
+    }));
+    expect(w.find('[data-testid="lane-job-ha-wait-job-1"]').exists()).toBe(true);
+    expect(w.find('[data-testid="lane-job-ha-doors-job-1"]').exists()).toBe(false);
+    // It changes parts too, which a lane Undo cannot put back.
+    expect(w.find('[data-testid="board-undo"]').exists()).toBe(false);
+  });
+
+  it("offers Doors ordered only to a job waiting in an order-doors lane", async () => {
+    boardJobs = [job({ holding_area_id: "ha-wait" })];
+    const w = await mountBoard();
+    await w.get('[data-testid="lane-job-menu-job-1"]').trigger("click");
+    expect(menuLabels(w)).not.toContain("Doors ordered");
+    await w.get('[data-testid="lane-job-ha-wait-job-1"]').trigger("click");
+    await flushAll();
+    expect(w.find('[data-testid="dispatch-job-doors-ordered"]').exists()).toBe(false);
+  });
+
+  it("the drawer's Doors ordered posts once, and a refusal shows no success", async () => {
+    boardJobs = [job()];
+    postMock.mockRejectedValueOnce(Object.assign(new Error("There is no Waiting on doors holding area"), { status: 409 }));
+    const w = await mountBoard();
+    await w.get('[data-testid="lane-job-ha-doors-job-1"]').trigger("click");
+    await flushAll();
+    await w.get('[data-testid="dispatch-job-doors-ordered"]').trigger("click");
+    await flushAll();
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledWith("/api/jobs/job-1/doors-ordered", {});
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ severity: "success" }));
+    expect(w.find('[data-testid="lane-job-ha-doors-job-1"]').exists()).toBe(true);
   });
 });

@@ -991,6 +991,17 @@
             <strong>Holding area:</strong> {{ drawerLaneName }}
           </p>
           <Button
+            v-if="inOrderDoorsLane(drawerJob) && !isTerminalJob(drawerJob)"
+            label="Doors ordered"
+            icon="pi pi-check-square"
+            severity="secondary"
+            class="w-full"
+            size="small"
+            :loading="markingDoorsJobId === String(drawerJob.id)"
+            data-testid="dispatch-job-doors-ordered"
+            @click="() => markDoorsOrdered(drawerJob)"
+          />
+          <Button
             v-if="parkingHoldingAreas.length && !isTerminalJob(drawerJob) && canPark(drawerJob)"
             label="Move to…"
             icon="pi pi-arrow-right-arrow-left"
@@ -3333,20 +3344,67 @@ const laneMenuItems = computed(() => {
   const here = isParked(job) ? String(job.holding_area_id) : null;
   // One day of a multi-day job: a lane holds the whole job, so a move would
   // only be refused. Say where it moves instead of offering it.
-  const items = [{
+  const items = [];
+  // A job waiting on its doors to be ordered: one click says they are.
+  if (inOrderDoorsLane(job) && !isTerminalJob(job)) {
+    items.push({ label: 'Doors ordered', icon: 'pi pi-check-square', command: () => markDoorsOrdered(job) });
+    items.push({ separator: true });
+  }
+  items.push({
     label: 'Move to',
     items: job.visit_id
       ? [{ label: 'Multi-day job: move it on its Visits card', icon: 'pi pi-info-circle', disabled: true }]
       : parkingHoldingAreas.value
         .filter((a) => String(a.id) !== here)
         .map((a) => ({ label: a.name, icon: 'pi pi-arrow-right', command: () => moveJobToArea(job.id, a.id, null, job) })),
-  }];
+  });
   if (here) {
     items.push({ separator: true });
     items.push({ label: `Release from ${areaName(here)}`, icon: 'pi pi-sign-out', command: () => releaseFromHoldingArea(job.id, job) });
   }
   return items;
 });
+
+// "Order Doors" is where estimate conversion parks a sold install; "Need to
+// order" is the office's twin of it (vendor_orders/hubx.py ORDER_AREAS).
+const ORDER_DOORS_LANES = ['order doors', 'need to order'];
+
+function inOrderDoorsLane(job) {
+  if (!isParked(job)) return false;
+  const area = (holdingAreas.value || []).find((a) => String(a.id) === String(job.holding_area_id));
+  return ORDER_DOORS_LANES.includes((area?.name || '').trim().toLowerCase());
+}
+
+// The doors went in: the server marks the job's doors still needed as
+// ordered and moves it to "Waiting on doors", signed by whoever clicked. No
+// Undo — it changes the parts too, which a lane move cannot put back; the
+// job's parts list is where a door goes back to needed.
+const markingDoorsJobId = ref(null);
+
+async function markDoorsOrdered(job) {
+  if (!job || markingDoorsJobId.value) return;
+  markingDoorsJobId.value = String(job.id);
+  try {
+    await withBoardWrite(async () => {
+      try {
+        const res = await api.post(`/api/jobs/${job.id}/doors-ordered`, {});
+        const doors = res?.parts_marked
+          ? `${res.parts_marked} door${res.parts_marked === 1 ? '' : 's'} marked ordered`
+          : 'Doors ordered';
+        toast.add({
+          severity: 'success',
+          summary: res?.moved_to ? `${doors}, moved to ${res.moved_to}` : doors,
+          life: 4000,
+        });
+      } catch {
+        // useApi has already shown the server's refusal.
+      }
+      await refreshBoard();
+    });
+  } finally {
+    markingDoorsJobId.value = null;
+  }
+}
 
 // What puts a job back as it was before a lane move: its lane, and the crew
 // or the date the move took off it.
