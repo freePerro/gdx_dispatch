@@ -377,6 +377,89 @@ def resolve_hubx_order(db: Session, record: HubxDoorOrder) -> HubxDoorOrder:
     return record
 
 
+class DoorsOrderedRefused(Exception):
+    """Nothing was written; the message says why, in the office's words."""
+
+
+def mark_job_doors_ordered(
+    db: Session, job: Job, *, user_id: str, tenant_id: str | None = None, request: Any = None,
+) -> dict[str, Any]:
+    """The office's one-click "Doors ordered" on the dispatch board.
+
+    The email path above, done by hand and signed by the person who clicked:
+    every door row still ``needed`` goes ``ordered``, and a job parked in
+    "Order Doors" / "Need to order" moves to "Waiting on doors". Unlike the
+    email path it does not wait for every captured QCD — the person clicking
+    is the evidence that the doors went in, including doors the estimate
+    carries with no parts row (tier copies). A job in any other lane, or on a
+    tech, keeps its place.
+
+    Refuses, writing nothing, when the job sits in an order lane and there is
+    no "Waiting on doors" lane to move it to, or when there is neither a door
+    to mark nor a lane to leave. Flushes; the caller commits.
+    """
+    areas = _areas_by_name(db)
+    current = next(
+        (a for a in areas.values() if job.holding_area_id and str(a.id) == str(job.holding_area_id)),
+        None,
+    )
+    in_order_lane = current is not None and (current.name or "").strip().lower() in ORDER_AREAS
+    target = areas.get(ORDERED_AREA)
+    if in_order_lane and target is None:
+        raise DoorsOrderedRefused(
+            'There is no "Waiting on doors" holding area to move this job to. '
+            "Add one on the dispatch board, then try again."
+        )
+    needed = [p for p in _door_rows(db, str(job.id)) if p.status == "needed"]
+    if not needed and not in_order_lane:
+        raise DoorsOrderedRefused(
+            "No door on this job is waiting to be ordered, and it is not in an "
+            "order-doors holding area."
+        )
+
+    now = datetime.now(timezone.utc)
+    source = {"via": "dispatch_doors_ordered"}
+    for part in needed:
+        part.status = "ordered"
+        part.updated_at = now
+        log_audit_event_sync(
+            db, tenant_id=tenant_id, user_id=user_id, action="update",
+            entity_type="part_needed", entity_id=str(part.id),
+            details={
+                "status": {"from": "needed", "to": "ordered"},
+                "job_id": str(job.id),
+                "qcd": notes_qcd(part.notes),
+                **source,
+            },
+            request=request,
+        )
+
+    moved_to = None
+    if in_order_lane:
+        job.holding_area_id = str(target.id)
+        job.updated_at = now
+        moved_to = target.name
+        log_audit_event_sync(
+            db, tenant_id=tenant_id, user_id=user_id, action="update",
+            entity_type="job", entity_id=str(job.id),
+            details={
+                "holding_area": {"from": current.name, "to": target.name},
+                "holding_area_id": {"from": str(current.id), "to": str(target.id)},
+                "parts_marked": len(needed),
+                **source,
+            },
+            request=request,
+        )
+    db.flush()
+    return {
+        "job_id": str(job.id),
+        "parts_marked": len(needed),
+        "moved_from": current.name if moved_to else None,
+        "moved_to": moved_to,
+        "holding_area_id": job.holding_area_id,
+    }
+
+
 def retry_unmatched(db: Session, *, since: datetime) -> dict[str, int]:
     """Re-match orders recorded ``no_estimate`` since ``since``.
 

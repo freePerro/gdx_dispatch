@@ -504,3 +504,162 @@ def test_unmatched_orders_outside_the_window_are_not_retried(db, areas):
     assert out["retried"] == 0
     db.refresh(rec)
     assert rec.outcome == "no_estimate"
+
+
+# --------------------------------------------------------------------------- #
+# the dispatch board's "Doors ordered" (POST /api/jobs/{id}/doors-ordered)
+# --------------------------------------------------------------------------- #
+OFFICE = {"user_id": "00000000-0000-0000-0000-000000000801", "tenant_id": TID, "role": "admin"}
+TECH = {"user_id": "00000000-0000-0000-0000-000000000802", "tenant_id": TID, "role": "technician"}
+DISPATCHER = {"user_id": "00000000-0000-0000-0000-000000000803", "tenant_id": TID, "role": "dispatcher"}
+
+
+def _client(db, user=OFFICE):
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.routers import parts_needed as parts_needed_mod
+    from gdx_dispatch.routers.auth import get_current_user
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
+    app = FastAPI()
+    app.include_router(parts_needed_mod.router)
+
+    def _like_get_db():
+        s = factory()
+        try:
+            yield s
+        finally:
+            s.close()  # no commit — exactly what core.database.get_db does
+
+    app.dependency_overrides[get_db] = _like_get_db
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    @app.middleware("http")
+    async def _inject_tenant(request: Request, call_next):
+        request.state.tenant = {"id": TID}
+        return await call_next(request)
+
+    return TestClient(app)
+
+
+def _office_audit(db):
+    db.expire_all()
+    return db.execute(select(AuditLog).where(AuditLog.user_id == OFFICE["user_id"])).scalars().all()
+
+
+def test_doors_ordered_marks_every_door_and_moves_the_job_signed_by_the_clicker(db, areas):
+    job, _ = _sold_job(db, qcds=["QCD1000001", "QCD1000002"], area=areas["Order Doors"])
+    r = _client(db).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["parts_marked"] == 2
+    assert (body["moved_from"], body["moved_to"]) == ("Order Doors", "Waiting on doors")
+    assert body["holding_area_id"] == str(areas["Waiting on doors"].id)
+
+    db.expire_all()
+    assert job.holding_area_id == str(areas["Waiting on doors"].id)
+    parts = _parts(db, job)
+    assert parts["QCD1000001"] == "ordered" and parts["QCD1000002"] == "ordered"
+    assert parts["Install"] == "needed", "labor rows are not doors"
+
+    rows = _office_audit(db)
+    assert sorted(r.entity_type for r in rows) == ["job", "part_needed", "part_needed"]
+    assert all(r.details["via"] == "dispatch_doors_ordered" for r in rows)
+    job_row = next(r for r in rows if r.entity_type == "job")
+    assert job_row.details["holding_area"] == {"from": "Order Doors", "to": "Waiting on doors"}
+    assert not db.execute(select(AuditLog).where(AuditLog.user_id == ACTOR)).scalars().all()
+
+
+def test_doors_ordered_moves_a_job_whose_doors_have_no_parts_rows(db, areas):
+    """A tier-accepted estimate copies no Number= rows: the click is the evidence."""
+    job, _ = _sold_job(db, qcds=[], area=areas["Need to order"])
+    r = _client(db).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 200, r.text
+    assert r.json()["parts_marked"] == 0 and r.json()["moved_to"] == "Waiting on doors"
+    db.expire_all()
+    assert job.holding_area_id == str(areas["Waiting on doors"].id)
+
+
+def test_doors_ordered_leaves_a_job_in_another_lane_where_it_is(db, areas):
+    job, _ = _sold_job(db, qcds=["QCD1000001"], area=areas["Ready to Schedule"])
+    r = _client(db).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 200, r.text
+    assert r.json()["parts_marked"] == 1 and r.json()["moved_to"] is None
+    db.expire_all()
+    assert job.holding_area_id == str(areas["Ready to Schedule"].id)
+    assert _parts(db, job)["QCD1000001"] == "ordered"
+
+
+def test_doors_ordered_leaves_a_door_already_past_needed_alone(db, areas):
+    job, _ = _sold_job(db, qcds=["QCD1000001", "QCD1000002"], area=areas["Order Doors"])
+    received = next(
+        p for p in db.execute(select(JobPartNeeded).where(JobPartNeeded.job_id == str(job.id))).scalars()
+        if notes_qcd(p.notes) == "QCD1000002"
+    )
+    received.status = "received"
+    db.commit()
+    r = _client(db).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 200 and r.json()["parts_marked"] == 1
+    db.expire_all()
+    assert _parts(db, job) == {"QCD1000001": "ordered", "QCD1000002": "received", "Install": "needed"}
+
+
+def test_doors_ordered_without_a_waiting_lane_writes_nothing(db):
+    order = _area(db, "Order Doors")
+    job, _ = _sold_job(db, qcds=["QCD1000001"], area=order)
+    r = _client(db).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 409 and "Waiting on doors" in r.json()["detail"]
+    db.expire_all()
+    assert _parts(db, job)["QCD1000001"] == "needed"
+    assert job.holding_area_id == str(order.id)
+    assert _office_audit(db) == []
+
+
+def test_doors_ordered_with_nothing_to_do_is_refused(db, areas):
+    job, _ = _sold_job(db, qcds=["QCD1000001"], area=areas["Waiting on doors"])
+    client = _client(db)
+    assert client.post(f"/api/jobs/{job.id}/doors-ordered").status_code == 200
+    again = client.post(f"/api/jobs/{job.id}/doors-ordered")
+    assert again.status_code == 409, "a double click must not look like a second success"
+    assert len(_office_audit(db)) == 1
+
+
+@pytest.mark.parametrize("stage", ["completed", "cancelled"])
+def test_doors_ordered_refuses_a_closed_job(db, areas, stage):
+    job, _ = _sold_job(db, qcds=["QCD1000001"], area=areas["Order Doors"], stage=stage)
+    r = _client(db).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 409
+    db.expire_all()
+    assert _parts(db, job)["QCD1000001"] == "needed"
+
+
+def test_doors_ordered_404s_a_deleted_or_unknown_job(db, areas):
+    job, _ = _sold_job(db, qcds=["QCD1000001"], area=areas["Order Doors"])
+    job.deleted_at = NOW
+    db.commit()
+    client = _client(db)
+    assert client.post(f"/api/jobs/{job.id}/doors-ordered").status_code == 404
+    assert client.post(f"/api/jobs/{uuid4()}/doors-ordered").status_code == 404
+    assert client.post("/api/jobs/not-a-uuid/doors-ordered").status_code == 404
+
+
+def test_doors_ordered_is_office_only(db, areas):
+    job, _ = _sold_job(db, qcds=["QCD1000001"], area=areas["Order Doors"])
+    r = _client(db, TECH).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 403
+    db.expire_all()
+    assert _parts(db, job)["QCD1000001"] == "needed"
+
+
+def test_a_dispatcher_can_mark_doors_ordered(db, areas):
+    """The board's own user: the built-in dispatcher role holds jobs.write,
+    not inventory.write (audit 2026-10-16: a 403 on the first click)."""
+    job, _ = _sold_job(db, qcds=["QCD1000001"], area=areas["Order Doors"])
+    r = _client(db, DISPATCHER).post(f"/api/jobs/{job.id}/doors-ordered")
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    assert job.holding_area_id == str(areas["Waiting on doors"].id)
+    rows = db.execute(select(AuditLog).where(AuditLog.user_id == DISPATCHER["user_id"])).scalars().all()
+    assert sorted(r.entity_type for r in rows) == ["job", "part_needed"]
