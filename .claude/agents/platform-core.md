@@ -132,7 +132,20 @@ this shape, the labels verbatim:
 then write the commit message file as the subject line, a blank line and that
 same block, and commit with `git commit --cleanup=whitespace -F <file>` (the
 git hook reads the message itself; `-F` already keeps the `##` line, the flag
-only makes that explicit). **Do not push, do not
+only makes that explicit).
+
+Before you submit, check your branch for rejected work. For every `+` line
+of `git cherry origin/main HEAD`, run
+`gh pr list --state all --search <sha> --json number,state --jq '.[]|"\(.number) \(.state)"'`.
+A commit is rejected when it appears in at least one PR and every PR it
+appears in is `CLOSED`; one `OPEN` or `MERGED` PR means it was superseded,
+not rejected, and no PR at all means it is new. A non-zero exit means the
+check did not run, not that it passed. On a rejected commit or a failed check,
+do not submit and do not rewrite the branch (no rebase, reset or cherry-pick
+in a shared worktree): mark your issue blocked and name each rejected commit
+and its closed PR, or paste the `gh` error.
+
+**Do not push, do not
 open the pull request and do not run the full backend matrix yourself.** After
 the commit, run `gdx-matrix-submit` from the worktree root: it queues the
 committed branch for the backend matrix on the host, creates a `Matrix:` child
@@ -187,7 +200,8 @@ only the NEW failures of your branch (a test ALREADY FAILING ON MAIN is not
 yours; a FLAKY ON MAIN test gets one re-run of its file, and if it passes it
 is not yours either), re-run those files, commit
 with a manifest, run `gdx-matrix-submit` again and end the run. If none of the
-failures is yours, run `gdx-matrix-submit --not-mine "<reason>"` instead; it
+failures is yours, run the rejected-work check above and then
+`gdx-matrix-submit --not-mine "<reason>"` instead; it
 hands the branch to `release-mechanic` with your reason. One exception: if
 your change touches what an ALREADY FAILING test covers, look at it anyway,
 since a red test can be broken a second way. **Read back at most six screenshots per run**,
