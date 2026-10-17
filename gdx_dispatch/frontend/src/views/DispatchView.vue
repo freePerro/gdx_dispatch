@@ -2877,9 +2877,9 @@ async function onTimelinePlaceTray({ jobId, techId }) {
 
 const queuePickerKey = ref(0);
 
-// A tech picked from a dropdown (queue card or Assign dialog). A crew job goes
-// through placeCrewJob; an undated one lands on the selected day, as
-// _doAssignJobInner case (c) does for a one-tech job.
+// A tech picked from a dropdown (queue card or Assign dialog). An undated job
+// is being booked onto the selected day, so it asks hours and crew like a
+// drop does; a dated crew job goes through placeCrewJob.
 async function assignFromPicker(jobId, techId) {
   const job = findBoardJob(jobId);
   let day = null;
@@ -2890,6 +2890,8 @@ async function assignFromPicker(jobId, techId) {
   }
   try {
     if (refuseFinishedOrStartedDrop(job, techId)) return;
+    if (day && !partialJobIds.value.has(String(jobId))
+      && await scheduleUndatedDrop(jobId, techId, day, job)) return;
     if (await placeCrewJob(jobId, techId, day, null)) return;
     await assignJob(jobId, techId);
   } finally {
