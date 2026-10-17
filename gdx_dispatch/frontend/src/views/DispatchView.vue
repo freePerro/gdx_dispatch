@@ -2342,6 +2342,8 @@ async function onWeekCellDrop(event, techId, dayStr) {
   let mm = wall ? wall.getMinutes() : 0;
   const pad = (n) => String(n).padStart(2, '0');
 
+  // A visit card and a partial job carry their own refusals (the server's).
+  if (!card && !isPartial && refuseFinishedOrStartedDrop(source, techId)) return;
   if (!techId) {
     // The "No tech" row moves a date only; taking a tech off is the job page's call.
     if (card || isPartial || (source?.assigned_tech_ids || []).some(Boolean) || source?.technician_id) {
@@ -2407,6 +2409,31 @@ function findBoardJob(jobId) {
     || null;
 }
 
+// A drop on a tech's row writes the job's date and crew, so it gets the same
+// stage check a drop into a holding area or the queue does (GDXA-1377). A
+// finished job keeps both. A job under way keeps its crew: a drop on one of
+// its own techs (or, with nobody on it, on the "No tech" row) moves only its
+// time; a drop on anyone else would replace the people working it. True when
+// refused: the toast is shown and the caller writes nothing.
+function refuseFinishedOrStartedDrop(job, techId) {
+  if (!job) return false;
+  let detail = null;
+  if (isTerminalJob(job)) {
+    detail = 'A finished job keeps its date and crew. Change it on the job page.';
+  } else if (jobStage(job) === 'in_progress') {
+    const crew = crewOf(job);
+    const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
+    if (!onCrew) {
+      detail = crew.length
+        ? 'A job that is under way keeps its crew. Move its time on a crew member\'s row, or change the crew on the job page.'
+        : 'A job that is under way keeps its crew. Change it on the job page.';
+    }
+  }
+  if (!detail) return false;
+  toast.add({ severity: 'warn', summary: 'Nothing was moved', detail, life: 6000 });
+  return true;
+}
+
 function takeDragOrigin() {
   const from = draggingFromTechId;
   draggingFromTechId = null;
@@ -2425,6 +2452,9 @@ async function scheduleUndatedDrop(jobId, techId, scheduledAt, knownJob = null) 
   if (!techId || !scheduledAt) return false;
   const job = knownJob || findBoardJob(jobId);
   if (!job || job.scheduled_at) return false;
+  // A job under way keeps its crew, and the dialog would let it change: it
+  // goes on to the move paths, which date it on its own crew (GDXA-1377).
+  if (jobStage(job) === 'in_progress') return false;
   const wall = toShopWallClock(scheduledAt, tenantTimezone.value);
   const timed = wall.getHours() !== 0 || wall.getMinutes() !== 0;
   const answer = await askSchedule({
@@ -2533,9 +2563,14 @@ async function handleDrop(techId, event) {
     await moveVisitCard(card, techId, card.scheduled_at);
     return;
   }
-  if (!partialJobIds.value.has(String(dropJobId))
-    && await scheduleUndatedDrop(dropJobId, techId, boardDayStartIso())) return;
-  if (await placeCrewJob(dropJobId, techId, null, from)) return;
+  const isPartial = partialJobIds.value.has(String(dropJobId));
+  const job = findBoardJob(dropJobId);
+  if (!isPartial && refuseFinishedOrStartedDrop(job, techId)) return;
+  if (!isPartial && await scheduleUndatedDrop(dropJobId, techId, boardDayStartIso())) return;
+  // An undated job that got here (one under way) lands on the board day, as
+  // a one-tech job does in _doAssignJobInner; a dated one keeps its time.
+  const day = job && !job.scheduled_at ? boardDayStartIso() : null;
+  if (await placeCrewJob(dropJobId, techId, day, from)) return;
   await assignJob(dropJobId, techId);
 }
 
@@ -2773,6 +2808,7 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     await placePartialJob(jobId, techId, startISO);
     return;
   }
+  if (refuseFinishedOrStartedDrop(findBoardJob(jobId), techId)) return;
   if (await scheduleUndatedDrop(jobId, techId, startISO)) return;
   // A crew job moved along a helper's column was checked against the lead
   // only, fell through to assignJob and lost its crew (Doug, 2026-10-15).
@@ -2818,6 +2854,7 @@ async function onTimelinePlaceTray({ jobId, techId }) {
     await placePartialJob(jobId, techId, d.toISOString(), boardDay);
     return;
   }
+  if (refuseFinishedOrStartedDrop(findBoardJob(jobId), techId)) return;
   if (await scheduleUndatedDrop(jobId, techId, d.toISOString())) return;
   if (await placeCrewJob(jobId, techId, d.toISOString(), from)) return;
   await assignJob(jobId, techId, d.toISOString());
@@ -2837,6 +2874,7 @@ async function assignFromPicker(jobId, techId) {
     day = d.toISOString();
   }
   try {
+    if (refuseFinishedOrStartedDrop(job, techId)) return;
     if (await placeCrewJob(jobId, techId, day, null)) return;
     await assignJob(jobId, techId);
   } finally {
