@@ -448,9 +448,9 @@ describe("DispatchView — week board", () => {
     };
     boardRows = [JOB, INTAKE, PARKED];
     const w = await mountBoard();
-    const lane = w.find('[data-testid="week-area-area-parts"]');
+    const lane = w.find('[data-testid="lane-area-parts"]');
     expect(lane.exists()).toBe(true);
-    expect(lane.find('[data-testid="week-area-job-area-parts-job-3"]').exists()).toBe(true);
+    expect(lane.find('[data-testid="lane-job-area-parts-job-3"]').exists()).toBe(true);
     expect(cell(w, "unassigned", OTHER_DAY).text()).not.toContain("Kim Roe");
 
     w.vm.onDragStart(JOB, null);
@@ -491,7 +491,7 @@ describe("DispatchView — week board", () => {
     boardRows = [PARKED];
     const w = await mountBoard();
     w.vm.onDragStart(PARKED, null, null, "area:area-parts");
-    await w.find('[data-testid="week-area-area-parts"]').trigger("drop");
+    await w.find('[data-testid="lane-area-parts"]').trigger("drop");
     await flushAll();
     expect(patchMock).not.toHaveBeenCalled();
   });
@@ -502,9 +502,9 @@ describe("DispatchView — week board", () => {
     boardRows = [PARKED_TECH];
     const w = await mountBoard();
     expect(cell(w, "tech-1", TODAY).text()).toContain("Ray Fox");
-    expect(w.find('[data-testid="week-area-job-area-parts-job-4"]').exists()).toBe(true);
+    expect(w.find('[data-testid="lane-job-area-parts-job-4"]').exists()).toBe(true);
     w.vm.onDragStart(PARKED_TECH, null, "tech-1");
-    await w.find('[data-testid="week-area-area-parts"]').trigger("drop");
+    await w.find('[data-testid="lane-area-parts"]').trigger("drop");
     await flushAll();
     expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-4", { assigned_to: null, holding_area_id: "area-parts" });
   });
@@ -530,11 +530,11 @@ describe("DispatchView — week board", () => {
     const w = await mountBoard();
     const dataTransfer = { setData: () => {}, getData: () => "", effectAllowed: "" };
     const strip = w.find('[data-testid="week-queue"]');
-    const lane = w.find('[data-testid="week-area-area-parts"]');
+    const lane = w.find('[data-testid="lane-area-parts"]');
 
     await w.find('[data-testid="week-queue-job-2"]').trigger("dragstart", { dataTransfer });
     await strip.trigger("drop");
-    await w.find('[data-testid="week-area-job-area-parts-job-3"]').trigger("dragstart", { dataTransfer });
+    await w.find('[data-testid="lane-job-area-parts-job-3"]').trigger("dragstart", { dataTransfer });
     await lane.trigger("drop");
     await flushAll();
     expect(patchMock).not.toHaveBeenCalled();

@@ -89,6 +89,15 @@ const stubs = {
   DataTable: { template: "<div />" },
   Column: { template: "<div />" },
   MobileJobCloseoutDialog: { template: "<div />" },
+  // The board's one Move to… menu, drawn open: every item is a button.
+  Menu: {
+    props: ["model"],
+    methods: { toggle() {} },
+    template: `<div data-testid="lane-menu"><template v-for="g in model" :key="g.label || 'sep'">
+      <button v-if="g.command" @click="g.command()">{{ g.label }}</button>
+      <button v-for="i in g.items || []" :key="i.label" @click="i.command()">{{ i.label }}</button>
+    </template></div>`,
+  },
 };
 
 const flushAll = async () => { await flushPromises(); await flushPromises(); };
@@ -123,6 +132,12 @@ async function mountBoard() {
   const w = mount(DispatchView, { global: { stubs } });
   await flushAll();
   return w;
+}
+
+// Opens a card's Move to… menu and returns the named item.
+async function menuItem(w, jobId, label) {
+  await w.get(`[data-testid="lane-job-menu-${jobId}"]`).trigger("click");
+  return w.get('[data-testid="lane-menu"]').findAll("button").find((b) => b.text() === label);
 }
 
 const partialCalls = () => getMock.mock.calls.filter(([u]) => String(u).includes("/api/dispatch/partial-jobs")).length;
@@ -162,7 +177,7 @@ describe("DispatchView — Partial Jobs", () => {
     ];
     const w = await mountBoard();
     expect(w.find('[data-testid="partial-job-job-parked"]').exists()).toBe(false);
-    const lane = w.find('[data-testid="holding-job-ha-parts-job-parked"]');
+    const lane = w.find('[data-testid="lane-job-ha-parts-job-parked"]');
     expect(lane.exists()).toBe(true);
     expect(lane.text()).toContain("Dana Ruiz");
     expect(w.find('[data-testid="partial-job-job-rts"]').exists()).toBe(true);
@@ -172,10 +187,10 @@ describe("DispatchView — Partial Jobs", () => {
     holdingAreas = [{ id: "ha-parts", name: "Needs Parts" }];
     partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts", scheduled_duration_hours: 3, effective_duration_hours: 3 }];
     const w = await mountBoard();
-    const total = w.get('[data-testid="holding-area-total-ha-parts"]').text();
+    const total = w.get('[data-testid="lane-total-ha-parts"]').text();
     expect(total).toContain(`${formatDurationHours(3)} queued`);
     expect(total).not.toContain("no-est");
-    await w.get('[data-testid="holding-job-ha-parts-job-7"]').trigger("click");
+    await w.get('[data-testid="lane-job-ha-parts-job-7"]').trigger("click");
     await flushAll();
     const drawer = w.get(".job-drawer-content").text();
     expect(drawer).toContain("Technician: Mike");
@@ -187,11 +202,26 @@ describe("DispatchView — Partial Jobs", () => {
     partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts" }];
     const w = await mountBoard();
     patchMock.mockImplementation(() => { partialRows = [PARTIAL]; return Promise.resolve({}); });
-    const release = w.get('[data-testid="holding-job-ha-parts-job-7"]').findAll("button").find((b) => b.text() === "Release");
+    const release = await menuItem(w, "job-7", "Release from Needs Parts");
     await release.trigger("click");
     await flushAll();
     expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-7", { holding_area_id: null });
     expect(w.find('[data-testid="partial-job-job-7"]').exists()).toBe(true);
+  });
+
+  it("Move to… on a parked partial job moves only its lane, and Undo puts that lane back", async () => {
+    holdingAreas = [{ id: "ha-parts", name: "Needs Parts" }, { id: "ha-wait", name: "Waiting on doors" }];
+    partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts" }];
+    const w = await mountBoard();
+    patchMock.mockResolvedValue({});
+    await (await menuItem(w, "job-7", "Waiting on doors")).trigger("click");
+    await flushAll();
+    expect(patchMock).toHaveBeenCalledWith("/api/jobs/job-7", { holding_area_id: "ha-wait" });
+    patchMock.mockClear();
+    await w.get('[data-testid="board-undo-button"]').trigger("click");
+    await flushAll();
+    // The crew a partial job keeps for its next day is never in either write.
+    expect(patchMock.mock.calls).toEqual([["/api/jobs/job-7", { holding_area_id: "ha-parts" }]]);
   });
 
   it("Release leaves the lane even when the job was last worked on the board day", async () => {
@@ -201,10 +231,10 @@ describe("DispatchView — Partial Jobs", () => {
     boardJobs = [{ ...today, technician_id: "tech-1" }];
     const w = await mountBoard();
     patchMock.mockImplementation(() => { partialRows = [{ ...today, holding_area_id: null }]; return Promise.resolve({}); });
-    const release = w.get('[data-testid="holding-job-ha-parts-job-7"]').findAll("button").find((b) => b.text() === "Release");
+    const release = await menuItem(w, "job-7", "Release from Needs Parts");
     await release.trigger("click");
     await flushAll();
-    expect(w.find('[data-testid="holding-job-ha-parts-job-7"]').exists()).toBe(false);
+    expect(w.find('[data-testid="lane-job-ha-parts-job-7"]').exists()).toBe(false);
   });
 
   it("a drop on a day that has passed books nothing and says why", async () => {

@@ -259,6 +259,161 @@
         </template>
       </Card>
 
+      <!-- Lane strip — every holding area as a compact lane directly above
+           the board, day and week alike (Doug, 2026-10-16). On the day board
+           the lanes used to sit under every tech column, each as tall as the
+           tallest one, so a job could not be dragged from one lane to another
+           or onto a tech: you cannot scroll mid-drag. Each lane is two rows of
+           small cards with its own scroll. The week board also carries "To
+           schedule" here, where a job goes back to; the day board has its
+           New Jobs queue under the tech columns. Every card has a Move to…
+           menu for the same moves without a drag. -->
+      <div v-if="viewMode === 'day' || viewMode === 'week'" class="lane-strip" data-testid="lane-strip">
+        <div
+          v-if="viewMode === 'week'"
+          class="week-queue"
+          :class="{ 'drag-over': dragOverTechId === 'unassigned-queue' }"
+          data-testid="week-queue"
+          @dragover.prevent="onDragOver('unassigned-queue')"
+          @dragleave="onWeekCellLeave"
+          @drop.prevent="moveToScheduleQueue($event)"
+        >
+          <span class="week-queue-label">
+            <i class="pi pi-inbox"></i> To schedule
+            <Badge v-if="weekQueueJobs.length" :value="weekQueueJobs.length" severity="danger" />
+          </span>
+          <div class="week-queue-chips">
+            <div
+              v-for="job in weekQueueJobs"
+              :key="job.card_key || job.id"
+              class="week-chip week-queue-chip"
+              :class="{ 'week-chip--partial': partialJobIds.has(String(job.id)) }"
+              :data-testid="`week-queue-${job.card_key || job.id}`"
+              draggable="true"
+              v-tooltip.bottom="weekChipTooltip(job)"
+              @dragstart="onDragStart(job, $event, null, 'week-queue')"
+              @dragend="draggingJobId = null"
+              @click="openJobDrawer(job)"
+            >
+              <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
+              <span class="week-chip-meta">{{ partialJobIds.has(String(job.id)) ? 'next day' : formatDurationHours(job.effective_duration_hours) }}</span>
+              <button
+                v-if="parkingHoldingAreas.length"
+                type="button"
+                class="lane-icon-button"
+                draggable="false"
+                v-tooltip.bottom="'Move to…'"
+                aria-label="Move to…"
+                :data-testid="`lane-job-menu-${job.id}`"
+                @click.stop="openLaneMenu($event, job)"
+              ><i class="pi pi-ellipsis-v"></i></button>
+            </div>
+            <span v-if="!weekQueueJobs.length" class="week-cell-note">Drop a job here to take it off the schedule</span>
+          </div>
+        </div>
+        <div v-if="parkingHoldingAreas.length || showRedLane" class="lane-areas">
+          <!-- Scheduled — Not Assigned (system lane, 2026-05-01): upcoming
+               dated jobs with no tech, from /api/dispatch/scheduled-unassigned.
+               Read-only — not a drop target, can't be deleted. Today's dated
+               jobs with no tech stay in the day's "New Jobs to Schedule". -->
+          <div v-if="showRedLane" class="week-queue lane-area lane-area--alert" data-testid="scheduled-unassigned-lane">
+            <div class="lane-head">
+              <span class="week-queue-label">
+                <span class="lane-dot" style="background: var(--p-red-500)"></span>
+                Scheduled — Not Assigned
+                <Badge v-if="scheduledUnassigned.length" :value="scheduledUnassigned.length" severity="danger" />
+              </span>
+            </div>
+            <div class="week-queue-chips">
+              <div
+                v-for="job in sortedScheduledUnassigned"
+                :key="job.id"
+                class="week-chip week-queue-chip lane-chip scheduled-unassigned-card"
+                :class="{ 'scheduled-overdue': isOverdue(job) }"
+                :data-testid="`scheduled-unassigned-job-${job.id}`"
+                draggable="true"
+                v-tooltip.bottom="weekChipTooltip(job)"
+                @dragstart="onDragStart(job, $event)"
+                @dragend="draggingJobId = null"
+                @click="openJobDrawer(job)"
+              >
+                <span class="week-chip-customer">{{ displayCustomer(job) === 'No customer attached (lead)' ? '—' : displayCustomer(job) }}</span>
+                <span class="week-chip-meta">{{ isOverdue(job) ? 'OVERDUE · ' : '' }}{{ formatScheduled(job.scheduled_at) }}</span>
+              </div>
+              <span v-if="!scheduledUnassigned.length" class="week-cell-note">No upcoming jobs missing a tech.</span>
+            </div>
+          </div>
+          <div
+            v-for="area in parkingHoldingAreas"
+            :key="area.id"
+            class="week-queue lane-area"
+            :class="{ 'drag-over': dragOverTechId === area.id }"
+            :style="{ borderLeft: '3px solid ' + area.color }"
+            :data-testid="`lane-${area.id}`"
+            @dragover.prevent="onDragOver(area.id)"
+            @dragleave="onWeekCellLeave"
+            @drop.prevent="moveToHoldingArea($event, area.id)"
+          >
+            <div class="lane-head">
+              <span class="week-queue-label">
+                <span class="lane-dot" :style="{ background: area.color }"></span>
+                {{ area.name }}
+                <Badge v-if="getHoldingAreaJobs(area.id).length" :value="getHoldingAreaJobs(area.id).length" severity="info" />
+              </span>
+              <span v-if="getHoldingAreaJobs(area.id).length" class="lane-total" :data-testid="`lane-total-${area.id}`">
+                {{ formatDurationHours(sumDurationHours(getHoldingAreaJobs(area.id)).known) }} queued
+                <span v-if="sumDurationHours(getHoldingAreaJobs(area.id)).unknown" class="tech-capacity-unknown">
+                  + {{ sumDurationHours(getHoldingAreaJobs(area.id)).unknown }} no-est
+                </span>
+              </span>
+              <button
+                v-if="viewMode === 'day'"
+                type="button"
+                class="lane-icon-button lane-delete"
+                v-tooltip.bottom="'Delete this area'"
+                :aria-label="`Delete ${area.name}`"
+                :data-testid="`lane-delete-${area.id}`"
+                @click="deleteHoldingArea(area)"
+              ><i class="pi pi-trash"></i></button>
+            </div>
+            <div class="week-queue-chips">
+              <div
+                v-for="job in getHoldingAreaJobs(area.id)"
+                :key="job.card_key || job.id"
+                class="week-chip week-queue-chip lane-chip"
+                :style="{ borderLeftColor: area.color }"
+                :data-testid="`lane-job-${area.id}-${job.id}`"
+                :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
+                v-tooltip.bottom="weekChipTooltip(job)"
+                @dragstart="onDragStart(job, $event, null, `area:${area.id}`)"
+                @dragend="draggingJobId = null"
+                @click="openJobDrawer(job)"
+              >
+                <span class="week-chip-customer">{{ displayCustomer(job) === 'No customer attached (lead)' ? '—' : displayCustomer(job) }}</span>
+                <span v-if="displayTitle(job)" class="lane-chip-title">{{ displayTitle(job) }}</span>
+                <span class="week-chip-meta">{{ formatDurationHours(job.effective_duration_hours) }}</span>
+                <button
+                  type="button"
+                  class="lane-icon-button"
+                  draggable="false"
+                  v-tooltip.bottom="'Move to…'"
+                  aria-label="Move to…"
+                  :data-testid="`lane-job-menu-${job.id}`"
+                  @click.stop="openLaneMenu($event, job)"
+                ><i class="pi pi-ellipsis-v"></i></button>
+              </div>
+              <span v-if="!getHoldingAreaJobs(area.id).length" class="week-cell-note">Drop jobs here</span>
+            </div>
+          </div>
+          <Button v-if="viewMode === 'day'" icon="pi pi-plus" label="Add Area" size="small" severity="secondary" text
+            class="lane-add" @click="showAddAreaDialog = true" data-testid="add-holding-area" />
+        </div>
+        <div v-else-if="viewMode === 'day'">
+          <Button label="Set Up Holding Areas" icon="pi pi-plus" severity="secondary" size="small"
+            @click="seedHoldingAreas" data-testid="seed-holding-areas" />
+        </div>
+      </div>
+
       <!-- Day View -->
       <div v-if="viewMode === 'day'" style="display: flex; flex-direction: column;">
         <!-- Unassigned Jobs — SECOND, directly under the tech grid.
@@ -410,6 +565,17 @@
                     :data-testid="`schedule-job-${job.id}`"
                     @click="openScheduleDialog(job.id)"
                   />
+                  <Button
+                    v-if="parkingHoldingAreas.length"
+                    icon="pi pi-ellipsis-v"
+                    severity="secondary"
+                    text
+                    size="small"
+                    v-tooltip="'Move to…'"
+                    aria-label="Move to…"
+                    :data-testid="`lane-job-menu-${job.id}`"
+                    @click="openLaneMenu($event, job)"
+                  />
                 </div>
               </div>
               <p v-if="!unassignedJobs.length" class="empty-message drop-hint">
@@ -508,107 +674,6 @@
           </Card>
         </div>
 
-        <!-- Holding Areas — LAST. These are parking lots (Needs Parts, Waiting
-             on doors); the dispatcher visits them occasionally, unlike the tech
-             grid and the scheduling queue above, which they work between all
-             day. Keeping them here is what makes those two adjacent. -->
-        <div v-if="parkingHoldingAreas.length || dispatchSettings.dispatch_show_unassigned_lane" class="holding-areas-section" style="order: 4;">
-          <div class="holding-areas-header">
-            <h3>Holding Areas</h3>
-            <Button icon="pi pi-plus" label="Add Area" size="small" severity="secondary"
-              @click="showAddAreaDialog = true" data-testid="add-holding-area" />
-          </div>
-          <div class="holding-areas-grid">
-            <!-- Scheduled — Not Assigned (system lane, 2026-05-01).
-                 Shows upcoming scheduled jobs with no tech, sourced from
-                 /api/dispatch/scheduled-unassigned. Read-only — not a drop
-                 target, can't be deleted. Today's scheduled-no-tech jobs
-                 stay in the per-day "New Jobs to Schedule" column above. -->
-            <Card v-if="dispatchSettings.dispatch_show_unassigned_lane"
-              class="holding-area-col scheduled-unassigned-col"
-              :style="{ borderTop: '3px solid #dc2626' }"
-              data-testid="scheduled-unassigned-lane">
-              <template #title>
-                <div class="holding-area-title">
-                  <span style="color: #dc2626">Scheduled — Not Assigned</span>
-                  <Tag v-if="scheduledUnassigned.length" :value="String(scheduledUnassigned.length)" severity="danger" rounded />
-                </div>
-              </template>
-              <template #content>
-                <div v-for="job in sortedScheduledUnassigned" :key="job.id"
-                  class="job-card holding-job-card scheduled-unassigned-card"
-                  :data-testid="`scheduled-unassigned-job-${job.id}`"
-                  :class="{ 'scheduled-overdue': isOverdue(job) }"
-                  :style="{ borderLeft: '3px solid ' + (isOverdue(job) ? '#7f1d1d' : '#dc2626'), cursor: 'grab' }"
-                  draggable="true"
-                  @dragstart="onDragStart(job, $event)"
-                  @dragend="draggingJobId = null"
-                  @click="openJobDrawer(job)">
-                  <div class="job-customer-name">
-                    <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
-                    {{ displayCustomer(job) === 'No customer attached (lead)' ? '—' : displayCustomer(job) }}
-                    <Tag v-if="isOverdue(job)" value="OVERDUE" severity="danger" style="margin-left:0.4rem; font-size:0.65rem" />
-                  </div>
-                  <p class="job-line"><i class="pi pi-calendar"></i> {{ formatScheduled(job.scheduled_at) }}</p>
-                  <p class="job-line muted">{{ job.title || job.job_number }}</p>
-                </div>
-                <p v-if="!scheduledUnassigned.length" class="empty-message">
-                  <i class="pi pi-check-circle"></i> No upcoming jobs missing a tech.
-                </p>
-              </template>
-            </Card>
-            <Card v-for="area in parkingHoldingAreas" :key="area.id" class="holding-area-col"
-              :style="{ borderTop: '3px solid ' + area.color }"
-              @dragover.prevent="onDragOver(area.id)"
-              @dragleave="dragOverTechId = null"
-              @drop.prevent="moveToHoldingArea($event, area.id)"
-              :class="{ 'drag-over': dragOverTechId === area.id }">
-              <template #title>
-                <div class="holding-area-title">
-                  <span :style="{ color: area.color }">{{ area.name }}</span>
-                  <Tag v-if="getHoldingAreaJobs(area.id).length" :value="String(getHoldingAreaJobs(area.id).length)" severity="info" rounded />
-                  <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" text size="small" severity="danger"
-                    @click="deleteHoldingArea(area.id)" />
-                </div>
-                <div v-if="getHoldingAreaJobs(area.id).length" class="holding-area-total" :data-testid="`holding-area-total-${area.id}`">
-                  {{ formatDurationHours(sumDurationHours(getHoldingAreaJobs(area.id)).known) }} queued
-                  <span v-if="sumDurationHours(getHoldingAreaJobs(area.id)).unknown" class="tech-capacity-unknown">
-                    + {{ sumDurationHours(getHoldingAreaJobs(area.id)).unknown }} no-est
-                  </span>
-                </div>
-              </template>
-              <template #content>
-                <div v-for="job in getHoldingAreaJobs(area.id)" :key="job.card_key || job.id"
-                  class="job-card holding-job-card" :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
-                  :style="{ borderLeft: '3px solid ' + area.color, cursor: 'pointer' }"
-                  :data-testid="`holding-job-${area.id}-${job.id}`"
-                  @dragstart="onDragStart(job, $event)"
-                  @dragend="draggingJobId = null"
-                  @click="openJobDrawer(job)">
-                  <div class="job-customer-name">{{ displayCustomer(job) === 'No customer attached (lead)' ? '' : displayCustomer(job) }}</div>
-                  <div v-if="displayTitle(job)" class="job-line holding-job-title">{{ displayTitle(job) }}</div>
-                  <Tag :value="area.name" size="small" class="holding-area-tag"
-                    :style="{ backgroundColor: area.color, color: readableText(area.color), borderColor: area.color }" />
-                  <JobStateChip v-if="job.display_state || job.status" :job="job" :show-icon="false" />
-                  <Button label="Release" icon="pi pi-arrow-right" size="small" text
-                    @click.stop="releaseFromHoldingArea(job.id, job)" />
-                </div>
-                <p v-if="!getHoldingAreaJobs(area.id).length" class="empty-message drop-hint">
-                  <i class="pi pi-inbox"></i> Drop jobs here
-                </p>
-              </template>
-            </Card>
-          </div>
-        </div>
-        <!-- order must track the holding-areas section above (3), not drift
-             from it — this is the same block in its empty state. It was left
-             at order:1 when that section moved, which put a "Set Up Holding
-             Areas" button up next to the tech grid on any board with no
-             holding areas configured. -->
-        <div v-else style="order: 4;">
-          <Button label="Set Up Holding Areas" icon="pi pi-plus" severity="secondary" size="small"
-            @click="seedHoldingAreas" data-testid="seed-holding-areas" class="mb-3" />
-        </div>
       </div>
 
       <!-- Sprint dispatch-capacity (2026-05-20) — per-tech efficiency leaderboard -->
@@ -623,82 +688,6 @@
            already had, with that tech. The arrows step a whole week here.
            Same shape as ServiceTitan's Weekly Dispatch Board. -->
       <template v-if="viewMode === 'week'">
-        <!-- Drag sources and drop targets for the week: jobs with no date
-             yet, partial jobs waiting on their next day, and the holding
-             areas. Compact strips above the grid, because you cannot scroll
-             mid-drag. Always drawn: an empty strip is still where a job goes
-             back to (Doug, 2026-10-16 — the strip only rendered when it had
-             cards and took no drop, and the holding areas were not on the
-             week board at all). -->
-        <div class="week-lanes">
-          <div
-            class="week-queue"
-            :class="{ 'drag-over': dragOverTechId === 'unassigned-queue' }"
-            data-testid="week-queue"
-            @dragover.prevent="onDragOver('unassigned-queue')"
-            @dragleave="onWeekCellLeave"
-            @drop.prevent="moveToScheduleQueue($event)"
-          >
-            <span class="week-queue-label">
-              <i class="pi pi-inbox"></i> To schedule
-              <Badge v-if="weekQueueJobs.length" :value="weekQueueJobs.length" severity="danger" />
-            </span>
-            <div class="week-queue-chips">
-              <div
-                v-for="job in weekQueueJobs"
-                :key="job.card_key || job.id"
-                class="week-chip week-queue-chip"
-                :class="{ 'week-chip--partial': partialJobIds.has(String(job.id)) }"
-                :data-testid="`week-queue-${job.card_key || job.id}`"
-                draggable="true"
-                v-tooltip.bottom="weekChipTooltip(job)"
-                @dragstart="onDragStart(job, $event, null, 'week-queue')"
-                @dragend="draggingJobId = null"
-                @click="openJobDrawer(job)"
-              >
-                <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
-                <span class="week-chip-meta">{{ partialJobIds.has(String(job.id)) ? 'next day' : formatDurationHours(job.effective_duration_hours) }}</span>
-              </div>
-              <span v-if="!weekQueueJobs.length" class="week-cell-note">Drop a job here to take it off the schedule</span>
-            </div>
-          </div>
-          <div v-if="parkingHoldingAreas.length" class="week-areas">
-            <div
-              v-for="area in parkingHoldingAreas"
-              :key="area.id"
-              class="week-queue week-area"
-              :class="{ 'drag-over': dragOverTechId === area.id }"
-              :style="{ borderLeft: '3px solid ' + area.color }"
-              :data-testid="`week-area-${area.id}`"
-              @dragover.prevent="onDragOver(area.id)"
-              @dragleave="onWeekCellLeave"
-              @drop.prevent="moveToHoldingArea($event, area.id)"
-            >
-              <span class="week-queue-label" :style="{ color: area.color }">
-                {{ area.name }}
-                <Badge v-if="getHoldingAreaJobs(area.id).length" :value="getHoldingAreaJobs(area.id).length" severity="info" />
-              </span>
-              <div class="week-queue-chips">
-                <div
-                  v-for="job in getHoldingAreaJobs(area.id)"
-                  :key="job.card_key || job.id"
-                  class="week-chip week-queue-chip"
-                  :data-testid="`week-area-job-${area.id}-${job.id}`"
-                  :draggable="job.visit_id && !job.visit_movable ? 'false' : 'true'"
-                  v-tooltip.bottom="weekChipTooltip(job)"
-                  @dragstart="onDragStart(job, $event, null, `area:${area.id}`)"
-                  @dragend="draggingJobId = null"
-                  @click="openJobDrawer(job)"
-                >
-                  <span class="week-chip-customer">{{ displayCustomer(job) }}</span>
-                  <span v-if="job.scheduled_at" class="week-chip-meta">{{ formatScheduled(job.scheduled_at) }}</span>
-                </div>
-                <span v-if="!getHoldingAreaJobs(area.id).length" class="week-cell-note">Drop jobs here</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
         <div class="week-board-scroll">
           <div class="week-board" data-testid="week-board">
             <div class="week-corner">Tech</div>
@@ -998,6 +987,20 @@
           <p v-if="visitDayLabel(drawerJob)" class="job-drawer-line" data-testid="dispatch-job-drawer-day">
             <strong>Visit:</strong> {{ visitDayLabel(drawerJob) }}
           </p>
+          <p v-if="drawerLaneName" class="job-drawer-line" data-testid="dispatch-job-drawer-lane">
+            <strong>Holding area:</strong> {{ drawerLaneName }}
+          </p>
+          <Button
+            v-if="parkingHoldingAreas.length && !isTerminalJob(drawerJob) && canPark(drawerJob)"
+            label="Move to…"
+            icon="pi pi-arrow-right-arrow-left"
+            severity="secondary"
+            outlined
+            class="w-full"
+            size="small"
+            data-testid="dispatch-job-move"
+            @click="(e) => openLaneMenu(e, drawerJob)"
+          />
           <!-- The board's ONE way to complete a job (2026-08-28, #526). Prod:
                the owner submitted 8 of the last 19 closeouts — the office
                DOES close jobs out, and the backend already handles a non-tech
@@ -1025,6 +1028,16 @@
           <p class="muted">Select a job to see details.</p>
         </div>
       </Drawer>
+      <!-- One menu for every card's Move to… (lanes, and Release). -->
+      <Menu ref="laneMenu" :model="laneMenuItems" :popup="true" data-testid="lane-menu" />
+      <!-- The last lane move or Release, for a few seconds: one click puts
+           the job back where it was. -->
+      <div v-if="lastMove" class="board-undo-bar" role="status" data-testid="board-undo">
+        <span>{{ lastMove.text }}</span>
+        <Button label="Undo" size="small" text data-testid="board-undo-button" @click="undoLastMove" />
+        <Button icon="pi pi-times" size="small" text severity="secondary" aria-label="Dismiss"
+          data-testid="board-undo-dismiss" @click="dismissUndo" />
+      </div>
       <div v-if="liveTechs.length" class="card live-techs-card" data-testid="live-techs-card">
         <div class="card-header">
           <h3>Live Techs (last 30 min)</h3>
@@ -1072,6 +1085,7 @@ import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
 import Drawer from 'primevue/drawer';
+import Menu from 'primevue/menu';
 import Select from 'primevue/select';
 import SelectButton from 'primevue/selectbutton';
 import Tag from 'primevue/tag';
@@ -1116,12 +1130,16 @@ async function loadLaborExceptions() {
 // Office-only (jobs.read_all): the board is also opened by roles without it,
 // so don't ask rather than eat a 403 on every poll.
 const lateOpenJobs = ref([]);
-// Folding either alert card holds for this browser session only (2026-10-15):
-// it no longer has to be re-folded on every date change or reload, and a
-// fresh tab still opens with the rows showing, as before.
+// Either alert card starts folded to its one-line header and count (Doug,
+// 2026-10-16: open, the two tables pushed the tech columns off the first
+// screen). Opening or folding one holds for this browser session
+// (2026-10-15), so it is not undone by a date change or a reload.
 function sessionFlag(key) {
-  const flag = ref(false);
-  try { flag.value = window.sessionStorage.getItem(key) === '1'; } catch { /* storage blocked */ }
+  const flag = ref(true);
+  try {
+    const saved = window.sessionStorage.getItem(key);
+    if (saved !== null) flag.value = saved === '1';
+  } catch { /* storage blocked */ }
   watch(flag, (v) => {
     try { window.sessionStorage.setItem(key, v ? '1' : '0'); } catch { /* storage blocked */ }
   });
@@ -1958,20 +1976,6 @@ function techName(techId) {
   if (!techId) return 'Unassigned';
   const t = technicians.value.find((tech) => String(tech.id) === String(techId));
   return t ? t.name : 'Unknown';
-}
-
-// Readable foreground for an arbitrary holding-area color. GDX's areas span
-// dark (blue/purple) to light (amber #f59e0b) — a hardcoded white is
-// unreadable on the light ones. Perceived-luminance threshold picks dark
-// ink on light fills, white on dark fills.
-function readableText(hex) {
-  const c = String(hex || '').replace('#', '');
-  if (c.length !== 6) return '#ffffff';
-  const r = parseInt(c.slice(0, 2), 16);
-  const g = parseInt(c.slice(2, 4), 16);
-  const b = parseInt(c.slice(4, 6), 16);
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return lum > 0.6 ? '#1f2937' : '#ffffff';
 }
 
 function formatLatLng(lat, lng) {
@@ -3077,16 +3081,19 @@ function getHoldingAreaJobs(areaId) {
 // date edit) and the partial list is re-read. A partial job last worked on
 // the board day is in `jobs` too, so that copy follows the server.
 async function setPartialHoldingArea(jobId, areaId) {
+  let ok = false;
   await withBoardWrite(async () => {
     try {
       await api.patch(`/api/jobs/${jobId}`, { holding_area_id: areaId });
       const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
       if (idx !== -1) jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId };
+      ok = true;
     } catch {
       // useApi has already shown the server's refusal.
     }
     await loadPartialJobs({ keepOnError: true });
   });
+  return ok;
 }
 
 async function moveToHoldingArea(event, areaId) {
@@ -3106,19 +3113,52 @@ async function moveToHoldingArea(event, areaId) {
     return;
   }
   const card = takeDraggedVisit(jobId);
-  if (card) {
-    draggingJobId.value = null;
+  draggingJobId.value = null;
+  await moveJobToArea(jobId, areaId, card);
+}
+
+// Park a job in a holding area. A drop and the Move to… menu both land
+// here; the tech comes off, the date stays.
+function refuseOffScreenPark(job) {
+  const day = job.scheduled_at ? new Date(job.scheduled_at).toLocaleDateString() : 'another day';
+  toast.add({
+    severity: 'warn',
+    summary: 'Nothing was moved',
+    detail: `${job.customer_name || job.title || 'That job'} is dated ${day}, and a holding area lists the jobs of the day on screen. Open that day to park it, or give it a tech.`,
+    life: 6000,
+  });
+}
+
+// The jobs a lane would draw once parked: dated (or undated, so waiting) on
+// a day on screen, or partial. Loaded is not enough: a day's read also
+// brings the days either side, which no lane on this screen lists.
+function canPark(job) {
+  if (!job) return false;
+  const id = String(job.id);
+  return partialJobIds.value.has(id) || holdingAreaSourceJobs.value.some((j) => String(j.id) === id);
+}
+
+async function moveJobToArea(jobId, areaId, card = null, row = null) {
+  if (card?.visit_id) {
     refuseWholeJobDrop(card, 'A holding area');
     return;
   }
+  const moved = `Moved to ${areaName(areaId)}`;
   if (partialJobIds.value.has(String(jobId))) {
-    draggingJobId.value = null;
-    await setPartialHoldingArea(jobId, areaId);
+    const before = partialJobs.value.find((j) => String(j.id) === String(jobId));
+    if (await setPartialHoldingArea(jobId, areaId)) {
+      offerUndo(moved, jobId, { holding_area_id: before?.holding_area_id ?? null });
+    }
     return;
   }
   const job = jobs.value.find((j) => String(j.id) === String(jobId));
-  if (!job) return;
-  draggingJobId.value = null;
+  if (!job || !canPark(job)) {
+    // A lane lists the jobs dated on screen, so a job dated another day (the
+    // red lane's) would be parked out of sight: say so, write nothing.
+    const other = job || findBoardJob(jobId) || row;
+    if (other) refuseOffScreenPark(other);
+    return;
+  }
   if (isTerminalJob(job)) {
     toast.add({
       severity: 'warn',
@@ -3147,12 +3187,16 @@ async function moveToHoldingArea(event, areaId) {
     // Looked up again: the board can refresh while the confirm is open.
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     if (idx === -1) return;
+    // Undo puts back what this move changed: the lane, and the crew only
+    // when the move took it off.
+    const undo = restorePatch(jobs.value[idx], { crew: !keepCrew });
     jobs.value[idx] = keepCrew
       ? { ...jobs.value[idx], holding_area_id: areaId }
       : { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
     const patch = keepCrew ? { holding_area_id: areaId } : { assigned_to: null, holding_area_id: areaId };
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
+      offerUndo(moved, jobId, undo);
     } catch { await refreshBoard(); }
   });
 }
@@ -3190,7 +3234,10 @@ async function moveToScheduleQueue(event) {
   // it, keeping its crew for the next day.
   if (partialJobIds.value.has(String(jobId))) {
     draggingJobId.value = null;
-    await setPartialHoldingArea(jobId, areaId);
+    const before = partialJobs.value.find((j) => String(j.id) === String(jobId));
+    if (await setPartialHoldingArea(jobId, areaId)) {
+      offerUndo('Moved to New Jobs to Schedule', jobId, { holding_area_id: before?.holding_area_id ?? null });
+    }
     return;
   }
   const job = jobs.value.find((j) => String(j.id) === String(jobId));
@@ -3212,46 +3259,152 @@ async function moveToScheduleQueue(event) {
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     if (idx === -1) return;
     const patch = { assigned_to: null, holding_area_id: areaId, scheduled_at: null };
+    const undo = restorePatch(jobs.value[idx], { crew: true, date: true });
     jobs.value[idx] = {
       ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [], scheduled_at: null,
     };
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
+      offerUndo('Taken off the schedule', jobId, undo);
     } catch { await refreshBoard(); }
   });
 }
 
 async function releaseFromHoldingArea(jobId, card = null) {
+  const job = card || findBoardJob(jobId) || partialJobs.value.find((j) => String(j.id) === String(jobId));
+  const fromArea = job?.holding_area_id ?? null;
+  const released = `Released from ${areaName(fromArea)}`;
   if (partialJobIds.value.has(String(jobId))) {
-    await setPartialHoldingArea(jobId, null);
+    const ok = await setPartialHoldingArea(jobId, null);
     // The lane's card may be a visit card, which only the visits read redraws.
     if (card?.visit_id) await fetchJobs();
+    if (ok) offerUndo(released, jobId, { holding_area_id: fromArea });
     return;
   }
-  // A multi-day job is drawn from its visits, so it has no job row to edit
-  // in place: write the area and re-read.
-  if (card?.visit_id) {
+  // A multi-day job is drawn from its visits, and a job dated off the screen
+  // is not loaded, so neither has a job row to edit in place: write the area
+  // and re-read.
+  const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
+  if (card?.visit_id || idx === -1) {
     await withBoardWrite(async () => {
       try {
         await api.patch(`/api/jobs/${jobId}`, { holding_area_id: null });
+        offerUndo(released, jobId, { holding_area_id: fromArea });
       } catch {
         // useApi has already shown the server's refusal.
       }
-      await fetchJobs();
+      await refreshBoard();
     });
     return;
   }
-  const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
-  if (idx === -1) return;
   await withBoardWrite(async () => {
     jobs.value[idx] = { ...jobs.value[idx], holding_area_id: null };
     try {
       await api.patch(`/api/jobs/${jobId}`, { holding_area_id: null });
+      offerUndo(released, jobId, { holding_area_id: fromArea });
     } catch { await refreshBoard(); }
   });
 }
 
-async function deleteHoldingArea(areaId) {
+// --- Move to… and Undo (Doug, 2026-10-16) ---
+// Every move a lane takes by drag is also on each card's Move to… menu, so
+// nothing needs a drag across the screen; and the last move or Release can
+// be put back with one click for a few seconds after.
+const laneMenu = ref(null);
+const laneMenuJob = ref(null);
+
+function areaName(areaId) {
+  const area = (holdingAreas.value || []).find((a) => String(a.id) === String(areaId));
+  return area?.name || 'the holding area';
+}
+
+const drawerLaneName = computed(() => (isParked(drawerJob.value) ? areaName(drawerJob.value.holding_area_id) : ''));
+
+const showRedLane = computed(() => viewMode.value === 'day' && !!dispatchSettings.value.dispatch_show_unassigned_lane);
+
+function openLaneMenu(event, job) {
+  laneMenuJob.value = job;
+  laneMenu.value?.toggle(event);
+}
+
+const laneMenuItems = computed(() => {
+  const job = laneMenuJob.value;
+  if (!job) return [];
+  const here = isParked(job) ? String(job.holding_area_id) : null;
+  // One day of a multi-day job: a lane holds the whole job, so a move would
+  // only be refused. Say where it moves instead of offering it.
+  const items = [{
+    label: 'Move to',
+    items: job.visit_id
+      ? [{ label: 'Multi-day job: move it on its Visits card', icon: 'pi pi-info-circle', disabled: true }]
+      : parkingHoldingAreas.value
+        .filter((a) => String(a.id) !== here)
+        .map((a) => ({ label: a.name, icon: 'pi pi-arrow-right', command: () => moveJobToArea(job.id, a.id, null, job) })),
+  }];
+  if (here) {
+    items.push({ separator: true });
+    items.push({ label: `Release from ${areaName(here)}`, icon: 'pi pi-sign-out', command: () => releaseFromHoldingArea(job.id, job) });
+  }
+  return items;
+});
+
+// What puts a job back as it was before a lane move: its lane, and the crew
+// or the date the move took off it.
+function restorePatch(job, { crew = false, date = false } = {}) {
+  const patch = { holding_area_id: job?.holding_area_id ?? null };
+  if (crew) {
+    const before = crewOf(job);
+    if (before.length) {
+      patch.assigned_tech_ids = before;
+      patch.lead_tech_id = before[0];
+    }
+  }
+  if (date && job?.scheduled_at) patch.scheduled_at = job.scheduled_at;
+  return patch;
+}
+
+const UNDO_MS = 10000;
+const lastMove = ref(null);
+let lastMoveTimer = null;
+
+function offerUndo(text, jobId, patch) {
+  clearTimeout(lastMoveTimer);
+  lastMove.value = { text, jobId: String(jobId), patch };
+  lastMoveTimer = setTimeout(() => { lastMove.value = null; }, UNDO_MS);
+}
+
+function dismissUndo() {
+  clearTimeout(lastMoveTimer);
+  lastMove.value = null;
+}
+
+async function undoLastMove() {
+  const move = lastMove.value;
+  if (!move) return;
+  dismissUndo();
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${move.jobId}`, move.patch);
+    } catch {
+      // useApi has already shown the server's refusal.
+    }
+    await refreshBoard();
+  });
+}
+
+// The trash sits in a lane's one-line header now, a short reach from the
+// cards, so it asks first.
+async function deleteHoldingArea(area) {
+  const count = getHoldingAreaJobs(area.id).length;
+  const ok = await confirmAsync({
+    header: `Delete "${area.name}"?`,
+    message: count
+      ? `The ${count} job${count === 1 ? '' : 's'} in it leave the lane; nothing else about them changes.`
+      : 'The lane is empty.',
+    acceptLabel: 'Delete',
+  });
+  if (!ok) return;
+  const areaId = area.id;
   try {
     await api.del(`/api/holding-areas/${areaId}`);
     await fetchHoldingAreas();
@@ -3387,6 +3540,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearTimeout(lastMoveTimer);
   disposed = true;
   if (liveTechsTimer) clearInterval(liveTechsTimer);
 });
@@ -3644,14 +3798,6 @@ defineExpose({
 }
 
 /* Unassigned grid */
-/* Holding Areas */
-.holding-areas-section { margin: 1rem 0; }
-.holding-areas-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
-.holding-areas-header h3 { margin: 0; font-size: 1rem; }
-.holding-areas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.75rem; }
-.holding-area-col { min-height: 120px; }
-.holding-area-title { display: flex; align-items: center; gap: 0.5rem; }
-.holding-job-card { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 
 .unassigned-grid {
   display: grid;
@@ -3720,13 +3866,6 @@ defineExpose({
 .tech-capacity--over .tech-capacity-label { color: var(--p-red-500, #ef4444); }
 .tech-capacity--off { opacity: 0.55; }
 .job-duration { font-weight: 500; opacity: 0.85; }
-.holding-area-total {
-  margin-top: 0.2rem;
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color, #6b7280);
-  font-weight: 500;
-}
-
 /* Job cards */
 .job-card {
   border: 1px solid var(--p-content-border-color);
@@ -3845,21 +3984,83 @@ defineExpose({
   margin-right: 0.25rem;
 }
 .week-queue-chip { max-width: 16rem; }
-.week-lanes { margin-bottom: 0.5rem; }
-.week-lanes .week-queue.drag-over {
+.lane-strip .week-queue.drag-over {
   background: color-mix(in srgb, var(--p-primary-color) 18%, transparent);
   box-shadow: inset 0 0 0 2px var(--p-primary-color);
 }
-/* Holding areas sit side by side in one row so the grid stays on screen. */
-.week-areas {
+/* Holding areas sit side by side so every lane and the board stay on one
+   screen: a drag can reach any of them without a scroll. */
+.lane-areas {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 0.5rem;
 }
-.week-area {
-  flex: 1 1 14rem;
+.lane-area {
+  flex: 1 1 15rem;
   min-width: 0;
   margin-bottom: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.lane-area--alert { border-left: 3px solid var(--p-red-500); }
+.lane-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-width: 0;
+}
+.lane-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  flex: none;
+}
+.lane-total {
+  font-size: 0.7rem;
+  color: var(--p-text-muted-color);
+  white-space: nowrap;
+}
+.lane-head .lane-delete { margin-left: auto; }
+.lane-area .week-queue-chips { width: 100%; }
+.lane-chip { max-width: 100%; align-items: center; }
+.lane-chip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  color: var(--p-text-muted-color);
+}
+.lane-icon-button {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--p-text-muted-color);
+  padding: 0 0.2rem;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.lane-icon-button:hover,
+.lane-icon-button:focus-visible { color: var(--p-text-color); background: var(--p-content-hover-background); }
+.lane-add { align-self: center; }
+.scheduled-overdue .week-chip-meta { color: var(--p-red-500); font-weight: 600; }
+.board-undo-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem 0.4rem 1rem;
+  border-radius: var(--p-border-radius);
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+  border: 1px solid var(--p-content-border-color);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 /* A long intake list scrolls inside two rows instead of pushing the grid
    down (scroll the strip first, then drag). */
@@ -4045,6 +4246,21 @@ defineExpose({
 
   .unassigned-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* On a phone the lanes stacked one per row run ~850px before the first tech;
+   one row that swipes sideways keeps the board in reach. */
+@media (max-width: 640px) {
+  .lane-areas {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    padding-bottom: 0.25rem;
+  }
+  .lane-area {
+    flex: 0 0 80%;
+    scroll-snap-align: start;
   }
 }
 

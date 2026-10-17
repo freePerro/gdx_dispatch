@@ -55,9 +55,11 @@ test('holding-area and job-assignment changes appear in Activity under the admin
   await page.getByTestId('add-holding-area').click();
   await page.getByTestId('new-area-name').fill(areaName);
   await page.getByTestId('add-holding-area-submit').click();
-  const card = page.locator('.holding-area-col', { hasText: areaName });
+  const card = page.locator('.lane-area', { hasText: areaName });
   await expect(card).toBeVisible({ timeout: 15000 });
-  await card.getByRole('button', { name: 'Delete' }).click();
+  await card.getByRole('button', { name: `Delete ${areaName}` }).click();
+  // The trash asks first (2026-10-16).
+  await page.locator('.p-confirmdialog').getByRole('button', { name: 'Delete' }).click();
   await expect(card).toHaveCount(0, { timeout: 15000 });
 
   // ── A job: add another tech, then remove them ─────────────────────────────
