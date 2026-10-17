@@ -20,6 +20,12 @@ Rules these tests keep (GDXA-59/63/67):
 * Trail rows are asserted by content, and each reversal test says which shape
   it is: A (one payment, the invoice re-opens) or B (two live payments, the
   invoice stays paid).
+* Every test runs on SQLite and on Postgres (GDXA-1394). The Postgres database
+  is built from the ORM, which carries no audit immutability guard (migration
+  107 installs it), so ``ensure_audit_table`` installs it on its own
+  connection while the payment is staged: the ``guard_present=false`` path
+  neither prod nor demo can show.
+  The Postgres arm skips without a reachable server and fails under CI.
 """
 from __future__ import annotations
 
@@ -29,37 +35,78 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.core.audit import AuditLog, TenantBase, log_audit_event_sync
+from gdx_dispatch.core.audit import AuditLog, TenantBase, audit_guard_present, log_audit_event_sync
 from gdx_dispatch.core.payments import handle_payment_webhook
-from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Payment
+from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Payment
 
 COMPANY = "tenant-test"
 
 
-@pytest.fixture
-def dbfile(tmp_path):
-    """A file-backed tenant DB: the session under test, plus a reader on a
-    second engine. Yields (session, reader, refuse) where ``refuse()`` installs
-    the storage-layer refusal."""
-    url = f"sqlite:///{tmp_path / 'tenant.db'}"
-    engine = create_engine(url, connect_args={"check_same_thread": False})
+def _sqlite_refusal(table, event, message):
+    return [
+        f"""
+        CREATE TRIGGER {table}_refuse_{event.lower()}
+        BEFORE {event} ON {table}
+        BEGIN
+            SELECT RAISE(ABORT, '{message}');
+        END;
+        """
+    ]
+
+
+def _pg_refusal(table, event, message):
+    name = f"{table}_refuse_{event.lower()}"
+    return [
+        f"""
+        CREATE FUNCTION {name}() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION '{message}'; END;
+        $$ LANGUAGE plpgsql
+        """,
+        f"""
+        CREATE TRIGGER {name} BEFORE {event} ON {table}
+            FOR EACH ROW EXECUTE FUNCTION {name}()
+        """,
+    ]
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+def dbfile(request, tmp_path):
+    """A tenant DB the test does not share: the session under test, plus a
+    reader on a second engine. Yields (session, reader, refuse) where
+    ``refuse(table="audit_logs", event="INSERT", message=...)`` installs a
+    storage-layer refusal in the dialect's own trigger syntax."""
+    if request.param == "sqlite":
+        url = f"sqlite:///{tmp_path / 'tenant.db'}"
+        kwargs = {"connect_args": {"check_same_thread": False}}
+        refusal = _sqlite_refusal
+    else:
+        url = request.getfixturevalue("pg_test_db")
+        kwargs = {}
+        refusal = _pg_refusal
+    engine = create_engine(url, **kwargs)
+    if request.param == "postgresql":
+        # structure.sql has drifted from the ORM (missing ``gl_settings``,
+        # missing ``customers`` columns, a varchar ``users.id``), so the clone
+        # is emptied and built from the ORM like the SQLite file.
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
     TenantBase.metadata.create_all(engine, checkfirst=True)
-    reader_engine = create_engine(url, connect_args={"check_same_thread": False})
+    if request.param == "postgresql":
+        with engine.connect() as conn:
+            assert audit_guard_present(conn) is False, (
+                "setup: the database must start unguarded, or the guard-install "
+                "path under a staged payment is never exercised"
+            )
+    reader_engine = create_engine(url, **kwargs)
     # Production's sessionmaker leaves expire_on_commit at its default True.
     session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
     reader = sessionmaker(bind=reader_engine)
 
-    def refuse():
+    def refuse(table="audit_logs", event="INSERT", message="audit storage refuses this row"):
         with engine.begin() as conn:
-            conn.execute(text(
-                """
-                CREATE TRIGGER audit_logs_refuse_insert
-                BEFORE INSERT ON audit_logs
-                BEGIN
-                    SELECT RAISE(ABORT, 'audit storage refuses this row');
-                END;
-                """
-            ))
+            for stmt in refusal(table, event, message):
+                conn.execute(text(stmt))
 
     yield session, reader, refuse
     session.close()
@@ -67,10 +114,19 @@ def dbfile(tmp_path):
     reader_engine.dispose()
 
 
+def _customer(db):
+    """A real customer: Postgres enforces ``invoices.customer_id``. No job —
+    the webhook path never reads ``invoice.job_id``."""
+    cust = Customer(id=uuid.uuid4(), name="GDXA-67 Customer", company_id=COMPANY)
+    db.add(cust)
+    db.flush()
+    return cust.id
+
+
 def _invoice(db, number, amount=500.00):
     """A sent invoice with a real line, so `_recalculate_invoice` keeps its total."""
     inv = Invoice(
-        customer_id=uuid.uuid4(), job_id=uuid.uuid4(), invoice_number=number,
+        customer_id=_customer(db), invoice_number=number,
         billing_type="standard", subtotal=amount, tax_amount=0, total=amount,
         balance_due=amount, status="sent", public_token=uuid.uuid4().hex,
         company_id=COMPANY,
@@ -87,7 +143,7 @@ def _invoice(db, number, amount=500.00):
 
 def _void_invoice(db, number):
     inv = Invoice(
-        customer_id=uuid.uuid4(), job_id=uuid.uuid4(), invoice_number=number,
+        customer_id=_customer(db), invoice_number=number,
         billing_type="standard", subtotal=150.00, tax_amount=12.00, total=162.00,
         balance_due=162.00, status="void", public_token=uuid.uuid4().hex,
         company_id=COMPANY,
@@ -307,18 +363,9 @@ def test_a_later_refusal_takes_the_payment_and_its_row_together(dbfile):
     the pre-GDXA-67 code too: since GDXA-352 the hoisted
     `ensure_audit_table` no longer commits, so this pins the contract
     rather than catching a live defect."""
-    db, reader, _ = dbfile
+    db, reader, refuse = dbfile
     inv = _void_invoice(db, "INV-67-ATOMIC")
-    with db.get_bind().begin() as conn:
-        conn.execute(text(
-            """
-            CREATE TRIGGER invoices_refuse_update
-            BEFORE UPDATE ON invoices
-            BEGIN
-                SELECT RAISE(ABORT, 'invoice storage refuses this update');
-            END;
-            """
-        ))
+    refuse("invoices", "UPDATE", "invoice storage refuses this update")
 
     with pytest.raises(Exception, match="invoice storage refuses this update"):
         handle_payment_webhook(_succeeded(inv, "pi_67_atomic", 16200), db)
@@ -326,3 +373,8 @@ def test_a_later_refusal_takes_the_payment_and_its_row_together(dbfile):
     assert _committed_payments(reader, inv) == [], "the payment rode the one commit"
     assert _committed_audit(reader, "payment_on_voided_invoice") == []
     assert _committed_invoice(reader, inv) == ("void", 162.0, False)
+    if db.get_bind().dialect.name == "postgresql":
+        # The guard went in on its own connection mid-transaction, and the
+        # caller's rollback did not take it: it was never in the caller's work.
+        with reader() as r:
+            assert audit_guard_present(r) is True

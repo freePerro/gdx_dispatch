@@ -1439,11 +1439,13 @@ def _audit_money_event(
     Since GDXA-352 `ensure_audit_table` never commits open work, and the
     helper is the one copy of the savepoint.
 
-    Proven on SQLite by `gdx_dispatch/tests/test_payments_audit_staged_work.py`:
-    with `audit_logs` refusing every INSERT the payment is still committed,
-    and with a later step of `_mark_invoice_paid` refused the payment and this
-    row are both absent, read back on a separate connection each time. Not
-    run against Postgres.
+    Proven on SQLite and Postgres by
+    `gdx_dispatch/tests/test_payments_audit_staged_work.py`: with `audit_logs`
+    refusing every INSERT the payment is still committed, and with a later
+    step of `_mark_invoice_paid` refused the payment and this row are both
+    absent, read back on a separate connection each time. The Postgres arm
+    starts with no immutability guard, so `ensure_audit_table` installs it
+    while the payment is staged (GDXA-1394).
     """
     from gdx_dispatch.core.audit import audit_best_effort_precommit
 
