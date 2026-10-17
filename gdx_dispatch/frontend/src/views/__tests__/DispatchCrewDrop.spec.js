@@ -1229,14 +1229,20 @@ describe("a job parked in a holding area", () => {
     expect(callsFor("job-6")[0][1]).toMatchObject({ assigned_tech_id: "tech-1", holding_area_id: null });
   });
 
-  it("a job under way, parked with its crew, keeps its lane when given another tech", async () => {
-    boardRows = [{ ...PARKED, lifecycle_stage: "In Progress", assigned_to: "tech-1", assigned_tech_ids: ["tech-1"], technician_id: "tech-1", lead_tech_id: "tech-1" }];
+  // A job under way keeps its crew (GDXA-1377), so it only moves along a crew
+  // member's row; that move keeps it parked (GDXA-1370).
+  it("a job under way, parked with its crew, keeps its lane when its time moves", async () => {
+    const UNDER_WAY = { ...PARKED, lifecycle_stage: "In Progress", assigned_to: "tech-1", assigned_tech_ids: ["tech-1"], technician_id: "tech-1", lead_tech_id: "tech-1" };
+    boardRows = [UNDER_WAY];
     const w = await mountBoard();
     patchMock.mockClear();
     timeline(w, "tech-3").vm.$emit("place", { jobId: "job-6", techId: "tech-3", startISO: at(0, 15).toISOString() });
     await flushAll();
-    expect(callsFor("job-6")).toHaveLength(1);
-    expect(callsFor("job-6")[0][1]).not.toHaveProperty("holding_area_id");
+    expect(callsFor("job-6")).toEqual([]);
+    timeline(w, "tech-1").vm.$emit("job-drag-start", UNDER_WAY, null);
+    timeline(w, "tech-1").vm.$emit("place", { jobId: "job-6", techId: "tech-1", startISO: at(0, 15).toISOString() });
+    await flushAll();
+    expect(callsFor("job-6")).toEqual([["/api/jobs/job-6", { scheduled_at: at(0, 15).toISOString() }]]);
   });
 
   // /audit 2026-10-17: a time move puts the job in its tech's day too.
