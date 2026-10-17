@@ -446,6 +446,44 @@ describe("dropping a crew job off the board", () => {
     expect(card.assigned_tech_ids).toEqual([]);
   });
 
+  // Doug, 2026-10-17: a job under way may be parked, but keeps its crew.
+  it("into a holding area, a job under way keeps its crew and asks nothing", async () => {
+    boardRows = [{ ...CREW, lifecycle_stage: "In Progress" }];
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.vm.$.setupState.moveToHoldingArea(drop, "ha-1");
+    await flushAll();
+    expect(confirmRequire).not.toHaveBeenCalled();
+    expect(jobPatches()).toEqual([["/api/jobs/job-1", { holding_area_id: "ha-1" }]]);
+    const card = w.vm.$.setupState.jobs.find((j) => j.id === "job-1");
+    expect(card.holding_area_id).toBe("ha-1");
+    expect(card.assigned_tech_ids).toEqual(CREW.assigned_tech_ids);
+    expect(card.technician_id).toBe(CREW.technician_id);
+  });
+
+  it("a parked job under way dragged from its tech's row onto its own lane says so and writes nothing", async () => {
+    boardRows = [{ ...CREW, lifecycle_stage: "In Progress", holding_area_id: "ha-1" }];
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.vm.$.setupState.moveToHoldingArea(drop, "ha-1");
+    await flushAll();
+    expect(jobPatches()).toEqual([]);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: "Nothing was moved" }));
+  });
+
+  it("into a holding area, a finished job is refused and nothing is written", async () => {
+    // The jobs list sends the label "Complete" in both fields.
+    boardRows = [{ ...CREW, lifecycle_stage: "Complete", status: "Complete" }];
+    confirmRequire.mockImplementation((o) => o.accept());
+    const w = await mountBoard();
+    patchMock.mockClear();
+    await w.vm.$.setupState.moveToHoldingArea(drop, "ha-1");
+    await flushAll();
+    expect(confirmRequire).not.toHaveBeenCalled();
+    expect(jobPatches()).toEqual([]);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: "Nothing was moved" }));
+  });
+
   it("a one-tech job drops into the queue without asking", async () => {
     boardRows = [SOLO];
     const w = await mountBoard();

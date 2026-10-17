@@ -1303,6 +1303,10 @@ function isTerminalJob(job) {
   const stage = String(job?.lifecycle_stage || '').toLowerCase();
   return stage === 'completed' || stage === 'cancelled' || isCompletedStatus(job?.status);
 }
+// The jobs list sends the stage as a label ("In Progress"), not the enum.
+function jobStage(job) {
+  return String(job?.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
 function openCloseout(job) {
   if (!job || isTerminalJob(job)) return;
   closeoutJob.value = job;
@@ -3115,14 +3119,40 @@ async function moveToHoldingArea(event, areaId) {
   const job = jobs.value.find((j) => String(j.id) === String(jobId));
   if (!job) return;
   draggingJobId.value = null;
-  if (!(await okToClearCrew(job))) return;
+  if (isTerminalJob(job)) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was moved',
+      detail: 'A finished job is not parked. Change it on the job page.',
+      life: 6000,
+    });
+    return;
+  }
+  // A job under way can be parked but keeps its crew: the techs are still
+  // on it (Doug, 2026-10-17). Only the lane is written.
+  const keepCrew = jobStage(job) === 'in_progress';
+  // Already in this lane: the drag from its tech's row would take the tech
+  // off, which a job under way does not allow, so there is nothing to do.
+  if (keepCrew && String(job.holding_area_id || '') === String(areaId)) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Nothing was moved',
+      detail: 'A job that is under way keeps its crew. Change it on the job page.',
+      life: 6000,
+    });
+    return;
+  }
+  if (!keepCrew && !(await okToClearCrew(job))) return;
   await withBoardWrite(async () => {
     // Looked up again: the board can refresh while the confirm is open.
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     if (idx === -1) return;
-    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
+    jobs.value[idx] = keepCrew
+      ? { ...jobs.value[idx], holding_area_id: areaId }
+      : { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
+    const patch = keepCrew ? { holding_area_id: areaId } : { assigned_to: null, holding_area_id: areaId };
     try {
-      await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
+      await api.patch(`/api/jobs/${jobId}`, patch);
     } catch { await refreshBoard(); }
   });
 }
@@ -3166,10 +3196,8 @@ async function moveToScheduleQueue(event) {
   const job = jobs.value.find((j) => String(j.id) === String(jobId));
   if (!job) return;
   draggingJobId.value = null;
-  // Work that is finished or under way keeps the day it was worked. The
-  // jobs list sends the stage as a label ("In Progress"), not the enum.
-  const stage = String(job.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if (isTerminalJob(job) || stage === 'in_progress') {
+  // Work that is finished or under way keeps the day it was worked.
+  if (isTerminalJob(job) || jobStage(job) === 'in_progress') {
     toast.add({
       severity: 'warn',
       summary: 'Nothing was moved',
