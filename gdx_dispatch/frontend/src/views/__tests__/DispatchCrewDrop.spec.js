@@ -23,6 +23,10 @@
  *     question, and dates the job to the board day as a one-tech pick does.
  *  8. Dropping a crew job into the New Jobs queue or a holding area takes
  *     every tech off it, so it asks first; a one-tech drop does not ask.
+ *  9. An undated job dropped on a tech opens "Schedule this job" (hours and
+ *     crew). With no hours of its own, the hours are prefilled from the
+ *     estimate's man-hours over the crew picked in the dialog, re-divided as
+ *     that crew changes until the scheduler types, and sent on Schedule.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -702,5 +706,172 @@ describe("booking an undated job by dropping it on a tech", () => {
     await flushAll();
     expect(dialog(w).exists()).toBe(false);
     expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-4", ["scheduled_at"]]]);
+  });
+
+  // GDXA-1262 carried into the booking dialog: a job with no hours of its own
+  // is prefilled from its estimate's man-hours over the crew picked in the
+  // dialog, and that figure is a suggestion the scheduler accepts with
+  // Schedule, so it is sent.
+  describe("a job with no hours of its own", () => {
+    const NO_HOURS = { ...UNDATED_SOLO, scheduled_duration_hours: null, effective_duration_hours: null };
+    const note = (w) => w.find('[data-testid="schedule-drop-from-estimate"]');
+    const suggestionCalls = () => getMock.mock.calls.filter(([u]) => String(u).includes("/suggested-duration"));
+    function withSuggestion(answer) {
+      const base = getMock.getMockImplementation();
+      getMock.mockImplementation((url) => {
+        if (!String(url).includes("/suggested-duration")) return base(url);
+        if (typeof answer === "function") return answer(String(url));
+        return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+      });
+    }
+    async function dropNoHours(w, techId = "tech-2") {
+      patchMock.mockClear();
+      placeAt1(w, techId);
+      await flushAll();
+    }
+
+    beforeEach(() => { boardRows = [NO_HOURS, SOLO]; });
+
+    it("prefills the estimate's man-hours for one tech, says so, and sends them", async () => {
+      const w = await mountBoard();
+      withSuggestion({ estimate_status: "accepted", man_hours: 6, crew_size: 2, duration_minutes: 180 });
+      await dropNoHours(w);
+      expect(getMock).toHaveBeenCalledWith("/api/jobs/job-8/suggested-duration", { suppressErrorToast: true });
+      expect(hoursBox(w).props("modelValue")).toBe("6");
+      expect(note(w).text()).toContain("Kim Ortiz has no estimated time yet");
+      expect(note(w).text()).toContain("accepted estimate has 6 man-hours");
+      expect(note(w).text()).not.toContain("not yet accepted");
+      expect(note(w).text()).toContain("crew of 1");
+      expect(patchMock).not.toHaveBeenCalled();
+      const body = await confirmBody(w);
+      expect(body).toEqual({
+        scheduled_at: at(0, 13).toISOString(),
+        assigned_tech_ids: ["tech-2"],
+        lead_tech_id: "tech-2",
+        scheduled_duration_hours: 6,
+      });
+    });
+
+    it("re-divides over the crew picked in the dialog while the hours are the estimate's", async () => {
+      const w = await mountBoard();
+      withSuggestion({ estimate_status: "accepted", man_hours: 6 });
+      await dropNoHours(w);
+      crewPicker(w).vm.$emit("update:modelValue", ["tech-2", "tech-1"]);
+      await flushAll();
+      expect(hoursBox(w).props("modelValue")).toBe("3");
+      expect(note(w).text()).toContain("crew of 2");
+      crewPicker(w).vm.$emit("update:modelValue", ["tech-2", "tech-1", "tech-3"]);
+      await flushAll();
+      expect(hoursBox(w).props("modelValue")).toBe("2");
+      expect(note(w).text()).toContain("crew of 3");
+      expect(await confirmBody(w)).toMatchObject({
+        assigned_tech_ids: ["tech-2", "tech-1", "tech-3"], scheduled_duration_hours: 2,
+      });
+    });
+
+    it("rounds up to the quarter hour and names an estimate not yet accepted", async () => {
+      const w = await mountBoard();
+      withSuggestion({ estimate_status: "sent", man_hours: 1.1 });
+      await dropNoHours(w);
+      expect(hoursBox(w).props("modelValue")).toBe("1.25");
+      expect(note(w).text()).toContain("not yet accepted estimate has 1.1 man-hours");
+      crewPicker(w).vm.$emit("update:modelValue", ["tech-2", "tech-1", "tech-3"]);
+      await flushAll();
+      // 1.1 / 3 = 0.37 -> 0.5; never under a quarter hour.
+      expect(hoursBox(w).props("modelValue")).toBe("0.5");
+    });
+
+    it("hours the scheduler typed are kept when the crew changes, and the note goes", async () => {
+      const w = await mountBoard();
+      withSuggestion({ estimate_status: "accepted", man_hours: 6 });
+      await dropNoHours(w);
+      hoursBox(w).vm.$emit("update:modelValue", "5");
+      await flushAll();
+      expect(note(w).exists()).toBe(false);
+      crewPicker(w).vm.$emit("update:modelValue", ["tech-2", "tech-1"]);
+      await flushAll();
+      expect(hoursBox(w).props("modelValue")).toBe("5");
+      expect(note(w).exists()).toBe(false);
+      expect(await confirmBody(w)).toMatchObject({ scheduled_duration_hours: 5 });
+    });
+
+    it("typing the estimate's figure back makes the note true again, and it is sent", async () => {
+      const w = await mountBoard();
+      withSuggestion({ estimate_status: "accepted", man_hours: 6 });
+      await dropNoHours(w);
+      hoursBox(w).vm.$emit("update:modelValue", "4");
+      await flushAll();
+      hoursBox(w).vm.$emit("update:modelValue", "6");
+      await flushAll();
+      expect(note(w).exists()).toBe(true);
+      expect(await confirmBody(w)).toMatchObject({ scheduled_duration_hours: 6 });
+    });
+
+    it("a late suggestion never overwrites hours the scheduler already typed", async () => {
+      const w = await mountBoard();
+      let release;
+      withSuggestion(() => new Promise((r) => { release = () => r({ estimate_status: "accepted", man_hours: 6 }); }));
+      await dropNoHours(w);
+      hoursBox(w).vm.$emit("update:modelValue", "1.5");
+      await flushAll();
+      release();
+      await flushAll();
+      expect(hoursBox(w).props("modelValue")).toBe("1.5");
+      expect(note(w).exists()).toBe(false);
+      crewPicker(w).vm.$emit("update:modelValue", ["tech-2", "tech-1"]);
+      await flushAll();
+      expect(hoursBox(w).props("modelValue")).toBe("1.5");
+      // An answer that came after typing is not kept: the box was never a
+      // prefill, so no figure typed into it is explained as one.
+      hoursBox(w).vm.$emit("update:modelValue", "3");
+      await flushAll();
+      expect(note(w).exists()).toBe(false);
+    });
+
+    it("a late suggestion for an earlier drop never lands in a dialog opened since", async () => {
+      const OTHER = { ...NO_HOURS, id: "job-7", customer_name: "Jo Banks" };
+      boardRows = [NO_HOURS, OTHER, SOLO];
+      const w = await mountBoard();
+      let releaseFirst;
+      withSuggestion((url) => (url.includes("/job-8/")
+        ? new Promise((r) => { releaseFirst = () => r({ estimate_status: "accepted", man_hours: 6 }); })
+        : Promise.resolve({ estimate_id: null, man_hours: null })));
+      await dropNoHours(w);
+      timeline(w, "tech-1").vm.$emit("place", { jobId: "job-7", techId: "tech-1", startISO: at(0, 15).toISOString() });
+      await flushAll();
+      expect(dialog(w).text()).toContain("Jo Banks");
+      releaseFirst();
+      await flushAll();
+      expect(hoursBox(w).props("modelValue")).toBe("");
+      expect(note(w).exists()).toBe(false);
+      await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
+      await flushAll();
+      // The first drop was answered Cancel when the second opened.
+      expect(patchMock.mock.calls.map(([u]) => u)).toEqual(["/api/jobs/job-7"]);
+      expect(patchMock.mock.calls[0][1]).not.toHaveProperty("scheduled_duration_hours");
+    });
+
+    it("leaves the hours blank when the job has no estimate or the request fails", async () => {
+      for (const answer of [{ estimate_id: null, man_hours: null }, new Error("500")]) {
+        const w = await mountBoard();
+        withSuggestion(answer);
+        await dropNoHours(w);
+        expect(dialog(w).exists()).toBe(true);
+        expect(hoursBox(w).props("modelValue")).toBe("");
+        expect(note(w).exists()).toBe(false);
+        expect(await confirmBody(w)).not.toHaveProperty("scheduled_duration_hours");
+        w.unmount();
+      }
+    });
+
+    it("a job with hours of its own does not ask for the estimate", async () => {
+      boardRows = [UNDATED_SOLO, SOLO];
+      const w = await mountBoard();
+      withSuggestion({ estimate_status: "accepted", man_hours: 6 });
+      await dropNoHours(w);
+      expect(suggestionCalls()).toHaveLength(0);
+      expect(hoursBox(w).props("modelValue")).toBe("2");
+      expect(note(w).exists()).toBe(false);
+    });
   });
 });

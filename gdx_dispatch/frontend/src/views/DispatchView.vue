@@ -1067,7 +1067,7 @@ import Dialog from 'primevue/dialog';
 import CrewChangeDialog from '../components/CrewChangeDialog.vue';
 import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange';
 import ScheduleDropDialog from '../components/ScheduleDropDialog.vue';
-import { scheduleDropPatch, useScheduleDropPrompt } from '../composables/useScheduleDrop';
+import { estimateHoursOver, scheduleDropPatch, useScheduleDropPrompt } from '../composables/useScheduleDrop';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
@@ -2374,19 +2374,13 @@ async function onWeekCellDrop(event, techId, dayStr) {
   if (source?.technician_id && !crew.includes(String(source.technician_id))) crew.push(String(source.technician_id));
   const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
   if (source && onCrew) {
-    const datePatch = { scheduled_at: iso };
-    // An undated job with no hours gets the hours question placeCrewJob asks,
-    // or it lands in the tech's day uncounted in capacity; closing it moves
-    // nothing. The "No tech" row has no capacity, so it is exempt, as
+    // An undated job dropped in a tech's row was booked above, hours asked
+    // there (GDXA-1261). What reaches here is a dated job's move, or the
+    // "No tech" row, which only dates: it has no capacity to count, as
     // _needsDurationPrompt exempts techId=null.
-    if (techId && !source.scheduled_at && !jobHasDuration(source)) {
-      const hours = await askDurationFor(source);
-      if (hours === null) return;
-      if (hours > 0) datePatch.scheduled_duration_hours = hours;
-    }
     await withBoardWrite(async () => {
       try {
-        await api.patch(`/api/jobs/${jobId}`, datePatch);
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso });
       } catch { /* api composable already toasts */ }
       await fetchJobs();
     });
@@ -2437,6 +2431,9 @@ async function scheduleUndatedDrop(jobId, techId, scheduledAt, knownJob = null) 
     techId,
     crew: crewOf(job),
     hours: Number(job.scheduled_duration_hours) > 0 ? job.scheduled_duration_hours : job.effective_duration_hours,
+    // No hours of its own: the dialog prefills from the estimate, over the
+    // crew picked in it, as the hours prompt does (GDXA-1262).
+    suggest: jobHasDuration(job) ? null : () => suggestedEstimate(job.id),
   });
   if (!answer) return true; // cancelled: nothing moves
   await withBoardWrite(async () => {
@@ -2583,27 +2580,34 @@ function askDurationFor(job, crewSize) {
 // as it stands (or the labor row's default crew), not by who is being placed.
 // A failed or empty answer leaves the prompt blank, and a late answer never
 // overwrites what the scheduler typed or a prompt opened since.
+// The "Schedule this job" dialog asks the same through suggestedEstimate.
 let durationPrefillSeq = 0;
 async function prefillDurationFromEstimate(jobId, crewSize) {
   const seq = ++durationPrefillSeq;
   durationPromptEstimate.value = null;
+  const est = await suggestedEstimate(jobId);
+  if (!est) return;
+  if (seq !== durationPrefillSeq || !durationPromptOpen.value) return;
+  if (durationPromptHours.value !== '') return;
+  const crew = Math.max(1, Number(crewSize) || 1);
+  const hours = estimateHoursOver(est.manHours, crew);
+  durationPromptHours.value = String(hours);
+  durationPromptEstimate.value = { ...est, crew, hours };
+}
+
+// One job's estimate man-hours, { manHours, accepted }, or null when it has
+// none or the request fails (no toast: the prompt just stays blank).
+async function suggestedEstimate(jobId) {
   let s;
   try {
     s = await api.get(`/api/jobs/${encodeURIComponent(jobId)}/suggested-duration`,
       { suppressErrorToast: true });
   } catch (_e) {
-    return;
+    return null;
   }
   const manHours = Number(s?.man_hours);
-  if (!(manHours > 0)) return;
-  if (seq !== durationPrefillSeq || !durationPromptOpen.value) return;
-  if (durationPromptHours.value !== '') return;
-  const crew = Math.max(1, Number(crewSize) || 1);
-  const hours = Math.max(0.25, Math.ceil((manHours / crew) * 4) / 4);
-  durationPromptHours.value = String(hours);
-  durationPromptEstimate.value = {
-    manHours, crew, accepted: s.estimate_status === 'accepted', hours,
-  };
+  if (!(manHours > 0)) return null;
+  return { manHours, accepted: s.estimate_status === 'accepted' };
 }
 
 function onDurationPromptHide() {

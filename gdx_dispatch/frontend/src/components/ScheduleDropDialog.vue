@@ -7,6 +7,7 @@ import Dialog from 'primevue/dialog';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import MultiSelect from 'primevue/multiselect';
+import { estimateHoursOver } from '../composables/useScheduleDrop';
 
 const props = defineProps({
   prompt: { type: Object, required: true },
@@ -19,12 +20,45 @@ const emit = defineEmits(['answer']);
 
 const hours = ref('');
 const techIds = ref([]);
+// Set once the scheduler types in the hours box: from then on the box is
+// theirs, and no estimate prefill or crew change rewrites it.
+const typed = ref(false);
+// { manHours, accepted } behind a prefill from the job's estimate, kept only
+// when it arrived before the scheduler typed (GDXA-1262).
+const estimate = ref(null);
 
-watch(() => props.prompt.visible, (open) => {
+// Keyed on seq too: a question asked while another is open replaces it in
+// one tick, and the visible flag alone would not see the change.
+watch(() => (props.prompt.visible ? `open:${props.prompt.seq ?? ''}` : ''), (open) => {
   if (!open) return;
   hours.value = props.prompt.hours;
   techIds.value = [...props.prompt.techIds];
+  typed.value = false;
+  estimate.value = null;
 }, { immediate: true });
+
+watch(() => props.prompt.estimate, (e) => {
+  if (e && !typed.value && props.prompt.hours === '') estimate.value = e;
+});
+
+function onHoursInput(value) {
+  typed.value = true;
+  hours.value = value;
+}
+
+// The estimate's man-hours over the crew picked here, re-divided as the crew
+// changes until the scheduler types. No crew picked, no figure.
+const estimateHours = computed(() => (estimate.value && techIds.value.length
+  ? estimateHoursOver(estimate.value.manHours, techIds.value.length)
+  : null));
+watch(estimateHours, (h) => {
+  if (h != null && !typed.value) hours.value = String(h);
+});
+// The note explains the prefilled figure, so it shows only while the box
+// holds that figure for the crew picked now.
+const estimateNote = computed(() => (estimateHours.value != null && Number(hours.value) === estimateHours.value
+  ? { ...estimate.value, crew: techIds.value.length }
+  : null));
 
 // Any tech already on the crew stays pickable even if inactive, so opening
 // the dialog never silently drops one.
@@ -53,11 +87,14 @@ function schedule() {
   if (!techIds.value.length || !hoursValid.value) return;
   const raw = String(hours.value ?? '').trim();
   const leadId = lead.value;
+  const keptSaved = props.prompt.hours !== '' && raw === String(props.prompt.hours);
   emit('answer', {
     tech_ids: [leadId, ...techIds.value.filter((t) => t !== leadId)],
     lead: leadId,
-    // Sent only when changed: left as shown, the job keeps its own estimate.
-    hours: raw !== '' && raw !== String(props.prompt.hours) ? Number(raw) : null,
+    // The job's own saved hours left as shown are not re-sent. Anything else
+    // in the box is, an estimate prefill included: that is a suggestion the
+    // scheduler accepts by pressing Schedule, and nothing else would save it.
+    hours: raw !== '' && !keptSaved ? Number(raw) : null,
   });
 }
 </script>
@@ -80,14 +117,22 @@ function schedule() {
       <label for="schedule-drop-hours">Hours</label>
       <InputText
         id="schedule-drop-hours"
-        v-model="hours"
+        :model-value="hours"
         type="number"
         step="0.25"
         min="0"
         placeholder="e.g. 1.5"
         :invalid="!hoursValid"
         data-testid="schedule-drop-hours"
+        @update:model-value="onHoursInput"
       />
+      <small v-if="estimateNote" class="muted" data-testid="schedule-drop-from-estimate">
+        {{ prompt.jobLabel }} has no estimated time yet.
+        The {{ estimateNote.accepted ? 'accepted' : 'not yet accepted' }}
+        estimate has {{ estimateNote.manHours }} man-hours; the hours above
+        are that over a crew of {{ estimateNote.crew }}.
+        Change them if you know better.
+      </small>
     </div>
     <div class="schedule-drop-field">
       <label for="schedule-drop-techs">
