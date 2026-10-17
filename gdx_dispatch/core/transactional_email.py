@@ -33,15 +33,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
+from gdx_dispatch.core.email_attachments import MAX_EMAIL_ATTACHMENTS_BYTES
 
 log = logging.getLogger(__name__)
 
-# Graph /me/sendMail rejects the WHOLE message (not just the attachment) when
-# inline fileAttachments push the request past ~4MB — and base64 inflates the
-# raw bytes by ~33%. Callers attaching generated PDFs must skip the attachment
-# above this raw-byte cap so an oversized render degrades to the html-only
-# email instead of silently delivering nothing.
-MAX_INLINE_ATTACHMENT_BYTES = 2_500_000
+# Raw bytes of attachments one transactional email may carry: the generated
+# PDF plus anything the sender picked. Graph's 4 MB request cap no longer
+# bounds this — modules/outlook/graph_send takes a bigger set through a draft —
+# so the bound is the per-email cap the inbox composer answers to
+# (core/email_attachments.py says why 18 MB). Callers attaching a generated
+# PDF skip it above this cap, so an oversized render degrades to the
+# html-only email instead of delivering nothing.
+MAX_ATTACHMENT_BYTES = MAX_EMAIL_ATTACHMENTS_BYTES
+
+# skip_reason when Graph may have sent the mail but did not say so: a 5xx or
+# timeout on the call that sends. Nothing else is tried after it — falling
+# through to SMTP, or to the designated sender, could deliver it twice.
+OUTLOOK_SEND_UNCONFIRMED = "outlook_send_unconfirmed"
 
 
 def _to_uuid(value: Any) -> UUID | None:
@@ -69,7 +77,7 @@ def _try_outlook_graph(
     # One retry on the documented OutlookTransientRetry contract — a 401
     # mid-call after a successful refresh deserves exactly one re-issue.
     from gdx_dispatch.core.database import SessionLocal
-    from gdx_dispatch.modules.outlook.graph_client import RETRY_THROTTLED_ONLY
+    from gdx_dispatch.modules.outlook import graph_send
     from gdx_dispatch.modules.outlook.token_refresh import (
         OutlookReconnectRequired,
         OutlookTransientRetry,
@@ -81,35 +89,26 @@ def _try_outlook_graph(
         "body": {"contentType": "html", "content": html_body},
         "toRecipients": [{"emailAddress": {"address": to_email}}],
     }
-    if attachments:
-        # Same wire shape as modules/outlook/send_router._graph_attachments.
-        message["attachments"] = [
-            {
-                "@odata.type": "#microsoft.graph.fileAttachment",
-                "name": a.get("name") or "attachment",
-                "contentType": a.get("content_type") or "application/octet-stream",
-                "contentBytes": a["content_base64"],
-            }
-            for a in attachments
-        ]
-    body = {
-        "message": message,
-        # Save to sent items so the rep can see it in their Outlook history
-        # and the customer's reply lands in the same thread. A caller whose
-        # body carries a credential (a password-reset link) turns it off:
-        # the shared mailbox's Sent Items would hand the link to everyone
-        # who can open that mailbox.
-        "saveToSentItems": save_to_sent_items,
-    }
 
     def _send_once() -> None:
         # New control_db per attempt — the context manager's tenant_id
         # stash on .info is a per-session artifact, not safe to reuse.
         with SessionLocal() as control_db, with_outlook_client(control_db, tenant_db, user_id, tenant_id) as gc:
-            # Not retried past a 429: a 504 may follow a send Graph already
-            # did. The SMTP fallback below still treats that 504 as a failure
-            # and sends again (deferred, GDXA-1318 close-out).
-            gc._request("POST", "/me/sendMail", json=body, retry_on=RETRY_THROTTLED_ONLY)
+            # Inline under Graph's request cap, through a draft above it.
+            # Save to Sent Items so the rep can see it in their Outlook
+            # history and the customer's reply lands in the same thread. A
+            # caller whose body carries a credential (a password-reset link)
+            # turns it off: the shared mailbox's Sent Items would hand the
+            # link to everyone who can open that mailbox.
+            # The call that delivers (sendMail, or the draft's /send) is not
+            # retried past a 429 (graph_send._send_call, RETRY_THROTTLED_ONLY,
+            # GDXA-1318): a 504 may follow a send Graph already did. It
+            # surfaces as SendUnconfirmed, and the ladder in
+            # send_transactional_email stops there instead of falling through
+            # to SMTP. That ends the automatic second send only: the row is
+            # logged "failed", which `recently_sent` does not count, so a
+            # person who clicks again inside the window still sends twice.
+            graph_send.send_new(gc, message, attachments, save_to_sent_items=save_to_sent_items)
 
     # Distinguish "never connected" (the user has no outlook_accounts row)
     # from "expired/needs reconnect" (had tokens but refresh failed). The
@@ -118,12 +117,22 @@ def _try_outlook_graph(
         _send_once()
         return True, None
     except OutlookTransientRetry:
+        # A 401 is a refusal, so nothing went out and one re-issue is safe.
         try:
             _send_once()
             return True, None
+        except graph_send.SendUnconfirmed:
+            log.warning("outlook_send_unconfirmed user=%s tenant=%s", user_id, tenant_id, exc_info=True)
+            return False, OUTLOOK_SEND_UNCONFIRMED
         except Exception:
             log.exception("outlook_send_retry_failed user=%s", user_id)
             return False, "outlook_send_failed"
+    except graph_send.SendUnconfirmed:
+        log.warning("outlook_send_unconfirmed user=%s tenant=%s", user_id, tenant_id, exc_info=True)
+        return False, OUTLOOK_SEND_UNCONFIRMED
+    except graph_send.AttachmentsNeedSentItems:
+        log.warning("outlook_send_refused_needs_sent_items user=%s tenant=%s", user_id, tenant_id)
+        return False, "attachments_need_sent_items"
     except OutlookReconnectRequired as exc:
         msg = str(exc) if exc.args else ""
         if "has not connected" in msg or "no refresh token" in msg:
@@ -550,6 +559,8 @@ def send_transactional_email(
         sent_ol, outlook_reason = _try_outlook_graph(tenant_id=tid, user_id=uid, **graph_kw)
         if sent_ol:
             return _finish(True, "outlook_graph", None)
+        if outlook_reason == OUTLOOK_SEND_UNCONFIRMED:
+            return _finish(False, "outlook_graph", outlook_reason)
 
     # 1b. The tenant's designated sender, for a PERSON who has never
     # connected an Outlook account of their own (#466). Before this, a
@@ -592,6 +603,8 @@ def send_transactional_email(
                     uid, designated, tid,
                 )
                 return _finish(True, "outlook_graph", None, sender_user_id=str(designated))
+            if fb_reason == OUTLOOK_SEND_UNCONFIRMED:
+                return _finish(False, "outlook_graph", fb_reason, sender_user_id=str(designated))
             if fb_reason and fb_reason != "outlook_not_connected":
                 # The designated mailbox exists but could not send: that is
                 # the more actionable diagnosis for the office.

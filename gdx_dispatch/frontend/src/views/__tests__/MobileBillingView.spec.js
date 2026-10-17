@@ -487,3 +487,111 @@ describe('MobileBillingView says nothing about emptiness until the list is in (G
     expect(w.text()).toContain('No open invoices');
   });
 });
+
+describe('MobileBillingView — Send with files (2026-10-16)', () => {
+  // The picker's own loading is pinned in EmailAttachmentPicker.spec.js.
+  const Picker = {
+    props: ['modelValue', 'jobId', 'customerId', 'disabled'],
+    template: '<div data-test="picker-stub" :data-job="jobId" :data-customer="customerId" />',
+  };
+  const DRAFT = { id: 'inv-1', status: 'draft', balance_due: 100, total: 100, job_id: 'job-7', customer_id: 'cust-3' };
+  const PICK = { kind: 'estimate_pdf', id: 'est-2', name: 'estimate-E-2.pdf' };
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    apiGetMock.mockReset().mockImplementation((url) => (
+      url === '/api/invoices/inv-1' ? Promise.resolve({ ...DRAFT })
+        : url === '/api/invoices' ? Promise.resolve([{ ...DRAFT }]) : Promise.resolve({})
+    ));
+    apiPostMock.mockReset();
+    hasPermissionMock.mockReset().mockReturnValue(true);
+    permissionsLoadedRef.value = true;
+    loadPermissionsMock.mockReset().mockImplementation(async () => {});
+    toastAddMock.mockReset();
+  });
+
+  async function openDraft() {
+    const w = mount(MobileBillingView, { global: { stubs: { ...stubs, EmailAttachmentPicker: Picker } } });
+    await flushPromises();
+    await w.vm.openDetail({ id: 'inv-1' });
+    await flushPromises();
+    return w;
+  }
+  const send = (w) => w.vm.sendInvoice().then(flushPromises);
+  const toasts = () => toastAddMock.mock.calls.map(([a]) => a);
+
+  it('warns when the picks left the invoice PDF out', async () => {
+    const w = await openDraft();
+    w.vm.sendPicked = [PICK];
+    await flushPromises();
+    apiPostMock.mockResolvedValueOnce({ email_sent: true, pdf_attached: false });
+    await send(w);
+    const warn = toasts().find((t) => t.summary === 'Invoice sent without its PDF');
+    expect(warn.severity).toBe('warn');
+    expect(warn.detail).toContain('invoice PDF was not attached');
+    expect(toasts().some((t) => t.summary === 'Invoice sent')).toBe(false);
+  });
+
+  it('a send with no picks does not blame files nobody added', async () => {
+    const w = await openDraft();
+    apiPostMock.mockResolvedValueOnce({ email_sent: true, pdf_attached: false });
+    await send(w);
+    expect(toasts().some((t) => t.summary === 'Invoice sent without its PDF')).toBe(false);
+  });
+
+  it('offers the picker for the invoice job and customer, and sends the picks', async () => {
+    const w = await openDraft();
+    const picker = w.find('[data-test="picker-stub"]');
+    expect(picker.attributes('data-job')).toBe('job-7');
+    expect(picker.attributes('data-customer')).toBe('cust-3');
+
+    w.vm.sendPicked = [PICK];
+    await flushPromises();
+    expect(w.text()).toContain('Send with 1 file');
+    apiPostMock.mockResolvedValueOnce({ email_sent: true });
+    await send(w);
+    const [url, body, opts] = apiPostMock.mock.calls[0];
+    expect(url).toBe('/api/invoices/inv-1/send');
+    expect(body).toEqual({ attachment_refs: [{ kind: 'estimate_pdf', id: 'est-2' }] });
+    expect(opts.suppressErrorToast({ status: 404 })).toBe(true);
+    expect(opts.suppressErrorToast({ status: 401 })).toBe(false);
+    expect(toasts()[0]).toMatchObject({ severity: 'success' });
+    expect(w.vm.sendPicked).toEqual([]);
+  });
+
+  it('an unconfirmed Outlook send never reads "not delivered"', async () => {
+    const w = await openDraft();
+    apiPostMock.mockResolvedValueOnce({ email_sent: false, email_skip_reason: 'outlook_send_unconfirmed' });
+    await send(w);
+    expect(toasts()[0].summary).toBe('Marked sent — the email may have gone');
+    expect(toasts()[0].detail).toContain('Check Sent Items before sending again');
+  });
+
+  it('a refused pick is said once with the server reason; a 401 adds nothing', async () => {
+    const w = await openDraft();
+    w.vm.sendPicked = [PICK];
+    apiPostMock.mockRejectedValueOnce(Object.assign(new Error('Attachment not found: estimate-E-2.pdf'), { status: 404 }));
+    await send(w);
+    expect(toasts()).toHaveLength(1);
+    expect(toasts()[0]).toMatchObject({ severity: 'error', detail: 'Attachment not found: estimate-E-2.pdf' });
+
+    toastAddMock.mockReset();
+    apiPostMock.mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }));
+    await send(w);
+    expect(toasts()).toHaveLength(0);
+  });
+
+  it('picks do not carry over to the next invoice opened', async () => {
+    const w = await openDraft();
+    w.vm.sendPicked = [PICK];
+    await w.vm.openDetail({ id: 'inv-1' });
+    await flushPromises();
+    expect(w.vm.sendPicked).toEqual([]);
+  });
+
+  it('a sent invoice offers no picker (Send is for drafts here)', async () => {
+    apiGetMock.mockImplementation((url) => Promise.resolve(url === '/api/invoices/inv-1' ? { ...DRAFT, status: 'sent' } : []));
+    const w = await openDraft();
+    expect(w.find('[data-test="picker-stub"]').exists()).toBe(false);
+  });
+});

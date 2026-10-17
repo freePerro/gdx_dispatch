@@ -514,11 +514,11 @@ def test_send_invoice_marks_sent_and_sets_public_token(tenant_db_session):
 
 
 def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, monkeypatch):
-    """2026-07-20 (audit catch) — Graph rejects the WHOLE message when inline
-    attachments blow the ~4MB request cap, which would turn 'html-only email'
-    into 'no email at all'. An oversized PDF must be skipped (pdf_attached
-    False) while the email itself still goes out."""
-    from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+    """2026-07-20 (audit catch) — a PDF over the attachment cap would turn
+    'html-only email' into 'no email at all'. An oversized PDF must be skipped
+    (pdf_attached False) while the email itself still goes out. The cap was
+    Graph's inline 2.5 MB until large sends went through a draft (2026-10-16)."""
+    from gdx_dispatch.core.transactional_email import MAX_ATTACHMENT_BYTES
     from gdx_dispatch.models.tenant_models import Customer
 
     captured = {}
@@ -532,7 +532,7 @@ def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, 
     )
     monkeypatch.setattr(
         "gdx_dispatch.core.pdf_generator.generate_invoice_pdf",
-        lambda **kw: b"%PDF-1.4 " + b"x" * (MAX_INLINE_ATTACHMENT_BYTES + 1),
+        lambda **kw: b"%PDF-1.4 " + b"x" * (MAX_ATTACHMENT_BYTES + 1),
     )
 
     cust = Customer(

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.email_attachments import AttachmentRef, attachment_audit_meta, resolve_attachment_refs
 from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module, require_permission
@@ -3229,23 +3230,26 @@ def _invoice_email_templates(tenant_id: str, *, receipt: bool) -> tuple[str, str
     )
 
 
-def _invoice_pdf_attachments(db: Session, invoice, cust) -> list[dict[str, object]] | None:
+def _invoice_pdf_attachments(
+    db: Session, invoice, cust, *, budget_bytes: int | None = None,
+) -> list[dict[str, object]] | None:
     """The invoice PDF as an email attachment, or None (logged) when it
-    cannot be rendered or is too large to send inline. Never raises: a
+    cannot be rendered or does not fit ``budget_bytes`` (default: the whole
+    per-email cap; less when the sender picked other files). Never raises: a
     missing attachment must not stop the email itself. Shared by /send and
     the automatic payment receipt so both deliver the same document."""
     try:
         import base64 as _b64
 
         from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
-        from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+        from gdx_dispatch.core.transactional_email import MAX_ATTACHMENT_BYTES
         from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
         pdf_bytes = generate_invoice_pdf(
             invoice_data=_invoice_payload(invoice, cust, db),
             tenant_branding=_branding_payload(db),
             template_config=_template_config(db, "invoice"),
         )
-        if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
+        if len(pdf_bytes) > (MAX_ATTACHMENT_BYTES if budget_bytes is None else budget_bytes):
             log.warning(
                 "invoice_send_pdf_too_large_to_attach invoice=%s bytes=%s",
                 invoice.id, len(pdf_bytes),
@@ -3426,6 +3430,10 @@ class SendInvoiceIn(BaseModel):
     subject: str | None = Field(default=None, max_length=500)
     contact_id: str | None = Field(default=None, max_length=36)
     to_email: str | None = Field(default=None, max_length=254)
+    # Files the sender picked beside the invoice PDF — job photos and
+    # documents, customer documents, estimate and invoice PDFs, device files
+    # (core/email_attachments.py, under the caller's own reach).
+    attachment_refs: list[AttachmentRef] | None = Field(default=None, max_length=25)
 
 
 @router.post("/{invoice_id}/email-preview", response_model=None, dependencies=[Depends(require_permission("invoices.send"))])
@@ -3628,6 +3636,7 @@ def send_invoice(
     payload: SendInvoiceIn | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
     # PR1-billing-capture (2026-07-07, GL audit §12): sending a VOIDED
@@ -3638,6 +3647,12 @@ def send_invoice(
     # §11 rail (2026-08-08): an unverified DRAFT may not reach a customer —
     # the mobile path enforced this from day one; the desktop path did not.
     require_deliverable(invoice)
+    p = payload or SendInvoiceIn()
+    # Picked files load (or 404/413) before the status flip below, so a bad
+    # pick changes nothing.
+    picked = resolve_attachment_refs(
+        db, request, _, str(invoice.company_id or ""), p.attachment_refs,
+    ) if p.attachment_refs else []
     if invoice.status != "paid":
         transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5
     if not invoice.public_token:
@@ -3651,7 +3666,7 @@ def send_invoice(
         action="invoice_sent",
         entity_type="invoice",
         entity_id=str(invoice.id),
-        details={"status": invoice.status},
+        details={"status": invoice.status, "attachments": attachment_audit_meta(picked) or None},
     )
     db.commit()
 
@@ -3664,7 +3679,6 @@ def send_invoice(
     email_provider: str | None = None
     email_skip_reason: str | None = None
     pdf_attached = False
-    p = payload or SendInvoiceIn()
     try:
         # NOT savepoint-wrapped — GDXA-160 counted this site and then REMOVED
         # its own `db.begin_nested()` here under audit, because the wrap did not
@@ -3714,7 +3728,13 @@ def send_invoice(
             cust = prep["customer"]
             recipient = prep["recipient"]
             if cust is not None and recipient is not None and recipient.ok:
-                attachments = _invoice_pdf_attachments(db, invoice, cust)
+                from gdx_dispatch.core.transactional_email import MAX_ATTACHMENT_BYTES
+
+                pdf = _invoice_pdf_attachments(
+                    db, invoice, cust,
+                    budget_bytes=MAX_ATTACHMENT_BYTES - sum(a["size_bytes"] for a in picked),
+                )
+                attachments = [*(pdf or ()), *picked] or None
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
@@ -3730,7 +3750,7 @@ def send_invoice(
                     recipient_source=recipient.source,
                     recipient_contact_id=recipient.contact_id,
                 )
-                pdf_attached = email_sent and bool(attachments)
+                pdf_attached = email_sent and bool(pdf)
             elif recipient is not None and recipient.source == "invalid_override":
                 email_skip_reason = "invalid_recipient_email"
             elif cust is not None:

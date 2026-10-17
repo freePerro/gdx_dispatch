@@ -92,7 +92,7 @@ def _graph(monkeypatch, *, connected: set[UUID]):
         if user_id not in connected:
             raise tr.OutlookReconnectRequired("user has not connected Outlook")
         yield SimpleNamespace(
-            _request=lambda method, path, json=None, retry_on=None: calls.append((user_id, method, path, json)),
+            _request=lambda method, path, json=None, retry_on=None, **_kw: calls.append((user_id, method, path, json)),
         )
 
     monkeypatch.setattr(tr, "with_outlook_client", fake_client)

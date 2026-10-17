@@ -131,7 +131,7 @@ def test_postgres_a_dead_transaction_after_the_send_still_answers(
 
     import gdx_dispatch.routers.invoices as invoices
 
-    def _attach_swallows_a_failed_read(db, _invoice, _cust):
+    def _attach_swallows_a_failed_read(db, _invoice, _cust, **_kw):
         with contextlib.suppress(SQLAlchemyError):
             db.execute(text("SELECT * FROM no_such_table_gdxa_673"))
         return None
@@ -159,7 +159,7 @@ def test_postgres_a_delivered_send_on_a_dead_transaction_still_stamps_sent_at(
 
     monkeypatch.setattr(te, "_try_smtp", lambda **_kw: (True, None))
 
-    def _attach_swallows_a_failed_read(db, _invoice, _cust):
+    def _attach_swallows_a_failed_read(db, _invoice, _cust, **_kw):
         with contextlib.suppress(SQLAlchemyError):
             db.execute(text("SELECT * FROM no_such_table_gdxa_673"))
         return None

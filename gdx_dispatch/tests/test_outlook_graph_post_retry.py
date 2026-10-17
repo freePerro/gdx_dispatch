@@ -121,7 +121,9 @@ def test_every_graph_post_says_how_it_is_retried():
     sites = _post_sites()
     # The scan must be able to see the sites it guards: graph_send's send
     # call, draft create, attach and upload session; the draft endpoint;
-    # subscriptions; transactional sendMail; four folder/message actions.
-    assert len(sites) >= 11, sites
+    # subscriptions; four folder/message actions. Transactional sendMail has
+    # no site of its own: it goes through graph_send's send call
+    # (test_transactional_email_attachments pins its retry_on).
+    assert len(sites) >= 10, sites
     bare = [f"{f}:{ln}" for f, ln, passes in sites if not passes]
     assert bare == [], f"Graph POST on the default retry: {bare}"

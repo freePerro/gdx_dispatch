@@ -144,3 +144,22 @@ export function sendErrorText(err, fallback = 'Send failed') {
   }
   return msg || fallback
 }
+
+// skip_reason from a document /send (estimate, invoice, statement) when
+// Outlook took the request but did not answer whether it sent it. The server
+// tries nothing else after it, so a second click is the only way it could go
+// twice.
+export const SEND_UNCONFIRMED_TEXT =
+  "Outlook didn't confirm the send — it may already have gone. Check Sent Items before sending again."
+
+/** User-facing text for a /send skip_reason this module knows, else `fallback`. */
+export function sendSkipText(reason, fallback) {
+  return reason === 'outlook_send_unconfirmed' ? SEND_UNCONFIRMED_TEXT : fallback
+}
+
+// A delivered invoice send with files picked whose own PDF did not go. Usually
+// the picks used the size budget (they get it first), but a failed render
+// reads the same in the response, so the text names the likely cause without
+// asserting it. No promise of a pay link: a paid invoice's email has none.
+export const INVOICE_PDF_LEFT_OUT_TEXT =
+  'The invoice PDF was not attached — most likely it did not fit beside the files you added. Send again with fewer files if the customer needs the PDF.'
