@@ -43,6 +43,7 @@ __all__ = [
     "FINISH_ACTIONS",
     "aware",
     "candidate_timers",
+    "closeout_hours_suggestion",
     "current_visits",
     "day_close_audits",
     "day_log",
@@ -78,6 +79,12 @@ def aware(value: datetime | None) -> datetime | None:
     if value is not None and value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value
+
+
+def _auto_stop_note() -> str:
+    from gdx_dispatch.routers.mobile import MOBILE_AUTO_STOP_LABOR_NOTE  # noqa: PLC0415
+
+    return MOBILE_AUTO_STOP_LABOR_NOTE
 
 
 def _stop_note() -> str:
@@ -410,4 +417,98 @@ def day_log(db: Session, job: Any, tz: str) -> list[dict]:
             "note": r.notes,
             "closed_by": names.get(closer) if closer else None,
         })
+    return out
+
+
+#: A span shorter than this is a tap, not work: on prod, installs were tapped
+#: "I'm here" one to three minutes before the closeout (2026-10-17 query).
+SUGGEST_MIN_MINUTES = 10
+#: Longer than a working day is a timer someone forgot, not a day's work: one
+#: prod arrival sat open from 08-06 to 09-30 (1,318 h).
+SUGGEST_MAX_MINUTES = 12 * 60
+#: Crew size multiplies billed labor, so a person counts toward it only when
+#: on site for most of the basis span: a helper who checked in for half an
+#: hour must not turn 4 h into 8 man-hours.
+SUGGEST_CREW_SHARE = 0.75
+
+
+def closeout_hours_suggestion(
+    db: Session, job: Any, user_id: str | None, today: date, tz: str,
+    now: datetime | None = None,
+) -> dict:
+    """What the "Yes" sheet pre-fills (Doug, 2026-10-17): today's check-in to
+    check-out, from the same candidate timers the closeout settles. "I'm
+    here" opens the timer; Stop or the closeout ends it.
+
+    A suggestion, never a billing input: the closer still submits the hours,
+    and that submission is the attestation (``hours_source`` on the closeout
+    audit row records whether they kept or changed it). Per person the span
+    is clock_in → Stop, or → ``now`` while still running; spans under
+    ``SUGGEST_MIN_MINUTES`` are dropped as taps. ``hours`` is the caller's own
+    span when they have one (the closeout restates the caller's timer), else
+    the longest, rounded to the nearest quarter hour; ``techs`` counts the
+    people whose span is at least ``SUGGEST_CREW_SHARE`` of that basis.
+    ``started_at`` is the basis person's first check-in. Over ``SUGGEST_MAX_MINUTES`` nothing is suggested.
+    ``reason`` says why ``hours`` is null: ``no_check_in``, ``too_short``,
+    ``too_long``, ``auto_stopped`` when a kept span was ended by the
+    shift-end sweep (``tasks/job_timer_sweep``) rather than a Stop or the
+    closeout, so its end is a rule's guess, not a check-out, or
+    ``shorter_than_crew`` when the caller's own span is under
+    ``SUGGEST_CREW_SHARE`` of the longest (a tap under ``SUGGEST_MIN_MINUTES``
+    included): their hours × the crew would
+    under-bill the job and the longest span would overstate their own timer,
+    so the closer enters the job's hours.
+    """
+    now = aware(now) or datetime.now(UTC)
+    minutes_by_person: dict[str, float] = {}
+    running: dict[str, bool] = {}
+    first_in: dict[str, datetime] = {}
+    auto_stopped: set[str] = set()
+    auto_note = _auto_stop_note()
+    for t in candidate_timers(db, job, today, tz):
+        start = aware(t.clock_in)
+        end = aware(t.clock_out) or now
+        if start is None or end <= start:
+            continue
+        who = str(t.user_id or t.tech_id or "")
+        minutes_by_person[who] = minutes_by_person.get(who, 0.0) + (end - start).total_seconds() / 60
+        running[who] = running.get(who, False) or t.clock_out is None
+        first_in[who] = min(first_in.get(who, start), start)
+        if t.clock_out is not None and (t.notes or "").startswith(auto_note):
+            auto_stopped.add(who)
+
+    out: dict = {"hours": None, "techs": None, "reason": None,
+                 "started_at": None, "people": []}
+    if not minutes_by_person:
+        out["reason"] = "no_check_in"
+        return out
+    kept = {w: m for w, m in minutes_by_person.items() if m >= SUGGEST_MIN_MINUTES}
+    # A caller with any timer today is judged on their own span, tap or not:
+    # falling back to the longest would hand them a colleague's hours.
+    me = str(user_id) if user_id and str(user_id) in minutes_by_person else None
+    if not kept:
+        out["reason"] = "too_short"
+        return out
+    names = user_names(db, {w for w in kept if w})
+    out["people"] = [
+        {"name": names.get(w), "hours": round(m / 60, 2), "running": running.get(w, False),
+         "mine": bool(user_id) and w == str(user_id)}
+        for w, m in sorted(kept.items(), key=lambda kv: -kv[1])
+    ]
+    # A swept span runs to the shift end whenever the tech actually left; it
+    # would inflate both the hours and the crew count.
+    if auto_stopped & (kept.keys() | ({me} if me else set())):
+        out["reason"] = "auto_stopped"
+        return out
+    basis_who = me or max(kept, key=kept.get)
+    basis = minutes_by_person[basis_who]
+    if basis < SUGGEST_CREW_SHARE * max(kept.values()):
+        out["reason"] = "shorter_than_crew"
+        return out
+    out["started_at"] = first_in[basis_who].isoformat()
+    if basis > SUGGEST_MAX_MINUTES:
+        out["reason"] = "too_long"
+        return out
+    out["hours"] = max(0.25, round(basis / 15) * 0.25)
+    out["techs"] = sum(1 for m in kept.values() if m >= SUGGEST_CREW_SHARE * basis)
     return out
