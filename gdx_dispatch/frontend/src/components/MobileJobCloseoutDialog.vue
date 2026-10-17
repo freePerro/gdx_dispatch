@@ -27,7 +27,8 @@
 //  2. Parts used (SKU autocomplete via /api/parts-needed/sku-suggest)
 //  3. Parts to order (free-text; lands in the office Parts-to-Order queue)
 //  4. Return visit (toggle + required why; backend spawns the child job)
-//  5. Hours (starts blank and must be typed — 0 included; see `hoursEntered`)
+//  5. Hours (pre-filled from today's check-in when it looks real, else blank
+//     and must be typed — 0 included; see `hoursEntered`)
 //  6. Signature canvas
 //  7. Notes
 //
@@ -109,6 +110,8 @@ async function _loadDayLog() {
     if (jobId !== props.jobId) return
     dayLog.value = d && typeof d === 'object' && !Array.isArray(d) ? d : null
     if (dayLog.value) _cacheDayLog(jobId, dayLog.value)
+    // Live reads only: a cached suggestion measured "now" at an older read.
+    _applyHoursSuggestion(dayLog.value?.hours_suggestion)
   } catch {
     if (jobId !== props.jobId) return
     dayLog.value = _cachedDayLog(jobId)
@@ -366,12 +369,86 @@ async function onPhotoPicked(e) {
 }
 
 // ─── Hours / signature / notes ───────────────────────────────────────
-// Blank until typed (GDXA-831). The closeout restates the tech's running job
+// Pre-filled from today's check-in (Doug, 2026-10-17): "I'm here" to Stop,
+// or to now while the timer runs — services/day_close
+// closeout_hours_suggestion, which suggests nothing for a tap (< 10 min) or a
+// forgotten timer (> 12 h). The tech can change it; submitting is still the
+// attestation, and `hours_source` tells the audit row which it was.
+// With no usable check-in the field stays blank until typed (GDXA-831). The closeout restates the tech's running job
 // timer AT these hours, so a field that started at 0 closed a skipped one at
 // 0 h — unbilled, unpaid, and indistinguishable from "I worked no time". With
 // the tenant's require-hours gate off nothing else stopped it. A blank cannot
 // submit; a typed 0 can, because then it is the tech's attestation.
 const hours = ref(null)
+const hoursSuggestion = ref(null)
+// What the sheet itself put in the field, so a number typed before the
+// day-log answered is recorded as typed, never as "from check-in".
+const prefilledHours = ref(null)
+const prefilledTechs = ref(null)
+// Set when the closer touches the crew field: a late suggestion must not
+// halve a crew they already entered.
+const techsTyped = ref(false)
+// When the field was filled. A running timer's span is measured once, so the
+// hint names this time rather than "now", which moves on while they work.
+const prefilledAt = ref(null)
+const suggestedHours = computed(() => {
+  const n = Number(hoursSuggestion.value?.hours)
+  return hoursSuggestion.value?.hours != null && Number.isFinite(n) ? n : null
+})
+function _applyHoursSuggestion(sug) {
+  if (!sug || typeof sug !== 'object') return
+  // Once the field is filled the hint stays on that figure: a reload (a
+  // refused submit) can bring a newer one the closer never saw.
+  if (prefilledHours.value != null) return
+  hoursSuggestion.value = sug
+  // Never over a number the closer already typed.
+  if (suggestedHours.value == null || (hours.value !== null && hours.value !== '')) return
+  hours.value = suggestedHours.value
+  prefilledHours.value = suggestedHours.value
+  prefilledAt.value = new Date().toISOString()
+  const techs = Number(sug.techs)
+  if (!techsTyped.value && Number.isInteger(techs) && techs >= 1 && techs <= 10) {
+    techsOnSite.value = techs
+    prefilledTechs.value = techs
+  }
+}
+const hoursSource = computed(() => {
+  if (prefilledHours.value == null) return 'typed'
+  return Number(hours.value) === prefilledHours.value ? 'check_in' : 'adjusted'
+})
+function _clockTime(iso) {
+  const d = iso ? new Date(iso) : null
+  return d && !Number.isNaN(d.getTime())
+    ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null
+}
+const suggestionText = computed(() => {
+  const sug = hoursSuggestion.value
+  if (!sug) return null
+  if (suggestedHours.value != null) {
+    const at = _clockTime(sug.started_at)
+    const people = sug.people || []
+    // A closer with no timer of their own gets the longest span on the crew.
+    const longest = people.reduce((a, p) => (a && a.hours >= p.hours ? a : p), null)
+    const basis = people.find((p) => p.mine) || longest
+    const whose = basis?.mine ? 'your' : basis?.name ? `${basis.name}'s` : 'the'
+    // Only the basis person's timer decides the end: a colleague still
+    // running says nothing about where these hours stop.
+    const running = Boolean(basis?.running)
+    // Crew size multiplies billed labor, so say it whenever the sheet filled it.
+    const techs = Number(prefilledTechs.value)
+    const crew = Number.isInteger(techs) && techs > 1 ? `, ${techs} techs on site` : ''
+    return `From ${whose} check-in${at ? ` at ${at}` : ''}${running && prefilledAt.value ? ` to ${_clockTime(prefilledAt.value)}` : ''}: ${formatHours(suggestedHours.value)} h${crew}. Change it if that's not right.`
+  }
+  if (sug.reason === 'too_short') return 'Checked in only a few minutes ago — enter the hours you worked.'
+  if (sug.reason === 'shorter_than_crew') {
+    const longest = (sug.people || [])[0]?.name
+    return `${longest ? `${longest} was` : 'Others were'} checked in longer than you — enter the hours the job took.`
+  }
+  if (sug.reason === 'auto_stopped') return 'A timer was stopped automatically at shift end, not by a check-out — enter the hours the job took.'
+  if (sug.reason === 'too_long') return 'The check-in timer ran over 12 hours, so it was not used — enter the hours you worked.'
+  return null
+})
 // v-model.number leaves '' for a cleared field. Bounds match CloseoutPayload.
 const hoursEntered = computed(() => {
   if (hours.value === null || hours.value === '') return false
@@ -391,6 +468,9 @@ const confirmArmedAt = ref(0)
 // Canonical lane, not a raw string (audit round 2): an install from the quote
 // flow arrives as 'installation'/'Install' and must still show the picker.
 const isInstallLane = computed(() => _isInstallLane(props.jobType))
+// Sold from an accepted estimate: already priced (Doug, 2026-10-17), so no
+// picker — the office bills it from the estimate.
+const soldEstimate = computed(() => dayLog.value?.accepted_estimate_number || null)
 const matrixItems = ref([])
 const matrixItemId = ref(null)
 async function loadMatrix() {
@@ -479,7 +559,8 @@ const canSubmit = computed(() => {
   const hasNotes = (notes.value || '').trim().length > 0
   const hasOrders = orderParts.value.length > 0
   if (!(hasParts || hasHours || hasSig || hasNotes || noPartsUsed.value || hasOrders || returnVisitNeeded.value)) return false
-  // Hours are attested, never defaulted: blank refuses (see `hours`).
+  // Hours are attested: the submitted figure, pre-filled from check-in or
+  // typed. A blank refuses (see `hours`).
   if (!hoursEntered.value) return false
   // Required: every parts row needs a name + qty >= 1.
   for (const p of parts.value) {
@@ -541,8 +622,13 @@ async function submit() {
     })),
     no_parts_used: noPartsUsed.value,
     hours: Number(hours.value),
+    hours_source: hoursSource.value,
+    // Only what the sheet put in the field: a suggestion that arrived after
+    // the closer typed was never shown to them.
+    hours_suggested: prefilledHours.value,
+    techs_suggested: prefilledTechs.value,
     techs_on_site: Math.max(1, Math.min(10, Number(techsOnSite.value) || 1)),
-    labor_matrix_item_id: isInstallLane.value ? (matrixItemId.value || null) : null,
+    labor_matrix_item_id: isInstallLane.value && !soldEstimate.value ? (matrixItemId.value || null) : null,
     signature_data,
     signed_by: signedBy.value.trim() || null,
     notes: notes.value.trim() || null,
@@ -662,7 +748,8 @@ async function submit() {
 const isDirty = computed(() =>
   !!dayCloseRef.value?.isDirty ||
   parts.value.length > 0 ||
-  Number(hours.value) > 0 ||
+  // A pre-filled figure the closer never touched is not their work to lose.
+  (Number(hours.value) > 0 && hoursSource.value !== 'check_in') ||
   notes.value.trim() !== '' ||
   sigDrawn.value ||
   orderParts.value.length > 0 ||
@@ -681,6 +768,11 @@ function _resetForm() {
   finished.value = null
   parts.value = []
   hours.value = null
+  hoursSuggestion.value = null
+  prefilledHours.value = null
+  prefilledTechs.value = null
+  techsTyped.value = false
+  prefilledAt.value = null
   techsOnSite.value = 1
   matrixItemId.value = null
   confirmStep.value = false
@@ -1038,7 +1130,10 @@ watch(finished, async (v) => {
       <!-- Hours -->
       <section class="section">
         <header class="section-head"><h3>Labor</h3></header>
-        <div v-if="isInstallLane" class="form-field" data-testid="mjco-install-picker">
+        <p v-if="isInstallLane && soldEstimate" class="muted hint" data-testid="mjco-install-from-estimate">
+          Priced from estimate {{ soldEstimate }} — nothing to pick. Hours are for the record.
+        </p>
+        <div v-else-if="isInstallLane" class="form-field" data-testid="mjco-install-picker">
           <label for="mjco-matrix">Install price (from the matrix)</label>
           <Select
             id="mjco-matrix"
@@ -1072,6 +1167,12 @@ watch(finished, async (v) => {
             :aria-invalid="!hoursEntered"
             aria-describedby="mjco-hours-hint"
           />
+          <small v-if="suggestionText && (hoursSource === 'check_in' || suggestedHours == null)" class="muted" data-testid="mjco-hours-suggestion">
+            {{ suggestionText }}
+          </small>
+          <small v-else-if="hoursSource === 'adjusted'" class="muted" data-testid="mjco-hours-adjusted">
+            Changed from {{ formatHours(suggestedHours) }} h at check-in.
+          </small>
           <small v-if="!hoursEntered" id="mjco-hours-hint" class="muted" data-testid="mjco-hours-required">
             Enter the hours you worked, from 0 to 99. Type 0 if you did no work.
           </small>
@@ -1082,6 +1183,7 @@ watch(finished, async (v) => {
             id="mjco-techs"
             v-model.number="techsOnSite"
             type="number"
+            @input="techsTyped = true"
             min="1"
             max="10"
             step="1"
