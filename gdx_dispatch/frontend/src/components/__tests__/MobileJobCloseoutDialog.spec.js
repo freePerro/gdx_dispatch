@@ -762,3 +762,209 @@ describe('#530 parts read failure is reported, not read as "no parts"', () => {
     expect(wrapper.find('[data-testid="mjco-no-parts-used"]').exists()).toBe(true);
   });
 });
+
+// Doug 2026-10-17: "if they check in and out correctly it should autofill; if
+// not there should be an option to adjust it" — and an install sold from an
+// estimate asks the tech to pick nothing.
+describe('hours pre-filled from check-in', () => {
+  function dayLogWith(extra) {
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('/day-log')) {
+        return Promise.resolve({ rows: [], logged_hours_total: 0, earlier_day_open: null, ...extra });
+      }
+      return Promise.resolve([]);
+    });
+  }
+  const SUG = {
+    hours: 2.25, techs: 2, reason: null, started_at: '2026-10-17T14:10:00Z',
+    people: [{ name: 'Lead', hours: 2.3, running: false, mine: true }],
+  };
+
+  // Hosts mount the sheet closed and open it; opening is what reads the day log.
+  async function openDialog(props = {}) {
+    const wrapper = mountDialog({ visible: false, ...props });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+    await answerYes(wrapper);
+    return wrapper;
+  }
+
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiPost.mockReset();
+    toastAdd.mockReset();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fills hours and techs, says where they came from, and submits as check_in', async () => {
+    dayLogWith({ hours_suggestion: SUG });
+    apiPost.mockResolvedValue({ ok: true });
+    const wrapper = await openDialog();
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('2.25');
+    expect(wrapper.find('[data-testid="mjco-techs-on-site"]').element.value).toBe('2');
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).toContain('From your check-in');
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).toContain('2 techs on site');
+    expect(wrapper.find('[data-testid="mjco-hours-required"]').exists()).toBe(false);
+    await confirmedSubmit(wrapper);
+    const body = apiPost.mock.calls[0][1];
+    expect(body.hours).toBe(2.25);
+    expect(body.techs_on_site).toBe(2);
+    expect(body.hours_source).toBe('check_in');
+    expect(body.hours_suggested).toBe(2.25);
+    expect(body.techs_suggested).toBe(2);
+  });
+
+  it('a closer who was on site less than the crew is asked, not pre-filled', async () => {
+    dayLogWith({ hours_suggestion: { hours: null, techs: null, reason: 'shorter_than_crew', started_at: null,
+      people: [{ name: 'Lead', hours: 4, running: true, mine: false }, { name: 'Helper', hours: 0.5, running: false, mine: true }] } });
+    const wrapper = await openDialog();
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('');
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).toContain('Lead was checked in longer than you');
+  });
+
+  it('a reload with a newer suggestion keeps the hint on the figure in the field', async () => {
+    dayLogWith({ hours_suggestion: SUG });
+    const wrapper = await openDialog();
+    // The submit is refused (another device opened a day) and the sheet
+    // re-reads the day log, which now suggests more.
+    dayLogWith({ hours_suggestion: { ...SUG, hours: 3.5 } });
+    apiPost.mockRejectedValue(Object.assign(new Error('x'), {
+      status: 409, body: { detail: 'open', code: 'earlier_day_open', date: '2026-10-05' },
+    }));
+    await confirmedSubmit(wrapper);
+    await flushPromises();
+    expect(apiGet.mock.calls.filter(([u]) => String(u).endsWith('/day-log')).length).toBe(2);
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('2.25');
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).toContain('2.25 h');
+  });
+
+  it('a number typed before the day log answers is recorded as typed, not as check-in', async () => {
+    let answer;
+    apiGet.mockImplementation((url) => (String(url).includes('/day-log')
+      ? new Promise((r) => { answer = r; })
+      : Promise.resolve([])));
+    apiPost.mockResolvedValue({ ok: true });
+    const wrapper = await openDialog();
+    await setInput(wrapper, 'mjco-hours', '2.25');
+    answer({ rows: [], logged_hours_total: 0, earlier_day_open: null, hours_suggestion: SUG });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('2.25');
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').exists()).toBe(false);
+    await confirmedSubmit(wrapper);
+    expect(apiPost.mock.calls[0][1].hours_source).toBe('typed');
+    // The suggestion arrived after they typed and was never shown to them.
+    expect(apiPost.mock.calls[0][1].hours_suggested).toBe(null);
+  });
+
+  it('a crew size entered before the day log answers is not overwritten', async () => {
+    // Audit round 4: the late suggestion reset 4 techs to 2, halving billed labor.
+    let answer;
+    apiGet.mockImplementation((url) => (String(url).includes('/day-log')
+      ? new Promise((r) => { answer = r; })
+      : Promise.resolve([])));
+    apiPost.mockResolvedValue({ ok: true });
+    const wrapper = await openDialog();
+    await setInput(wrapper, 'mjco-techs-on-site', '4');
+    answer({ rows: [], logged_hours_total: 0, earlier_day_open: null, hours_suggestion: { ...SUG, techs: 2 } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('2.25');
+    expect(wrapper.find('[data-testid="mjco-techs-on-site"]').element.value).toBe('4');
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).not.toContain('techs on site');
+    await confirmedSubmit(wrapper);
+    const body = apiPost.mock.calls[0][1];
+    expect(body.techs_on_site).toBe(4);
+    expect(body.techs_suggested).toBe(null);
+    expect(body.hours_source).toBe('check_in');
+  });
+
+  it('a running timer names the time the figure was taken, not "now"', async () => {
+    // Audit round 5: the figure is measured once; "to now" kept claiming to be current.
+    dayLogWith({ hours_suggestion: { ...SUG, people: [{ ...SUG.people[0], running: true }] } });
+    const clock = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const before = clock(new Date());
+    const wrapper = await openDialog();
+    const after = clock(new Date());
+    const hint = wrapper.find('[data-testid="mjco-hours-suggestion"]').text();
+    expect(hint).not.toContain('to now');
+    expect([` to ${before}:`, ` to ${after}:`].some((t) => hint.includes(t))).toBe(true);
+  });
+
+  it("a colleague's running timer does not give the closer's stopped span an end time", async () => {
+    // Audit round 6: the hint said "to 10:51" while 2.25 h ended at the closer's Stop.
+    dayLogWith({ hours_suggestion: { ...SUG, people: [
+      { name: 'Sam', hours: 2.6, running: true, mine: false },
+      { name: 'Lead', hours: 2.3, running: false, mine: true },
+    ] } });
+    const wrapper = await openDialog();
+    const hint = wrapper.find('[data-testid="mjco-hours-suggestion"]').text();
+    expect(hint).toContain('From your check-in');
+    expect(hint).not.toMatch(/ to \d{1,2}:\d{2}/);
+  });
+
+  it('a timer the shift-end sweep stopped is not used as a check-out', async () => {
+    dayLogWith({ hours_suggestion: { hours: null, techs: null, reason: 'auto_stopped', people: [] } });
+    const wrapper = await openDialog();
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('');
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).toContain('stopped automatically at shift end');
+  });
+
+  it("a closer with no timer of their own is told whose check-in it was", async () => {
+    dayLogWith({ hours_suggestion: { ...SUG, people: [{ name: 'Sam', hours: 2.3, running: false, mine: false }] } });
+    const wrapper = await openDialog();
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).toContain("From Sam's check-in");
+  });
+
+  it('a changed figure submits as adjusted and keeps the check-in number on record', async () => {
+    dayLogWith({ hours_suggestion: SUG });
+    apiPost.mockResolvedValue({ ok: true });
+    const wrapper = await openDialog();
+    await setInput(wrapper, 'mjco-hours', '3');
+    expect(wrapper.find('[data-testid="mjco-hours-adjusted"]').text()).toContain('2.25');
+    await confirmedSubmit(wrapper);
+    const body = apiPost.mock.calls[0][1];
+    expect(body.hours).toBe(3);
+    expect(body.hours_source).toBe('adjusted');
+    expect(body.hours_suggested).toBe(2.25);
+  });
+
+  it('no usable check-in leaves hours blank and required, sent as typed', async () => {
+    dayLogWith({ hours_suggestion: { hours: null, techs: null, reason: 'too_short', people: [] } });
+    apiPost.mockResolvedValue({ ok: true });
+    const wrapper = await openDialog();
+    expect(wrapper.find('[data-testid="mjco-hours"]').element.value).toBe('');
+    expect(wrapper.find('[data-testid="mjco-hours-required"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mjco-hours-suggestion"]').text()).toContain('only a few minutes');
+    await setInput(wrapper, 'mjco-hours', '1.5');
+    await confirmedSubmit(wrapper);
+    expect(apiPost.mock.calls[0][1].hours_source).toBe('typed');
+    expect(apiPost.mock.calls[0][1].hours_suggested).toBeNull();
+  });
+
+  it('an untouched pre-fill is not unsaved work: cancel closes without asking', async () => {
+    dayLogWith({ hours_suggestion: SUG });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const wrapper = await openDialog();
+    await wrapper.find('[data-testid="mjco-cancel"]').trigger('click');
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('an install sold from an estimate shows no price picker and sends no matrix row', async () => {
+    dayLogWith({ hours_suggestion: SUG, accepted_estimate_number: 'EST-000123' });
+    apiPost.mockResolvedValue({ ok: true });
+    const wrapper = await openDialog({ jobType: 'Installation' });
+    expect(wrapper.find('[data-testid="mjco-install-picker"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mjco-install-from-estimate"]').text()).toContain('EST-000123');
+    await confirmedSubmit(wrapper);
+    expect(apiPost.mock.calls[0][1].labor_matrix_item_id).toBeNull();
+  });
+
+  it('an install with no sold estimate still offers the picker', async () => {
+    dayLogWith({ hours_suggestion: SUG, accepted_estimate_number: null });
+    const wrapper = await openDialog({ jobType: 'Installation' });
+    expect(wrapper.find('[data-testid="mjco-install-picker"]').exists()).toBe(true);
+  });
+});

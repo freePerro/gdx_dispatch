@@ -212,7 +212,10 @@ buttons wired to stubs. Before calling anything done:
   and are not taxed; tax-exempt customers are never taxed, on any job. Labor
   is untaxed unless `tax_labor` is set.
 - Billed labor comes from **attested hours only** — elapsed clock time is
-  not evidence and code may not invent hours.
+  not evidence and code may not invent hours. The closeout may *pre-fill*
+  hours and crew size from today's check-ins as a suggestion; the figures the
+  closer submits are the attestation, and the audit row keeps the suggested
+  figures the phone reports beside the submitted ones (Doug, 2026-10-17).
 - Taxonomy: a service call is a repair; a converted estimate is an
   installation.
 - QuickBooks is being phased out: never schedule new QB syncs; backfills go
