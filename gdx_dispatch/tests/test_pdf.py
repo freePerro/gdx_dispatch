@@ -696,3 +696,98 @@ def test_past_due_invoice_prints_past_due(pdf_app: FastAPI):
         assert pdf_router._invoice_payload(not_yet, None, db)["status_label"] == "Unpaid"
     finally:
         db.close()
+
+
+# ── Job #, description of work, payment terms (GDXA-1291) ────────────────────
+
+
+def test_invoice_prints_job_number_description_and_terms(pdf_app: FastAPI, monkeypatch):
+    from datetime import date
+
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring replacement")
+        job.job_number = "JOB-2026-042"
+        job.description = "gate code 4411, dog in yard"  # office intake text
+        est = Estimate(estimate_number="EST-DW-1", description="Replace both torsion springs",
+                       customer_id=cust.id, job_id=job.id, total=Decimal("0"), status="accepted",
+                       public_token=uuid4().hex, company_id="tenant-test")
+        db.add(est)
+        db.flush()
+        inv = _invoice_for(db, job, cust, estimate_id=est.id,
+                           invoice_date=date(2026, 10, 1), due_date=date(2026, 10, 31))
+        payload = pdf_router._invoice_payload(inv, cust, db)
+    finally:
+        db.close()
+    assert payload["job_number"] == "JOB-2026-042"
+    assert payload["description"] == "Replace both torsion springs"
+    assert payload["terms"] == "Net 30, due 2026-10-31"
+    html = _render_html(monkeypatch, "invoice", payload)
+    assert "Job #: JOB-2026-042" in html
+    assert html.index("Description of Work") < html.index("Replace both torsion springs")
+    assert "gate code" not in html
+    assert html.index("<strong>Terms</strong>") < html.index("Net 30, due 2026-10-31")
+
+
+def test_invoice_blank_when_job_number_description_terms_absent(pdf_app: FastAPI, monkeypatch):
+    """Legacy job with no number, no source estimate, no stored invoice_date:
+    no empty "Job #", "Description of Work" or "Terms" heading."""
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring")
+        payload = pdf_router._invoice_payload(_invoice_for(db, job, cust), cust, db)
+    finally:
+        db.close()
+    assert (payload["job_number"], payload["description"], payload["terms"]) == ("", "", "")
+    html = _render_html(monkeypatch, "invoice", payload)
+    for heading in ("Job #", "Description of Work", "<strong>Terms</strong>"):
+        assert heading not in html
+
+
+def test_invoice_job_description_never_printed(pdf_app: FastAPI):
+    """job.description is office intake text, not customer-facing."""
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Spring")
+        job.description = "gate code 4411, dog in yard"
+        payload = pdf_router._invoice_payload(_invoice_for(db, job, cust), cust, db)
+    finally:
+        db.close()
+    assert "gate code" not in repr(payload)
+
+
+@pytest.mark.parametrize(
+    ("days", "words"),
+    [(0, "Due on receipt"), (15, "Net 15, due 2026-10-16"), (-3, "")],
+)
+def test_invoice_payment_terms_words(days, words):
+    from datetime import date, timedelta
+    from types import SimpleNamespace
+
+    inv = SimpleNamespace(invoice_date=date(2026, 10, 1), due_date=date(2026, 10, 1) + timedelta(days=days))
+    assert pdf_router._invoice_payment_terms(inv) == words
+    assert pdf_router._invoice_payment_terms(SimpleNamespace(invoice_date=None, due_date=date(2026, 10, 1))) == ""
+
+
+def test_estimate_prints_linked_job_number(pdf_app: FastAPI, monkeypatch):
+    db = pdf_app.dependency_overrides[get_db]()
+    try:
+        cust, job = _seed_job(db, "Dock doors")
+        job.job_number = "JOB-2026-077"
+        est = Estimate(estimate_number="EST-JNUM-1", job_id=job.id, customer_id=cust.id,
+                       total=Decimal("0"), status="draft", public_token=uuid4().hex,
+                       company_id="tenant-test")
+        db.add(est)
+        db.flush()
+        payload = pdf_router._estimate_payload(est, cust, db=db)
+        unlinked = Estimate(estimate_number="EST-JNUM-2", customer_id=cust.id, total=Decimal("0"),
+                            status="draft", public_token=uuid4().hex, company_id="tenant-test")
+        db.add(unlinked)
+        db.flush()
+        bare = pdf_router._estimate_payload(unlinked, cust, db=db)
+    finally:
+        db.close()
+    assert payload["job_number"] == "JOB-2026-077"
+    assert "Job #: JOB-2026-077" in _render_html(monkeypatch, "estimate", payload)
+    assert bare["job_number"] == ""
+    assert "Job #" not in _render_html(monkeypatch, "estimate", bare)

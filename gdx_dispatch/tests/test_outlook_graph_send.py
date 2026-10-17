@@ -237,6 +237,76 @@ def test_a_401_from_the_upload_url_is_not_read_as_our_token_expiring():
     assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
 
 
+class _ChunkAnswers(_Graph):
+    """The first PUT answers each of ``answers`` in turn (a status, or an
+    exception to raise), then the session behaves."""
+
+    def __init__(self, *answers):
+        super().__init__()
+        self.answers = list(answers)
+
+    def __call__(self, req):
+        if req.method == "PUT" and self.answers:
+            self.calls.append(req)
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return httpx.Response(answer, headers={"Retry-After": "7"} if answer == 429 else {}, text="busy")
+        return super().__call__(req)
+
+
+@pytest.mark.parametrize("answer", [429, 503, 504, httpx.ConnectError("refused")])
+def test_a_chunk_put_is_retried_on_the_same_range(answer):
+    graph = _ChunkAnswers(answer)
+    delays: list[float] = []
+    gc = _client(graph)
+    gc._sleep = delays.append
+    size = 3_500_000
+    graph_send.send_new(gc, MSG, [_att("big.pdf", size)])
+    puts = [r.headers["Content-Range"] for r in graph.calls if r.method == "PUT"]
+    assert puts[0] == puts[1] == f"bytes 0-2949119/{size}"
+    assert graph.received["bytes"] == size
+    assert graph.lines()[-1] == "POST /v1.0/me/messages/D1/send"
+    assert delays == ([7.0] if answer == 429 else [1.0])  # Retry-After honoured
+
+
+def test_a_chunk_put_that_keeps_being_refused_is_a_graph_error_and_the_draft_goes():
+    graph = _ChunkAnswers(*[httpx.ConnectError("refused") for _ in range(4)])
+    with pytest.raises(OutlookGraphAPIError) as caught:
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert caught.value.status_code == 504 and caught.value.endpoint == "uploadSession"
+    assert not isinstance(caught.value, graph_send.SendUnconfirmed)  # nothing was sent
+    assert len([r for r in graph.calls if r.method == "PUT"]) == 4  # first try + max_retries
+    assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
+
+
+@pytest.mark.parametrize("timeout", [httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow")])
+def test_a_chunk_put_timeout_is_not_retried(timeout):
+    # Each timeout already cost the full client timeout; four in a row would
+    # outlast the proxy while the worker went on to /send.
+    graph = _ChunkAnswers(timeout)
+    with pytest.raises(OutlookGraphAPIError) as caught:
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert caught.value.status_code == 504
+    assert len([r for r in graph.calls if r.method == "PUT"]) == 1
+    assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
+
+
+def test_a_chunk_put_still_throttled_after_the_retries_surfaces_the_429():
+    graph = _ChunkAnswers(*[429] * 4)
+    with pytest.raises(OutlookGraphAPIError) as caught:
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert caught.value.status_code == 429
+    assert "POST /v1.0/me/messages/D1/send" not in graph.lines()
+
+
+def test_a_504_on_create_upload_session_is_not_retried():
+    graph = _Once("/createUploadSession", 504)
+    with pytest.raises(OutlookGraphAPIError):
+        graph_send.send_new(_client(graph), MSG, [_att("big.pdf", 3_500_000)])
+    assert len([ln for ln in graph.lines() if ln.endswith("/createUploadSession")]) == 1
+
+
 def test_a_429_is_still_retried_because_graph_did_nothing():
     graph = _Once("/attachments", 429)
     graph_send.send_new(_client(graph), MSG, [_att("a.pdf", 2_000_000), _att("b.pdf", 1_000_000)])
@@ -318,3 +388,120 @@ def test_forward_with_any_added_file_uses_create_forward(graph):
     body = json.loads(graph.calls[0].content)
     assert body["comment"] == "see attached"
     assert body["toRecipients"][0]["emailAddress"]["address"] == "x@example.com"
+
+
+# ── a 401 mid-draft: the orphan delete runs on the refreshed token (GDXA-1321) ──
+
+class _TokenGraph(_Graph):
+    """Graph that honours only ``live`` as a bearer token, and answers ``fail``
+    (``(path fragment, status)``) on the first matching request."""
+
+    def __init__(self, *, live: str, fail: tuple[str, int] | None = None):
+        super().__init__()
+        self.live = live
+        self.fail = fail
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        if req.headers.get("Authorization") != f"Bearer {self.live}":
+            self.calls.append(req)
+            return httpx.Response(401, json={"error": {"code": "InvalidAuthenticationToken"}})
+        if self.fail and self.fail[0] in str(req.url):
+            self.calls.append(req)
+            status, self.fail = self.fail[1], None
+            return httpx.Response(status, json={"error": {"code": "x"}})
+        return super().__call__(req)
+
+    def deletes(self) -> list[str]:
+        return [r.headers["Authorization"] for r in self.calls if r.method == "DELETE"]
+
+
+def _wrapped_send(graph, *, refresh, monkeypatch):
+    """send_new inside the real with_outlook_client, with key storage and the
+    token grant stubbed and every client on ``graph``."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+
+    from gdx_dispatch.modules.outlook import token_refresh
+
+    real = token_refresh.OutlookGraphClient
+    monkeypatch.setattr(token_refresh, "OutlookGraphClient", lambda tok, **_kw: _client_with(real, tok, graph))
+    monkeypatch.setattr(token_refresh.key_storage, "get_user_tokens",
+                        lambda *_a: ("old-token", "ref", datetime.now(timezone.utc) + timedelta(hours=1)))
+    monkeypatch.setattr(token_refresh, "refresh_user_tokens", refresh)
+    with token_refresh.with_outlook_client(MagicMock(), MagicMock(), uuid4(), uuid4()) as gc:
+        graph_send.send_new(gc, MSG, [_att("a.pdf", 2_000_000), _att("b.pdf", 1_000_000)])
+
+
+def _client_with(cls, token, handler):
+    gc = cls(token, sleep=lambda _s: None)
+    gc._client = httpx.Client(transport=httpx.MockTransport(handler))
+    return gc
+
+
+def _refreshes_to(graph, token):
+    def refresh(*_a):
+        graph.live = token
+        return token
+    return refresh
+
+
+def test_a_401_on_attach_deletes_the_draft_with_the_refreshed_token(monkeypatch):
+    from gdx_dispatch.modules.outlook.token_refresh import OutlookTransientRetry
+    graph = _TokenGraph(live="old-token", fail=("/attachments", 401))
+    with pytest.raises(OutlookTransientRetry):
+        _wrapped_send(graph, refresh=_refreshes_to(graph, "fresh-token"), monkeypatch=monkeypatch)
+    assert graph.deletes() == ["Bearer fresh-token"]
+    assert graph.lines()[-1] == "DELETE /v1.0/me/messages/D1"
+    assert "POST /v1.0/me/messages/D1/send" not in graph.lines()
+
+
+def test_a_401_on_the_cleanup_delete_retries_it_after_refresh(monkeypatch):
+    # The attach fails for its own reason (400) and the token dies before the
+    # inline delete: the 400 is what surfaces, and the delete still happens.
+    graph = _TokenGraph(live="old-token", fail=("/attachments", 400))
+
+    def expire_before_delete(req):
+        if req.method == "DELETE" and graph.live == "old-token":
+            graph.live = None  # the token dies between the attach and the delete
+        return graph(req)
+
+    with pytest.raises(OutlookGraphAPIError) as caught:
+        _wrapped_send(expire_before_delete, refresh=_refreshes_to(graph, "fresh-token"),
+                      monkeypatch=monkeypatch)
+    assert caught.value.status_code == 400
+    assert graph.deletes() == ["Bearer old-token", "Bearer fresh-token"]
+    assert graph.calls[-1].method == "DELETE"
+    assert graph.calls[-1].headers["Authorization"] == "Bearer fresh-token"
+
+
+def test_a_401_with_a_dead_refresh_token_sends_no_delete_and_says_reconnect(monkeypatch):
+    from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired
+
+    def refuse(*_a):
+        raise OutlookReconnectRequired("invalid_grant")
+
+    graph = _TokenGraph(live="old-token", fail=("/attachments", 401))
+    with pytest.raises(OutlookReconnectRequired):
+        _wrapped_send(graph, refresh=refuse, monkeypatch=monkeypatch)
+    assert graph.deletes() == []
+
+
+def test_a_401_on_send_still_never_deletes_the_draft(monkeypatch):
+    from gdx_dispatch.modules.outlook.token_refresh import OutlookTransientRetry
+    graph = _TokenGraph(live="old-token", fail=("/D1/send", 401))
+    with pytest.raises(OutlookTransientRetry):
+        _wrapped_send(graph, refresh=_refreshes_to(graph, "fresh-token"), monkeypatch=monkeypatch)
+    assert graph.deletes() == []
+
+
+def test_a_401_with_the_token_endpoint_unreachable_logs_the_abandoned_draft(monkeypatch, caplog):
+    def unreachable(*_a):
+        raise httpx.ConnectError("login.microsoftonline.com unreachable")
+
+    graph = _TokenGraph(live="old-token", fail=("/attachments", 401))
+    with caplog.at_level("WARNING", logger="gdx_dispatch.modules.outlook.token_refresh"), \
+            pytest.raises(httpx.ConnectError):
+        _wrapped_send(graph, refresh=unreachable, monkeypatch=monkeypatch)
+    assert graph.deletes() == []
+    assert "orphan draft may remain" in caplog.text

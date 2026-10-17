@@ -4,6 +4,9 @@
     Pay $0.00 form here is a dead end (GDXA-571). A void invoice is excluded:
     it is not money the customer paid, and "already been paid" would be false. -#}
 {%- set settled = invoice.status == "paid" or (invoice.status != "void" and (invoice.balance_due or 0) <= 0) -%}
+{#- Same shape as core/money_format.py and the page's own JS money(): comma
+    grouping, sign outside the dollar sign (GDXA-1294). -#}
+{%- macro money(v) -%}{{ "-$" if v < 0 else "$" }}{{ "{:,.2f}".format(v|abs) }}{%- endmacro -%}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -441,7 +444,7 @@
       <span>{% if ach_processing.get("stage") == "verifying" %}Bank transfer awaiting verification{% else %}Bank transfer processing{% endif %}</span>
     </div>
     {% else %}
-    <div class="invoice-total" id="invoice-total">${{ "%.2f"|format(invoice.balance_due) }}</div>
+    <div class="invoice-total" id="invoice-total">{{ money(invoice.balance_due) }}</div>
     {% endif %}
   </div>
 
@@ -544,7 +547,7 @@
       </div>
       <button type="submit" class="btn-pay" id="card-submit" data-testid="card-submit"{% if preview %} disabled{% endif %}>
         <span class="spinner"></span>
-        <span class="btn-text">{% if card_two_step %}Continue{% else %}Pay ${{ "%.2f"|format(invoice.balance_due) }}{% endif %}</span>
+        <span class="btn-text">{% if card_two_step %}Continue{% else %}Pay {{ money(invoice.balance_due) }}{% endif %}</span>
       </button>
     </form>
 
@@ -552,7 +555,7 @@
     <form id="card-confirm-form" data-testid="card-confirm-form" hidden>
       <div class="breakdown" data-testid="card-breakdown">
         <div class="invoice-row"><span id="card-desc">Card</span><span></span></div>
-        <div class="invoice-row"><span>Invoice {{ invoice.invoice_number }}</span><span id="card-invoice-amount">${{ "%.2f"|format(invoice.balance_due) }}</span></div>
+        <div class="invoice-row"><span>Invoice {{ invoice.invoice_number }}</span><span id="card-invoice-amount">{{ money(invoice.balance_due) }}</span></div>
         <div class="invoice-row" id="card-fee-row"><span id="card-fee-label">Credit card processing fee ({{ surcharge_percent_label }})</span><span id="card-fee">$0.00</span></div>
         <div class="invoice-row total"><span>Total charged to your card</span><span id="card-total">$0.00</span></div>
       </div>
@@ -605,7 +608,7 @@
       </p>
       <button type="submit" class="btn-pay" id="ach-confirm" data-testid="ach-confirm">
         <span class="spinner"></span>
-        <span class="btn-text">Confirm and pay ${{ "%.2f"|format(invoice.balance_due) }}</span>
+        <span class="btn-text">Confirm and pay {{ money(invoice.balance_due) }}</span>
       </button>
       <button type="button" class="btn-link" id="ach-change" data-testid="ach-change">Use a different bank account</button>
     </form>

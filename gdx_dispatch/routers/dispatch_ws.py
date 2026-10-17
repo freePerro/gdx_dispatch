@@ -99,6 +99,11 @@ async def dispatch_board_ws(websocket: WebSocket, token: str = "") -> None:
     try:
         payload = _decode_token(websocket, token)
     except HTTPException:
+        # Every close below comes before accept, and uvicorn answers any
+        # pre-accept close with HTTP 403, so a client cannot tell 1011 from
+        # 1008; only TestClient surfaces the code. Only the server log tells a
+        # broken revocation check from a refusal: decode_live_access_token's
+        # traceback, then this line.
         log.warning("dispatch_ws_handshake_closed_1011: token revocation check unavailable")
         await websocket.close(code=1011)
         return

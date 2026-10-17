@@ -66,7 +66,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # and a signed-in user (GDXA-981, GDXA-982).
 # 366 → 367 (2026-10-15): POST /api/phone-com/messages/photo, the photo twin
 # of POST /api/phone-com/messages and gated the same way.
-BASELINE_SIZE = 367
+# 367 → 345 (2026-10-16): twenty-two estimate and proposal-tier writes now
+# require estimates.send or estimates.write (GDXA-1314).
+BASELINE_SIZE = 345
 
 
 def _baseline() -> set[str]:

@@ -18,7 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import Customer, Lead
+from gdx_dispatch.models.tenant_models import Customer, Lead, TenantRole, UserRoleAssignment
 from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier
 from gdx_dispatch.modules.proposals.router import router as proposals_router
 from gdx_dispatch.routers.auth import get_current_user
@@ -245,8 +245,19 @@ def test_duplicate_without_leads_write_drops_the_link():
     try:
         lead_id = _lead(tc)
         est_id = _started(tc, lead_id)["estimate"]["id"]
+        # A tenant role that may write estimates but not leads. No builtin role
+        # has that split, and since GDXA-1314 a technician (no estimates.write)
+        # cannot duplicate at all, so it no longer exercises the lead gate.
+        db = _db(tc)
+        role = TenantRole(company_id=TENANT, name="estimator",
+                          permissions='["estimates.read_all", "estimates.write"]')
+        db.add(role)
+        db.flush()
+        db.add(UserRoleAssignment(company_id=TENANT, user_id=UID, role_id=role.id))
+        db.commit()
+        db.close()
         tc.app.dependency_overrides[get_current_user] = lambda: {
-            "user_id": UID, "sub": UID, "role": "technician", "tenant_id": TENANT,
+            "user_id": UID, "sub": UID, "role": "estimator", "tenant_id": TENANT,
         }
         r = tc.post(f"/api/estimates/{est_id}/duplicate", json={})
         assert r.status_code == 201, r.text

@@ -452,6 +452,8 @@ gdx_dispatch/frontend/src/utils/jobDisplayState.js           jobs-dispatch
 gdx_dispatch/frontend/src/components/JobDailyLogCard.vue     jobs-dispatch
 gdx_dispatch/frontend/src/components/CrewChangeDialog.vue     jobs-dispatch
 gdx_dispatch/frontend/src/composables/useCrewChange.js       jobs-dispatch
+gdx_dispatch/frontend/src/components/ScheduleDropDialog.vue   jobs-dispatch
+gdx_dispatch/frontend/src/composables/useScheduleDrop.js      jobs-dispatch
 gdx_dispatch/frontend/src/utils/dayClose.js                  jobs-dispatch
 
 ## ---------------------------------------------------------------------------

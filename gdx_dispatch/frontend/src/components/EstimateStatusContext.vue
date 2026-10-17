@@ -53,6 +53,7 @@
                address for good and "Re-send" reuses the address that just
                bounced; neither covers "send this one somewhere else". -->
           <Button
+            v-if="canSend"
             label="Send to a different address"
             icon="pi pi-envelope"
             size="small"
@@ -63,6 +64,7 @@
             @click="$emit('send-to-other')"
           />
           <Button
+            v-if="canSend"
             label="Re-send"
             icon="pi pi-send"
             size="small"
@@ -110,6 +112,8 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   /** Enables "Fix customer email"; null when the estimate has no customer. */
   customerId: { type: String, default: null },
+  /** Holds estimates.send; without it the two send doors are hidden. */
+  canSend: { type: Boolean, default: true },
 })
 defineEmits(['resend', 'fix-email', 'send-to-other'])
 

@@ -171,21 +171,7 @@ def fetch_catalog(force: bool = False) -> list[dict]:
         return _cache["catalog"]
 
     try:
-        with (
-            httpx.Client(timeout=_CATALOG_TIMEOUT_S, follow_redirects=True) as client,
-            client.stream("GET", url, headers={"accept": "application/json"}) as r,
-        ):
-            if r.status_code >= 400:
-                raise StorefrontError(f"the plugin catalog returned HTTP {r.status_code}")
-            # Streamed with a running total: reading the whole body first and
-            # then measuring it is not a cap, it is a report.
-            chunks, total = [], 0
-            for chunk in r.iter_bytes():
-                total += len(chunk)
-                if total > _MAX_CATALOG_BYTES:
-                    raise StorefrontError("catalog response is implausibly large")
-                chunks.append(chunk)
-        payload = json.loads(b"".join(chunks))
+        payload = json.loads(_get_catalog_body(url))
     except StorefrontError:
         raise
     except Exception as exc:
@@ -205,6 +191,45 @@ def fetch_catalog(force: bool = False) -> list[dict]:
         raise StorefrontError("the plugin catalog is malformed") from exc
     _cache.update({"at": now, "url": url, "catalog": entries})
     return entries
+
+
+def _get_catalog_body(url: str) -> bytes:
+    """Fetch the catalog, following redirects MANUALLY so a hop to plain http is
+    refused before it is requested.
+
+    The catalog publishes each wheel's URL and sha256, so it is the root of the
+    install trust chain: with httpx's `follow_redirects=True` an https catalog
+    answering 301 to an http URL was read in plaintext, and an on-path attacker
+    could swap both fields for a wheel of their own on an allowed host. The
+    starting URL is the operator's setting and is left as configured; only a
+    redirect target is held to https.
+    """
+    with httpx.Client(timeout=_CATALOG_TIMEOUT_S, follow_redirects=False) as client:
+        for _hop in range(_MAX_REDIRECTS):
+            with client.stream("GET", url, headers={"accept": "application/json"}) as r:
+                if r.is_redirect:
+                    location = r.headers.get("location")
+                    if not location:
+                        raise StorefrontError("the plugin catalog redirected with no location")
+                    url = str(httpx.URL(url).join(location))
+                    if urlparse(url).scheme != "https":
+                        raise StorefrontError(
+                            "the plugin catalog redirected to a non-https address; "
+                            "refusing to read it"
+                        )
+                    continue
+                if r.status_code >= 400:
+                    raise StorefrontError(f"the plugin catalog returned HTTP {r.status_code}")
+                # Streamed with a running total: reading the whole body first
+                # and then measuring it is not a cap, it is a report.
+                chunks, total = [], 0
+                for chunk in r.iter_bytes():
+                    total += len(chunk)
+                    if total > _MAX_CATALOG_BYTES:
+                        raise StorefrontError("catalog response is implausibly large")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+    raise StorefrontError("the plugin catalog redirected too many times")
 
 
 def find_entry(key: str, version: str | None = None) -> dict:

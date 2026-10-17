@@ -113,22 +113,27 @@ describe("Dispatch drag-drop", () => {
     await flushPromises();
 
     wrapper.vm.onDragStart({ id: 101 }, { dataTransfer: { setData: vi.fn(), effectAllowed: "" } });
-    await wrapper.vm.handleDrop("tech-1", {
+    // Job 101 has no date, so the drop books it: it first asks for the
+    // hours and the crew (ScheduleDropDialog), and writes on Schedule.
+    wrapper.vm.handleDrop("tech-1", {
       preventDefault: vi.fn(),
       dataTransfer: { getData: () => "101" },
     });
-    await wrapper.vm.$nextTick();
+    await flushPromises();
+    expect(patchMock).not.toHaveBeenCalled();
+    await wrapper.find("[data-testid='schedule-drop-confirm']").trigger("click");
+    await flushPromises();
 
-    // Assert the contract LOOSELY — handleDrop's payload has grown over time
-    // (added assigned_tech_id S97, scheduled_at autoset post-S109). Pin the
-    // SEMANTICALLY required fields without rejecting future additions.
+    // Assert the contract LOOSELY — pin the semantically required fields
+    // without rejecting future additions.
     expect(patchMock).toHaveBeenCalledTimes(1);
     const [url, payload] = patchMock.mock.calls[0];
     expect(url).toBe("/api/jobs/101");
     expect(payload).toMatchObject({
-      assigned_to: "tech-1",
-      technician_id: "tech-1",
+      assigned_tech_ids: ["tech-1"],
+      lead_tech_id: "tech-1",
     });
+    expect(payload.scheduled_at).toBeTruthy();
     // Skip the post-state DOM assertion: handleDrop refetches jobs after
     // the PATCH, and our mock returns the same (still-unassigned) JOBS
     // array on every call. The PATCH being made with the right payload

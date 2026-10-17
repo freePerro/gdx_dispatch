@@ -35,6 +35,10 @@ _RETRYABLE_STATUS = frozenset({429, 503, 504})
 #: request" (https://learn.microsoft.com/en-us/graph/throttling, updated
 #: 2025-08-06, read 2026-10-16).
 RETRY_THROTTLED_ONLY = frozenset({429})
+#: Methods whose repeat leaves the mailbox as one call would: reads, deletes,
+#: and the PATCHes this client sends, which each set a property to a value.
+#: Every Graph action that creates, sends, moves or copies is a POST.
+_REPEATABLE_METHODS = frozenset({"GET", "HEAD", "DELETE", "PUT", "PATCH"})
 
 
 class OutlookGraphAPIError(RuntimeError):
@@ -80,6 +84,17 @@ class OutlookGraphClient:
         self._max_retries = max_retries
         self._retry_max_delay_s = retry_max_delay_s
         self._sleep = sleep or time.sleep  # injectable for tests
+        # Cleanups a 401 stopped: run by with_outlook_client with a client on
+        # the refreshed token, since this one's token is fixed and dead.
+        self._deferred_cleanups: list[Callable[[OutlookGraphClient], None]] = []
+
+    def defer_until_reauth(self, cleanup: Callable[[OutlookGraphClient], None]) -> None:
+        """Queue ``cleanup(fresh_client)`` to run once the token is refreshed."""
+        self._deferred_cleanups.append(cleanup)
+
+    def take_deferred_cleanups(self) -> list[Callable[[OutlookGraphClient], None]]:
+        cleanups, self._deferred_cleanups = self._deferred_cleanups, []
+        return cleanups
 
     def close(self) -> None:
         self._client.close()
@@ -100,12 +115,17 @@ class OutlookGraphClient:
         params: dict | None = None,
         json: dict | None = None,
         accept_binary: bool = False,
-        retry_on: frozenset[int] = _RETRYABLE_STATUS,
+        retry_on: frozenset[int] | None = None,
     ) -> httpx.Response:
-        """One Graph call, retried on ``retry_on`` (throttling and transient
-        5xx by default). A call that creates something should pass
-        :data:`RETRY_THROTTLED_ONLY`: a 503/504 can come back after Graph did
-        the work, and a retry would do it twice."""
+        """One Graph call, retried on ``retry_on``. Left unset, a repeatable
+        method retries throttling and transient 5xx, and a POST only
+        throttling: a 503/504 can come back after Graph did the work, and a
+        retry would do it twice. Callers that create or send something still
+        pass :data:`RETRY_THROTTLED_ONLY` explicitly
+        (``test_outlook_graph_post_retry``)."""
+        if retry_on is None:
+            retry_on = (_RETRYABLE_STATUS if method.upper() in _REPEATABLE_METHODS
+                        else RETRY_THROTTLED_ONLY)
         url = path if path.startswith("http") else f"{self._base_url}{path}"
         headers = {
             "Authorization": f"Bearer {self._access_token}",
@@ -343,7 +363,7 @@ class OutlookGraphClient:
         """Create a folder. parent_id=None creates at top level."""
         path = f"/me/mailFolders/{parent_id}/childFolders" if parent_id else "/me/mailFolders"
         body = {"displayName": display_name, "isHidden": False}
-        return self._request("POST", path, json=body).json()
+        return self._request("POST", path, json=body, retry_on=RETRY_THROTTLED_ONLY).json()
 
     def rename_folder(self, folder_id: str, *, display_name: str) -> dict[str, Any]:
         """Rename a folder. Only displayName is mutable on a mailFolder."""
@@ -364,6 +384,7 @@ class OutlookGraphClient:
             "POST",
             f"/me/mailFolders/{folder_id}/move",
             json={"destinationId": dest_parent_id},
+            retry_on=RETRY_THROTTLED_ONLY,
         ).json()
 
     def empty_folder(self, folder_id: str) -> None:
@@ -394,6 +415,7 @@ class OutlookGraphClient:
             "POST",
             f"/me/messages/{message_id}/move",
             json={"destinationId": dest_folder_id},
+            retry_on=RETRY_THROTTLED_ONLY,
         ).json()
 
     def copy_message(self, message_id: str, *, dest_folder_id: str) -> dict[str, Any]:
@@ -401,6 +423,7 @@ class OutlookGraphClient:
             "POST",
             f"/me/messages/{message_id}/copy",
             json={"destinationId": dest_folder_id},
+            retry_on=RETRY_THROTTLED_ONLY,
         ).json()
 
     def mark_message_read(self, message_id: str, *, is_read: bool = True) -> None:

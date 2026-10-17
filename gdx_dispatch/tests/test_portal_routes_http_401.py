@@ -158,9 +158,11 @@ class _Ctx:
             "role": "customer",
             "customer_id": self.customer_id,
             "typ": "access",
+            "aud": portal.PORTAL_AUDIENCE,
             "exp": int((datetime.now(UTC) + timedelta(minutes=15)).timestamp()),
         }
         claims.update(over)
+        claims = {k: v for k, v in claims.items() if v is not None}
         return portal.jwt.encode(claims, key, algorithm=portal.ALG)
 
     def call(self, method: str, path: str, auth: str | None):
@@ -187,6 +189,8 @@ def _bad_auth(ctx: _Ctx) -> dict[str, str | None]:
         "garbage bearer": "Bearer not-a-jwt",
         "expired customer jwt": f"Bearer {ctx.token(exp=past)}",
         "non-customer role": f"Bearer {ctx.token(role='admin')}",
+        "non-access typ": f"Bearer {ctx.token(typ='refresh')}",
+        "no portal audience": f"Bearer {ctx.token(aud=None)}",
         "wrong signing key": f"Bearer {ctx.token(key='another-secret-key-at-least-32-bytes-long')}",
         "deactivated customer user": f"Bearer {ctx.token(sub=ctx.revoked_user_id)}",
         "unknown customer user": f"Bearer {ctx.token(sub=str(uuid4()))}",
@@ -198,6 +202,8 @@ BAD_CASES = (
     "garbage bearer",
     "expired customer jwt",
     "non-customer role",
+    "non-access typ",
+    "no portal audience",
     "wrong signing key",
     "deactivated customer user",
     "unknown customer user",

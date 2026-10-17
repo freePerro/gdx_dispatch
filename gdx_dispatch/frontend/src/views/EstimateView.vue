@@ -71,6 +71,7 @@
           :total="activity.total"
           :loading="activityLoading"
           :customer-id="form.customer_id ? String(form.customer_id) : null"
+          :can-send="canSend"
           @resend="emailEstimate"
           @fix-email="goFixCustomerEmail"
           @send-to-other="sendToOtherAddress" />
@@ -983,12 +984,14 @@
         <template v-else>
           <Button label="Download PDF" icon="pi pi-file-pdf" severity="secondary"
             data-testid="download-pdf-btn" @click="downloadPdf" />
-          <Button label="Email Customer" icon="pi pi-send" data-testid="estimate-send"
+          <!-- Sending needs estimates.send, as the server does (GDXA-1314); a
+               role without it sees no send controls rather than a 403. -->
+          <Button v-if="canSend" label="Email Customer" icon="pi pi-send" data-testid="estimate-send"
             :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
             @click="emailEstimate" />
           <!-- Text the review-and-approve link (Phone.com) — only when texting
                is on; the server refuses finalized estimates and opt-outs. -->
-          <Button v-if="smsEnabled" label="Text Estimate" icon="pi pi-comment" severity="secondary" outlined
+          <Button v-if="smsEnabled && canSend" label="Text Estimate" icon="pi pi-comment" severity="secondary" outlined
             data-testid="estimate-text"
             :disabled="estimate.status === 'Accepted' || estimate.status === 'Declined'"
             @click="showSmsDialog = true" />
@@ -1378,6 +1381,8 @@ async function loadLineCategories() {
 const isExisting = computed(() => Boolean(route.params.id));
 const { isEnabled: isModuleEnabled } = useTenantModules();
 const smsEnabled = computed(() => isModuleEnabled("phone_com"));
+// useEstimateSources loads the permission set; the store is reactive.
+const canSend = computed(() => auth.hasPermission("estimates.send"));
 const showSmsDialog = ref(false);
 const currentEstimateId = computed(() => route.params.id || estimate.value?.id || null);
 

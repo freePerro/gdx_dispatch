@@ -131,7 +131,7 @@ def test_outlook_graph_body_carries_file_attachments(monkeypatch):
     captured = {}
 
     class _FakeGraphClient:
-        def _request(self, method, path, json=None):
+        def _request(self, method, path, json=None, retry_on=None):
             captured["method"] = method
             captured["path"] = path
             captured["body"] = json
@@ -172,7 +172,7 @@ def test_outlook_graph_body_omits_attachments_key_when_none(monkeypatch):
     captured = {}
 
     class _FakeGraphClient:
-        def _request(self, method, path, json=None):
+        def _request(self, method, path, json=None, retry_on=None):
             captured["body"] = json
 
     @contextmanager

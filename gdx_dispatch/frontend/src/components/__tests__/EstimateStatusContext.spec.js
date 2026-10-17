@@ -91,6 +91,15 @@ describe('EstimateStatusContext — send to a different address', () => {
     const w = mountWith({ status: 'sent', context: { bounce: null, decline: null }, customerId: 'c-1' })
     expect(w.find('[data-testid="estimate-send-to-other"]').exists()).toBe(false)
   })
+
+  it('hides both send doors from a role without estimates.send, keeps Fix-email', () => {
+    // The server 403s /send for that role (GDXA-1314); a button that can only
+    // fail is a dead control.
+    const w = mountWith({ status: 'rejected', context: BOUNCE, customerId: 'c-1', canSend: false })
+    expect(w.find('[data-testid="estimate-send-to-other"]').exists()).toBe(false)
+    expect(w.find('[data-testid="estimate-resend"]').exists()).toBe(false)
+    expect(w.find('[data-testid="estimate-fix-email"]').exists()).toBe(true)
+  })
 })
 
 describe('EstimateStatusContext — Failed Email banner', () => {
