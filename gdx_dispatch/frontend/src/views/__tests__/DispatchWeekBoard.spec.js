@@ -27,9 +27,10 @@
  *     the strip or lane it came from writes nothing (/audit, 2026-10-16: it
  *     took a self-assigned tech off an undated job).
  * 12. An undated job with no hours dropped in its own tech's row asks the
- *     hours question before dating it, and sends the hours in the same PATCH;
- *     closing the question moves nothing; the "No tech" row only dates it,
- *     as the day view exempts no-tech drops (GDXA-1261).
+ *     hours (and crew) in the "Schedule this job" dialog before dating it,
+ *     and sends the hours in the same PATCH; Cancel moves nothing; the
+ *     "No tech" row only dates it, as the day view exempts no-tech drops
+ *     (GDXA-1261).
  * 13. Day or Week survives a reload (localStorage); a bad stored value or a
  *     storage that throws opens Day (GDXA-1261).
  */
@@ -84,6 +85,7 @@ const stubs = {
   SelectButton: { props: ["modelValue", "options"], template: "<div />" },
   Tag: { props: ["value"], template: "<span>{{ value }}</span>" },
   InputText: { props: ["modelValue"], template: "<input />" },
+  MultiSelect: { props: ["modelValue", "options"], emits: ["update:modelValue"], template: "<div />" },
   TechTimelineColumn,
   TechEfficiencyPanel: { template: "<div />" },
   JobStateChip: { template: "<span />" },
@@ -220,7 +222,12 @@ describe("DispatchView — week board", () => {
       ...INTAKE, id: "job-5", assigned_to: "tech-1", assigned_tech_ids: ["tech-1"], technician_id: "tech-1",
       scheduled_duration_hours: null, effective_duration_hours: null,
     };
+    // The hours are asked in the "Schedule this job" dialog, which books an
+    // undated job; the old hours-only prompt never opens for it.
     const durationPrompt = (w) => w.find('[data-testid="dispatch-duration-prompt"]');
+    const scheduleDialog = (w) => w.find('[data-testid="schedule-drop-prompt"]');
+    const hoursBox = (w) => w.findAllComponents(stubs.InputText)
+      .find((c) => c.attributes("data-testid") === "schedule-drop-hours");
     async function dropSelf(w) {
       w.vm.onDragStart(SELF, null);
       const drop = cell(w, "tech-1", OTHER_DAY).trigger("drop");
@@ -232,37 +239,46 @@ describe("DispatchView — week board", () => {
       boardRows = [JOB, SELF];
       const w = await mountBoard();
       const drop = await dropSelf(w);
-      expect(durationPrompt(w).exists()).toBe(true);
+      expect(scheduleDialog(w).exists()).toBe(true);
+      expect(durationPrompt(w).exists()).toBe(false);
+      expect(hoursBox(w).props("modelValue")).toBe("");
       expect(patchMock).not.toHaveBeenCalled();
-      w.vm.$.setupState.durationPromptHours = 3;
+      hoursBox(w).vm.$emit("update:modelValue", "3");
       await flushAll();
-      await w.find('[data-testid="dispatch-duration-prompt-save"]').trigger("click");
+      await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
       await drop; await flushAll();
       expect(patchMock).toHaveBeenCalledTimes(1);
       const [url, body] = patchMock.mock.calls[0];
       expect(url).toBe("/api/jobs/job-5");
-      expect(Object.keys(body).sort()).toEqual(["scheduled_at", "scheduled_duration_hours"]);
-      expect(body.scheduled_duration_hours).toBe(3);
+      expect(body).toEqual({
+        scheduled_at: body.scheduled_at,
+        assigned_tech_ids: ["tech-1"],
+        lead_tech_id: "tech-1",
+        scheduled_duration_hours: 3,
+      });
       expect(wallOf(body.scheduled_at)).toEqual([OTHER_DAY, 8, 0]);
     });
 
-    it("dates it without hours on Skip", async () => {
+    it("dates it without hours when none are given", async () => {
       boardRows = [JOB, SELF];
       const w = await mountBoard();
       const drop = await dropSelf(w);
-      await w.find('[data-testid="dispatch-duration-prompt-skip"]').trigger("click");
+      await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
       await drop; await flushAll();
-      expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-5", ["scheduled_at"]]]);
+      expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b).sort()])).toEqual([
+        ["/api/jobs/job-5", ["assigned_tech_ids", "lead_tech_id", "scheduled_at"]],
+      ]);
     });
 
-    it("moves nothing when the hours question is closed", async () => {
+    it("moves nothing when the question is cancelled", async () => {
       boardRows = [JOB, SELF];
       const w = await mountBoard();
       const drop = await dropSelf(w);
-      w.vm.$.setupState.durationPromptOpen = false;
-      w.vm.$.setupState.onDurationPromptHide();
+      expect(scheduleDialog(w).exists()).toBe(true);
+      await w.find('[data-testid="schedule-drop-cancel"]').trigger("click");
       await drop; await flushAll();
       expect(patchMock).not.toHaveBeenCalled();
+      expect(scheduleDialog(w).exists()).toBe(false);
     });
 
     it("on the No tech row only dates it: that row has no capacity to count", async () => {
@@ -271,6 +287,7 @@ describe("DispatchView — week board", () => {
       const w = await mountBoard();
       await dragOnto(w, LOOSE, "unassigned", OTHER_DAY);
       expect(durationPrompt(w).exists()).toBe(false);
+      expect(scheduleDialog(w).exists()).toBe(false);
       expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-2", ["scheduled_at"]]]);
     });
   });
@@ -313,8 +330,11 @@ describe("DispatchView — week board", () => {
     const w = await mountBoard();
     await dragOnto(w, INTAKE, "tech-2", OTHER_DAY);
     expect(w.find('[data-testid="week-slot-prompt"]').exists()).toBe(false);
+    // An undated job is being booked: hours and crew are asked first.
+    await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
+    await flushAll();
     const call = patchMock.mock.calls.find(([u]) => u === "/api/jobs/job-2");
-    expect(call[1]).toMatchObject({ assigned_tech_id: "tech-2" });
+    expect(call[1]).toMatchObject({ assigned_tech_ids: ["tech-2"], lead_tech_id: "tech-2" });
     expect(wallOf(call[1].scheduled_at)).toEqual([OTHER_DAY, 7, 30]);
   });
 
@@ -333,9 +353,11 @@ describe("DispatchView — week board", () => {
     await w.find('[data-testid="week-slot-1"]').trigger("click");
     expect(w.vm.$.setupState.slotPromptTime).toBe("12:30");
     await w.find('[data-testid="week-slot-confirm"]').trigger("click");
+    await flushAll();
+    await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
     await drop; await flushAll();
     const call = patchMock.mock.calls.find(([u]) => u === "/api/jobs/job-2");
-    expect(call[1]).toMatchObject({ assigned_tech_id: "tech-1" });
+    expect(call[1]).toMatchObject({ assigned_tech_ids: ["tech-1"], lead_tech_id: "tech-1" });
     expect(wallOf(call[1].scheduled_at)).toEqual([TODAY, 12, 30]);
   });
 

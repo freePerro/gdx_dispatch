@@ -872,6 +872,10 @@
            add the tech. Nothing changes the crew without this answer. -->
       <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
 
+      <!-- A job with no date dropped onto a tech: hours and the whole crew
+           before anything is written (Doug, 2026-10-16). -->
+      <ScheduleDropDialog :prompt="schedulePrompt" :technicians="assignableTechnicians" :all-technicians="technicians" @answer="answerSchedulePrompt" />
+
       <!-- Sprint dispatch-capacity (2026-05-20) — duration prompt on drop -->
       <Dialog
         v-model:visible="durationPromptOpen"
@@ -1062,6 +1066,8 @@ import Card from 'primevue/card';
 import Dialog from 'primevue/dialog';
 import CrewChangeDialog from '../components/CrewChangeDialog.vue';
 import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange';
+import ScheduleDropDialog from '../components/ScheduleDropDialog.vue';
+import { estimateHoursOver, scheduleDropPatch, useScheduleDropPrompt } from '../composables/useScheduleDrop';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
@@ -2359,6 +2365,7 @@ async function onWeekCellDrop(event, techId, dayStr) {
     await placePartialJob(jobId, techId, iso, dayStr);
     return;
   }
+  if (await scheduleUndatedDrop(jobId, techId, iso, source)) return;
   // A job with a crew is drawn in every crew member's row, so a drop in any
   // of those rows is a date move. It must not go through assignJob: one
   // assigned_tech_id replaces the whole crew on the server, which took the
@@ -2367,19 +2374,13 @@ async function onWeekCellDrop(event, techId, dayStr) {
   if (source?.technician_id && !crew.includes(String(source.technician_id))) crew.push(String(source.technician_id));
   const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
   if (source && onCrew) {
-    const datePatch = { scheduled_at: iso };
-    // An undated job with no hours gets the hours question placeCrewJob asks,
-    // or it lands in the tech's day uncounted in capacity; closing it moves
-    // nothing. The "No tech" row has no capacity, so it is exempt, as
+    // An undated job dropped in a tech's row was booked above, hours asked
+    // there (GDXA-1261). What reaches here is a dated job's move, or the
+    // "No tech" row, which only dates: it has no capacity to count, as
     // _needsDurationPrompt exempts techId=null.
-    if (techId && !source.scheduled_at && !jobHasDuration(source)) {
-      const hours = await askDurationFor(source);
-      if (hours === null) return;
-      if (hours > 0) datePatch.scheduled_duration_hours = hours;
-    }
     await withBoardWrite(async () => {
       try {
-        await api.patch(`/api/jobs/${jobId}`, datePatch);
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso });
       } catch { /* api composable already toasts */ }
       await fetchJobs();
     });
@@ -2409,6 +2410,48 @@ function takeDragOrigin() {
 }
 
 const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techName(id));
+const { prompt: schedulePrompt, ask: askSchedule, answer: answerSchedulePrompt } = useScheduleDropPrompt();
+
+// A job with no date dropped onto a tech is being booked, not moved: ask the
+// hours and the whole crew first, then write date, crew and hours in one
+// PATCH, as the job page's Schedule dialog does (Doug, 2026-10-16). True when
+// handled (booked or cancelled); false sends a dated job on to the move paths.
+// Callers have already routed visit cards and partial jobs elsewhere.
+async function scheduleUndatedDrop(jobId, techId, scheduledAt, knownJob = null) {
+  if (!techId || !scheduledAt) return false;
+  const job = knownJob || findBoardJob(jobId);
+  if (!job || job.scheduled_at) return false;
+  const wall = toShopWallClock(scheduledAt, tenantTimezone.value);
+  const timed = wall.getHours() !== 0 || wall.getMinutes() !== 0;
+  const answer = await askSchedule({
+    jobLabel: displayCustomer(job),
+    whenLabel: timed
+      ? formatScheduled(scheduledAt)
+      : `${formatShopDay(`${wall.getFullYear()}-${String(wall.getMonth() + 1).padStart(2, '0')}-${String(wall.getDate()).padStart(2, '0')}`)}, no set time`,
+    techId,
+    crew: crewOf(job),
+    hours: Number(job.scheduled_duration_hours) > 0 ? job.scheduled_duration_hours : job.effective_duration_hours,
+    // No hours of its own: the dialog prefills from the estimate, over the
+    // crew picked in it, as the hours prompt does (GDXA-1262).
+    suggest: jobHasDuration(job) ? null : () => suggestedEstimate(job.id),
+  });
+  if (!answer) return true; // cancelled: nothing moves
+  await withBoardWrite(async () => {
+    try {
+      await api.patch(`/api/jobs/${jobId}`, scheduleDropPatch(answer, scheduledAt));
+    } catch { /* api composable already toasts */ }
+    await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
+  });
+  return true;
+}
+
+// The day a column drop with no slot lands on: shop midnight of the board
+// day, the tray (the same day _doAssignJobInner gives an undated job).
+function boardDayStartIso() {
+  const d = new Date(selectedDate.value || new Date());
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
 const { confirmAsync } = useDestructiveConfirm();
 
 // Dropping a crew job into the queue or a holding area takes every tech off
@@ -2486,6 +2529,8 @@ async function handleDrop(techId, event) {
     await moveVisitCard(card, techId, card.scheduled_at);
     return;
   }
+  if (!partialJobIds.value.has(String(dropJobId))
+    && await scheduleUndatedDrop(dropJobId, techId, boardDayStartIso())) return;
   if (await placeCrewJob(dropJobId, techId, null, from)) return;
   await assignJob(dropJobId, techId);
 }
@@ -2535,27 +2580,34 @@ function askDurationFor(job, crewSize) {
 // as it stands (or the labor row's default crew), not by who is being placed.
 // A failed or empty answer leaves the prompt blank, and a late answer never
 // overwrites what the scheduler typed or a prompt opened since.
+// The "Schedule this job" dialog asks the same through suggestedEstimate.
 let durationPrefillSeq = 0;
 async function prefillDurationFromEstimate(jobId, crewSize) {
   const seq = ++durationPrefillSeq;
   durationPromptEstimate.value = null;
+  const est = await suggestedEstimate(jobId);
+  if (!est) return;
+  if (seq !== durationPrefillSeq || !durationPromptOpen.value) return;
+  if (durationPromptHours.value !== '') return;
+  const crew = Math.max(1, Number(crewSize) || 1);
+  const hours = estimateHoursOver(est.manHours, crew);
+  durationPromptHours.value = String(hours);
+  durationPromptEstimate.value = { ...est, crew, hours };
+}
+
+// One job's estimate man-hours, { manHours, accepted }, or null when it has
+// none or the request fails (no toast: the prompt just stays blank).
+async function suggestedEstimate(jobId) {
   let s;
   try {
     s = await api.get(`/api/jobs/${encodeURIComponent(jobId)}/suggested-duration`,
       { suppressErrorToast: true });
   } catch (_e) {
-    return;
+    return null;
   }
   const manHours = Number(s?.man_hours);
-  if (!(manHours > 0)) return;
-  if (seq !== durationPrefillSeq || !durationPromptOpen.value) return;
-  if (durationPromptHours.value !== '') return;
-  const crew = Math.max(1, Number(crewSize) || 1);
-  const hours = Math.max(0.25, Math.ceil((manHours / crew) * 4) / 4);
-  durationPromptHours.value = String(hours);
-  durationPromptEstimate.value = {
-    manHours, crew, accepted: s.estimate_status === 'accepted', hours,
-  };
+  if (!(manHours > 0)) return null;
+  return { manHours, accepted: s.estimate_status === 'accepted' };
 }
 
 function onDurationPromptHide() {
@@ -2717,6 +2769,7 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     await placePartialJob(jobId, techId, startISO);
     return;
   }
+  if (await scheduleUndatedDrop(jobId, techId, startISO)) return;
   // A crew job moved along a helper's column was checked against the lead
   // only, fell through to assignJob and lost its crew (Doug, 2026-10-15).
   if (await placeCrewJob(jobId, techId, startISO, from)) return;
@@ -2761,6 +2814,7 @@ async function onTimelinePlaceTray({ jobId, techId }) {
     await placePartialJob(jobId, techId, d.toISOString(), boardDay);
     return;
   }
+  if (await scheduleUndatedDrop(jobId, techId, d.toISOString())) return;
   if (await placeCrewJob(jobId, techId, d.toISOString(), from)) return;
   await assignJob(jobId, techId, d.toISOString());
 }
