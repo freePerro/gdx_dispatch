@@ -1250,6 +1250,7 @@ async function placePartialJob(jobId, techId, scheduledAt, dayKey = zonedDateKey
     try {
       await api.patch(`/api/jobs/${jobId}`, {
         assigned_tech_id: techId, assigned_to: techId, scheduled_at: scheduledAt,
+        ...leaveLanePatch(job, { partial: true }),
       });
     } catch {
       // useApi has already shown the server's refusal; the card stays.
@@ -2388,7 +2389,8 @@ async function onWeekCellDrop(event, techId, dayStr) {
     // _needsDurationPrompt exempts techId=null.
     await withBoardWrite(async () => {
       try {
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso });
+        // The "No tech" row only dates: a parked job with no tech stays parked.
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso, ...(techId ? leaveLanePatch(source) : {}) });
       } catch { /* api composable already toasts */ }
       await fetchJobs();
     });
@@ -2446,7 +2448,7 @@ async function scheduleUndatedDrop(jobId, techId, scheduledAt, knownJob = null) 
   if (!answer) return true; // cancelled: nothing moves
   await withBoardWrite(async () => {
     try {
-      await api.patch(`/api/jobs/${jobId}`, scheduleDropPatch(answer, scheduledAt));
+      await api.patch(`/api/jobs/${jobId}`, { ...scheduleDropPatch(answer, scheduledAt), ...leaveLanePatch(job) });
     } catch { /* api composable already toasts */ }
     await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
   });
@@ -2475,6 +2477,18 @@ async function okToClearCrew(job) {
   });
 }
 
+// A job put in a tech's day leaves its lane: it is booked, not waiting, and
+// a lane lists by holding_area_id alone, so a stale one draws the job in the
+// lane and in the tech's column at once (GDXA-1378). The job page's Schedule
+// dialog clears it when it books a date. A job under way keeps its lane,
+// parked with its crew on (GDXA-1370); a partial job being booked its next
+// day is no longer waiting either way.
+function leaveLanePatch(job, { partial = false } = {}) {
+  if (!job?.holding_area_id) return {};
+  if (!partial && jobStage(job) === 'in_progress') return {};
+  return { holding_area_id: null };
+}
+
 // True when the drop was a crew job and is handled here (moved, re-crewed
 // or cancelled); false sends the caller on to assignJob.
 async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = null) {
@@ -2486,7 +2500,7 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
     && new Date(scheduledAt).getTime() !== new Date(job.scheduled_at || 0).getTime();
   if (crew.includes(String(techId))) {
     if (!moved) return true;
-    const datePatch = { scheduled_at: scheduledAt };
+    const datePatch = { scheduled_at: scheduledAt, ...leaveLanePatch(job) };
     // An undated job landing in its crew's day for the first time gets the
     // hours question a one-tech pick gets; a time move of a dated job doesn't.
     if (!job.scheduled_at && !jobHasDuration(job)) {
@@ -2506,7 +2520,7 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
     crew, techId, jobLabel: displayCustomer(job), firstId: fromTechId,
   });
   if (!choice) return true; // cancelled: nothing moves
-  const patch = crewPatch(choice);
+  const patch = { ...crewPatch(choice), ...leaveLanePatch(job) };
   if (moved) patch.scheduled_at = scheduledAt;
   // A swap or add puts the job in a new tech's day, so it gets the same
   // duration question a one-tech drop does (assignJob); closing it cancels.
@@ -2716,6 +2730,12 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
     d.setHours(0, 0, 0, 0);
     patch.scheduled_at = d.toISOString();
   }
+  // Only a drop that gives the job this tech or a date takes it out of its
+  // lane: one let go on the tech it already has changes nothing.
+  const laneSource = sourceJob || findBoardJob(jobId);
+  if (techId && (patch.scheduled_at || String(laneSource?.technician_id ?? '') !== String(techId))) {
+    Object.assign(patch, leaveLanePatch(laneSource));
+  }
 
   // Job not in the per-day list (e.g., dragged from the lane which holds
   // any-date jobs) — PATCH and refresh both lists, then toast so the user
@@ -2740,10 +2760,12 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
 
   const previousTech = jobs.value[jobIndex].technician_id;
   const previousSchedAt = jobs.value[jobIndex].scheduled_at;
+  const previousArea = jobs.value[jobIndex].holding_area_id;
   jobs.value[jobIndex] = {
     ...jobs.value[jobIndex],
     technician_id: techId,
     ...(patch.scheduled_at ? { scheduled_at: patch.scheduled_at } : {}),
+    ...('holding_area_id' in patch ? { holding_area_id: null } : {}),
   };
 
   try {
@@ -2756,6 +2778,7 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
       ...jobs.value[jobIndex],
       technician_id: previousTech,
       scheduled_at: previousSchedAt,
+      holding_area_id: previousArea,
     };
   }
 }
@@ -2792,12 +2815,14 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
   if (sameTech && hasDuration) {
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     const prev = jobs.value[idx].scheduled_at;
+    const prevArea = jobs.value[idx].holding_area_id;
+    const lane = leaveLanePatch(job);
     await withBoardWrite(async () => {
-      jobs.value[idx] = { ...jobs.value[idx], scheduled_at: startISO };
+      jobs.value[idx] = { ...jobs.value[idx], scheduled_at: startISO, ...lane };
       try {
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO });
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO, ...lane });
       } catch {
-        jobs.value[idx] = { ...jobs.value[idx], scheduled_at: prev };
+        jobs.value[idx] = { ...jobs.value[idx], scheduled_at: prev, holding_area_id: prevArea };
       }
     });
     return;
