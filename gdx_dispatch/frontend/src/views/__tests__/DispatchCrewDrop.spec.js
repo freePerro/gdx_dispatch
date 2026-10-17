@@ -529,6 +529,185 @@ describe("dropping a crew job off the board", () => {
   });
 });
 
+// GDXA-1377: a drop on a tech's row writes the date and the crew, so a
+// finished job is refused and a job under way only moves along its own crew.
+describe("dropping a finished or started job on a tech", () => {
+  const DONE = { ...CREW, lifecycle_stage: "Complete", status: "Complete" };
+  const CANCELLED = { ...CREW, lifecycle_stage: "Cancelled", status: "Cancelled" };
+  const STARTED = { ...CREW, lifecycle_stage: "In Progress", status: "In Progress" };
+  const refused = () => expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: "Nothing was moved" }));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.clear();
+    getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset(); confirmRequire.mockReset();
+    patchMock.mockResolvedValue({});
+    granted = new Set(["jobs.read_all"]);
+  });
+
+  it("a completed job moved along its own crew's column is refused", async () => {
+    boardRows = [DONE];
+    const w = await mountBoard();
+    await dayDrop(w, DONE, "tech-2", "tech-2");
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("a completed job dropped on a tech outside its crew is refused without asking", async () => {
+    boardRows = [DONE];
+    const w = await mountBoard();
+    await dayDrop(w, DONE, "tech-1", "tech-3");
+    expect(prompt(w).exists()).toBe(false);
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("a cancelled job is refused on a crew row and on another tech's row", async () => {
+    boardRows = [CANCELLED];
+    const w = await mountBoard();
+    await dayDrop(w, CANCELLED, "tech-1", "tech-1");
+    await dayDrop(w, CANCELLED, "tech-1", "tech-3");
+    expect(prompt(w).exists()).toBe(false);
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledTimes(2);
+  });
+
+  it("a one-tech completed job is not handed to another tech", async () => {
+    const SOLO_DONE = { ...SOLO, lifecycle_stage: "Complete", status: "Complete" };
+    boardRows = [SOLO_DONE];
+    const w = await mountBoard();
+    await dayDrop(w, SOLO_DONE, "tech-1", "tech-3");
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("a completed job is refused in week view, in its own row and in another's", async () => {
+    boardRows = [DONE];
+    const w = await mountBoard("week");
+    const today = keyOf(at(0, 0));
+    for (const target of ["tech-1", "tech-3"]) {
+      await w.find(`[data-testid="week-cell-tech-1-${today}"] [data-testid$="-job-1"]`).trigger("dragstart");
+      await w.find(`[data-testid="week-cell-${target}-${OTHER_DAY}"]`).trigger("drop");
+      await flushAll();
+    }
+    expect(prompt(w).exists()).toBe(false);
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledTimes(2);
+  });
+
+  it("a completed job dropped on a tech's column outside the timeline is refused", async () => {
+    boardRows = [DONE];
+    const w = await mountBoard();
+    w.vm.onDragStart(DONE, { dataTransfer: { setData() {}, effectAllowed: "" } }, "tech-1");
+    await w.vm.handleDrop("tech-3", { preventDefault() {}, dataTransfer: { getData: () => "job-1" } });
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("a completed job dropped in a tech's no-time tray is refused", async () => {
+    boardRows = [DONE];
+    const w = await mountBoard();
+    timeline(w, "tech-1").vm.$emit("job-drag-start", DONE, null);
+    timeline(w, "tech-3").vm.$emit("place-tray", { jobId: "job-1", techId: "tech-3" });
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("a completed job with nobody on it is not re-dated on the week's \"No tech\" row", async () => {
+    const NO_TECH_DONE = { ...DONE, assigned_to: null, assigned_tech_ids: [], technician_id: null, lead_tech_id: null };
+    boardRows = [NO_TECH_DONE];
+    const w = await mountBoard("week");
+    await w.find(`[data-testid="week-cell-unassigned-${keyOf(at(0, 0))}"] [data-testid$="-job-1"]`).trigger("dragstart");
+    await w.find(`[data-testid="week-cell-unassigned-${OTHER_DAY}"]`).trigger("drop");
+    await flushAll();
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("a job under way with no date dropped on its own tech is dated without opening the crew dialog", async () => {
+    const UNDATED_STARTED = { ...SOLO, lifecycle_stage: "In Progress", status: "In Progress", scheduled_at: null };
+    boardRows = [UNDATED_STARTED];
+    const w = await mountBoard();
+    timeline(w, "tech-1").vm.$emit("place", { jobId: "job-4", techId: "tech-1", startISO: at(0, 13).toISOString() });
+    await flushAll();
+    expect(w.find('[data-testid="schedule-drop-prompt"]').exists()).toBe(false);
+    const calls = patchMock.mock.calls.filter(([u]) => u === "/api/jobs/job-4");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).not.toHaveProperty("assigned_tech_ids");
+    expect(wallOf(calls[0][1].scheduled_at).slice(1)).toEqual([13, 0]);
+  });
+
+  it("an undated crew job under way dropped on a crew member's column is dated to the board day, crew kept", async () => {
+    const UNDATED_CREW_STARTED = { ...STARTED, scheduled_at: null };
+    boardRows = [UNDATED_CREW_STARTED];
+    const w = await mountBoard();
+    w.vm.onDragStart(UNDATED_CREW_STARTED, { dataTransfer: { setData() {}, effectAllowed: "" } }, null, "day-queue");
+    await w.vm.handleDrop("tech-2", { preventDefault() {}, dataTransfer: { getData: () => "job-1" } });
+    await flushAll();
+    expect(w.find('[data-testid="schedule-drop-prompt"]').exists()).toBe(false);
+    expect(prompt(w).exists()).toBe(false);
+    expect(jobPatches().map(([, b]) => Object.keys(b))).toEqual([["scheduled_at"]]);
+    expect(wallOf(jobPatches()[0][1].scheduled_at)).toEqual([keyOf(at(0, 0)), 0, 0]);
+  });
+
+  it("a job under way moves its time along a crew member's column", async () => {
+    boardRows = [STARTED];
+    const w = await mountBoard();
+    await dayDrop(w, STARTED, "tech-2", "tech-2");
+    expect(toastAdd).not.toHaveBeenCalled();
+    expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-1", ["scheduled_at"]]]);
+  });
+
+  it("a job under way dropped on a tech outside its crew is refused without asking", async () => {
+    boardRows = [STARTED];
+    const w = await mountBoard();
+    await dayDrop(w, STARTED, "tech-2", "tech-3");
+    expect(prompt(w).exists()).toBe(false);
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("a one-tech job under way is not handed to another tech", async () => {
+    const SOLO_STARTED = { ...SOLO, lifecycle_stage: "In Progress", status: "In Progress" };
+    boardRows = [SOLO_STARTED];
+    const w = await mountBoard();
+    await dayDrop(w, SOLO_STARTED, "tech-1", "tech-3");
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+
+  it("in week view a job under way re-dates on its crew's row and is refused on another's", async () => {
+    boardRows = [STARTED];
+    const w = await mountBoard("week");
+    const today = keyOf(at(0, 0));
+    await w.find(`[data-testid="week-cell-tech-2-${today}"] [data-testid$="-job-1"]`).trigger("dragstart");
+    await w.find(`[data-testid="week-cell-tech-3-${OTHER_DAY}"]`).trigger("drop");
+    await flushAll();
+    expect(prompt(w).exists()).toBe(false);
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+    await w.find(`[data-testid="week-cell-tech-2-${today}"] [data-testid$="-job-1"]`).trigger("dragstart");
+    await w.find(`[data-testid="week-cell-tech-2-${OTHER_DAY}"]`).trigger("drop");
+    await flushAll();
+    expect(patchMock.mock.calls.map(([u, b]) => [u, Object.keys(b)])).toEqual([["/api/jobs/job-1", ["scheduled_at"]]]);
+    expect(wallOf(patchMock.mock.calls[0][1].scheduled_at)).toEqual([OTHER_DAY, 10, 30]);
+  });
+
+  it("the Reassign dialog does not hand a job under way to another tech", async () => {
+    boardRows = [STARTED];
+    const w = await mountBoard();
+    const s = w.vm.$.setupState;
+    s.openReassignDialog(STARTED);
+    s.assignDialogTechId = "tech-3";
+    s.confirmAssign();
+    await flushAll();
+    expect(prompt(w).exists()).toBe(false);
+    expect(patchMock).not.toHaveBeenCalled();
+    refused();
+  });
+});
+
 // Doug, 2026-10-16: dropping a job with no date onto a tech books it, so it
 // asks the hours and the whole crew first and writes them with the date.
 describe("booking an undated job by dropping it on a tech", () => {
