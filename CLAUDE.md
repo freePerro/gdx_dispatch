@@ -55,11 +55,16 @@ this — the budget governs sweeps, not repairs.
   The maintainer triggers merge and release.
 - `ARCHITECTURAL_INVARIANTS.md` is the registry of load-bearing invariants —
   read it before touching mutation paths, deletes, or money code.
-- **Subagents:** one per domain, checked in under `.claude/agents/` (14 as of
-  2026-09-24). Which files each one owns is data, not prose:
+- **Subagents:** one per domain, checked in under `claude-config/agents/` (14
+  as of 2026-09-24). Which files each one owns is data, not prose:
   `gdx_dispatch/tools/agent_ownership.txt`, gated by
   `tests/test_agent_ownership.py` — a new router, view or module with no
   owner line is red. Rationale: the plan `domain-agents-plan` under `docs/design/`.
+- **Edit agent files, rules and skills at `claude-config/`**, never through
+  `.claude/`. `.claude/agents`, `.claude/rules` and `.claude/skills` are
+  symlinks into `claude-config/`. Claude Code loads them from `.claude/`,
+  but it refuses an unattended Edit or Write on any `.claude/` path, even
+  through the link (GDXA-1417).
 
 ## Commands and harness facts
 
@@ -89,7 +94,7 @@ this — the budget governs sweeps, not repairs.
   or `ssh gdx-vps`.** The matrix runs only through
   `gdx_dispatch/tools/run_tests_split.sh`; the skill holds the rest of the
   harness facts (runner flags and lock, `--scans`, CI triggers, the lint
-  ratchet, flakes, merge gotchas). Area sharp edges live in `.claude/rules/`
+  ratchet, flakes, merge gotchas). Area sharp edges live in `claude-config/rules/` (loaded as `.claude/rules/`)
   and load when a file in that area goes through the Read or Write tool or a
   plain `cat`/`head` — not on pipes, `wc`, Bash edits (`sed -i`, heredocs,
   scripts), the Grep tool or a directory-wide search. Before editing in an
@@ -212,7 +217,10 @@ buttons wired to stubs. Before calling anything done:
   and are not taxed; tax-exempt customers are never taxed, on any job. Labor
   is untaxed unless `tax_labor` is set.
 - Billed labor comes from **attested hours only** — elapsed clock time is
-  not evidence and code may not invent hours.
+  not evidence and code may not invent hours. The closeout may *pre-fill*
+  hours and crew size from today's check-ins as a suggestion; the figures the
+  closer submits are the attestation, and the audit row keeps the suggested
+  figures the phone reports beside the submitted ones (Doug, 2026-10-17).
 - Taxonomy: a service call is a repair; a converted estimate is an
   installation.
 - QuickBooks is being phased out: never schedule new QB syncs; backfills go

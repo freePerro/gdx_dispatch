@@ -480,6 +480,54 @@ def update_part_status(
     return _serialize(part)
 
 
+@router.post(
+    "/jobs/{job_id}/doors-ordered",
+    # jobs.write, not inventory.write: this is the board's move, and the
+    # built-in dispatcher role holds jobs.write but not inventory.write.
+    dependencies=[Depends(require_permission("jobs.write"))],
+)
+def mark_doors_ordered(
+    job_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """The dispatch board's "Doors ordered": the job's doors still ``needed``
+    go ``ordered`` and a job in an order-doors lane moves to "Waiting on
+    doors", in one commit, signed by the caller
+    (``vendor_orders.hubx.mark_job_doors_ordered``). Dispatcher, manager,
+    admin or owner (the dispatch-manager predicate below)."""
+    from gdx_dispatch.models.tenant_models import Job
+    from gdx_dispatch.modules.vendor_orders.hubx import (
+        CLOSED_STAGES,
+        DoorsOrderedRefused,
+        mark_job_doors_ordered,
+    )
+
+    _require_dispatch_role(user)
+    try:
+        job_uuid = _UUID(str(job_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found") from None
+    ensure_audit_table(db)  # before staging: its first run on an engine commits
+    job = db.get(Job, job_uuid)
+    if job is None or job.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.lifecycle_stage in CLOSED_STAGES:
+        raise HTTPException(
+            status_code=409, detail=f"This job is {job.lifecycle_stage}; its doors are not changed."
+        )
+    try:
+        result = mark_job_doors_ordered(
+            db, job, user_id=_uid(user), tenant_id=_tid(request), request=request
+        )
+    except DoorsOrderedRefused as exc:
+        # Both refusals come before any write.
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    db.commit()
+    return result
+
+
 @router.get(
     "/parts-needed/pending",
     dependencies=[Depends(require_permission("inventory.read"))],

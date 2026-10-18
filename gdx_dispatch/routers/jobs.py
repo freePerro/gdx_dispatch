@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.encoders import jsonable_encoder
@@ -2082,6 +2082,31 @@ class CloseoutPayload(BaseModel):
     # Clamped to no later than server now. Nothing else reads it: every stamp
     # the closeout writes still uses server now.
     tapped_at: datetime | None = None
+    # Doug 2026-10-17: the sheet pre-fills hours from today's check-in
+    # (services/day_close.closeout_hours_suggestion). Recorded, never billed:
+    # `hours` above is still the only billing input. "check_in" = kept the
+    # pre-fill, "adjusted" = changed it, "typed" = there was none. The
+    # suggested figures are what the closer's phone showed, as reported by it;
+    # the server does not recompute them.
+    hours_source: Literal["check_in", "adjusted", "typed"] | None = None
+    hours_suggested: float | None = Field(default=None, ge=0, le=99)
+    # The crew size the sheet pre-filled; techs_on_site multiplies billed
+    # labor, so the audit row keeps both to show whether it was changed.
+    techs_suggested: int | None = Field(default=None, ge=1, le=10)
+
+
+def _hours_source(payload: CloseoutPayload) -> str | None:
+    """Derived from the reported figures, not taken from the client's label:
+    no suggestion means typed, equal hours mean kept, anything else adjusted.
+    Keeps the audit row from contradicting itself. None when the client sent
+    no source (an older app build)."""
+    if payload.hours_source is None:
+        return None
+    if payload.hours_suggested is None:
+        return "typed"
+    if float(payload.hours or 0) == float(payload.hours_suggested):
+        return "check_in"
+    return "adjusted"
 
 
 # The labor row a closeout owns, so a re-closeout updates it instead of
@@ -3212,6 +3237,9 @@ def closeout_job(
                 "parts_count": len(part_lines),
                 "hours": float(payload.hours or 0),
                 "techs_on_site": int(payload.techs_on_site or 1),
+                "hours_source": _hours_source(payload),
+                "hours_suggested": payload.hours_suggested,
+                "techs_suggested": payload.techs_suggested,
                 "signature_present": bool(payload.signature_data),
                 "supersedes_id": prior_snapshot["id"] if prior_snapshot else None,
                 "needs_return_visit": bool(payload.needs_return_visit),
@@ -4110,12 +4138,28 @@ def get_job_day_log(
     today = shop_day(datetime.now(UTC), tz)
     rows = day_close.day_log(db, job, tz)
     earlier = day_close.earlier_day_open(db, job, today, tz)
+    # An install sold from an accepted estimate is already priced (Doug,
+    # 2026-10-17: "everything is already figured out"), so the "Yes" sheet
+    # asks the tech to pick nothing; the office bills it from the estimate.
+    from gdx_dispatch.modules.proposals.models import Estimate  # noqa: PLC0415
+
+    sold_on = db.execute(
+        select(Estimate.estimate_number).where(
+            Estimate.job_id == job.id,
+            Estimate.status == "accepted",
+            Estimate.deleted_at.is_(None),
+        ).order_by(Estimate.accepted_at.desc().nullslast()).limit(1)
+    ).first()
     return jsonable_response({
         "rows": rows,
         "logged_hours_total": round(sum(r["hours"] for r in rows), 2),
         "today_has_day_row": any(r["date"] == today.isoformat() for r in rows),
         "earlier_day_open": earlier.isoformat() if earlier else None,
         "open_day": day_close.open_day(db, job, _user_id(current_user), today, tz),
+        "hours_suggestion": day_close.closeout_hours_suggestion(
+            db, job, _user_id(current_user), today, tz,
+        ),
+        "accepted_estimate_number": sold_on[0] if sold_on else None,
     })
 
 

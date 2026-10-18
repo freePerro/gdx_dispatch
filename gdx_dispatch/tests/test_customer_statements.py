@@ -734,3 +734,82 @@ def test_a_negative_payment_row_is_warned_not_hidden(db):
     s = _statement(db, c, date(2026, 8, 1))
     assert _warned(s) == {inv.invoice_number}
     _assert_identity(s)
+
+
+# ---------------------------------------------------------------------------
+# Picked attachments beside the statement PDF (2026-10-16)
+# ---------------------------------------------------------------------------
+
+def _statement_request():
+    from starlette.requests import Request
+
+    req = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    req.state.tenant = {"id": COMPANY}
+    return req
+
+
+def _upload_ref(name, n_bytes):
+    import base64
+
+    from gdx_dispatch.core.email_attachments import AttachmentRef
+
+    return AttachmentRef(kind="upload", name=name, content_type="application/pdf",
+                         content_base64=base64.b64encode(b"x" * n_bytes).decode())
+
+
+def _statement_outbox(monkeypatch):
+    import gdx_dispatch.core.transactional_email as tx
+
+    sent = []
+    monkeypatch.setattr(tx, "send_transactional_email",
+                        lambda **kw: sent.append(kw) or (True, "outlook_graph", None))
+    monkeypatch.setattr(tx, "recently_sent", lambda *a, **k: False)
+    return sent
+
+
+def test_picked_files_ride_beside_the_statement_pdf_and_are_audited(db, monkeypatch):
+    from gdx_dispatch.routers.customer_statements import StatementSendIn, send_statement
+
+    sent = _statement_outbox(monkeypatch)
+    c = _customer(db)
+    out = send_statement(
+        c.id, StatementSendIn(start=date(2026, 8, 1), end=date(2026, 9, 15),
+                              attachment_refs=[_upload_ref("lien-waiver.pdf", 30)]),
+        user=USER, db=db, request=_statement_request(),
+    )
+    assert out["email_sent"] is True and out["pdf_attached"] is True
+    names = [a["name"] for a in sent[0]["attachments"]]
+    assert names[-1] == "lien-waiver.pdf" and names[0].endswith(".pdf") and len(names) == 2
+    (row,) = _audit_rows(db, c)
+    assert row.details["attachments"][0]["name"] == "lien-waiver.pdf"
+
+
+def test_a_bad_pick_refuses_the_statement_before_anything_is_sent(db, monkeypatch):
+    from gdx_dispatch.core.email_attachments import AttachmentRef
+    from gdx_dispatch.routers.customer_statements import StatementSendIn, send_statement
+
+    sent = _statement_outbox(monkeypatch)
+    c = _customer(db)
+    with pytest.raises(HTTPException) as exc:
+        send_statement(
+            c.id, StatementSendIn(attachment_refs=[AttachmentRef(kind="document", id=str(uuid4()))]),
+            user=USER, db=db, request=_statement_request(),
+        )
+    assert exc.value.status_code == 404
+    assert sent == [] and _audit_rows(db, c) == []
+
+
+def test_the_statement_pdf_is_dropped_when_the_picks_fill_the_budget(db, monkeypatch):
+    import gdx_dispatch.core.transactional_email as tx
+    from gdx_dispatch.routers.customer_statements import StatementSendIn, send_statement
+
+    sent = _statement_outbox(monkeypatch)
+    monkeypatch.setattr(tx, "MAX_ATTACHMENT_BYTES", 100)
+    c = _customer(db)
+    out = send_statement(
+        c.id, StatementSendIn(start=date(2026, 8, 1), end=date(2026, 9, 15),
+                              attachment_refs=[_upload_ref("photo.pdf", 90)]),
+        user=USER, db=db, request=_statement_request(),
+    )
+    assert [a["name"] for a in sent[0]["attachments"]] == ["photo.pdf"]
+    assert out["pdf_attached"] is False

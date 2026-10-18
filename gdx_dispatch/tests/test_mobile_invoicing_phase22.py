@@ -1223,7 +1223,7 @@ def test_mobile_send_dead_transaction_keeps_flip_and_audit(session_factory, monk
     from gdx_dispatch.core.audit import AuditLog
     from gdx_dispatch.models.tenant_models import Invoice as _Inv
 
-    def _poisoning_send(db, invoice, *, tenant_id, user_id=None):
+    def _poisoning_send(db, invoice, *, tenant_id, user_id=None, **_kw):
         # A swallowed flush failure: the session is left needing rollback,
         # and the caller is told only "not delivered".
         try:
@@ -1428,6 +1428,149 @@ def test_mobile_receipt_for_a_second_payment_is_not_suppressed(session_factory, 
         assert second["payment_id"] == str(second_payment.id)
         assert second["sent"] is True, second
         assert len(smtp_calls) == 2
+    finally:
+        db.close()
+
+
+# ── picked attachments on the truck's re-send (2026-10-16) ─────────────
+
+
+def _verified_mobile_invoice(session_factory, db):
+    """The same invoice as ``_verified_invoice_with_customer``, as its row."""
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+
+    return db.get(_Inv, UUID(_verified_invoice_with_customer(session_factory, db)))
+
+
+def _photo_ref(n_bytes=40):
+    import base64
+
+    from gdx_dispatch.core.email_attachments import AttachmentRef
+
+    return AttachmentRef(kind="upload", name="garage.pdf", content_type="application/pdf",
+                         content_base64=base64.b64encode(b"x" * n_bytes).decode())
+
+
+def test_mobile_send_carries_the_techs_picks_beside_the_pdf(session_factory, monkeypatch):
+    from sqlalchemy import select
+
+    from gdx_dispatch.core import pdf_generator
+    from gdx_dispatch.core.audit import AuditLog
+
+    monkeypatch.setattr(pdf_generator, "generate_invoice_pdf", lambda *a, **k: b"%PDF-1.4 test")
+    sent: dict = {}
+    db = session_factory()
+    try:
+        row = _verified_mobile_invoice(session_factory, db)
+        with patch("gdx_dispatch.core.transactional_email.send_transactional_email",
+                   lambda **kw: sent.update(kw) or (True, "test-provider", None)):
+            send = mobile_invoicing.mobile_send_invoice(
+                invoice_id=str(row.id), request=_request(),
+                payload=mobile_invoicing.MobileSendInvoiceIn(attachment_refs=[_photo_ref()]),
+                current_user=_TEST_USER, db=db,
+            )
+        assert send.status_code == 200
+        assert _as_json(send)["pdf_attached"] is True
+        names = [a["name"] for a in sent["attachments"]]
+        assert len(names) == 2 and names[0].endswith(".pdf") and names[1] == "garage.pdf"
+        (audit,) = db.scalars(select(AuditLog).where(
+            AuditLog.entity_id == str(row.id), AuditLog.action == "mobile_invoice_sent",
+        )).all()
+        assert audit.details["attachments"][0]["name"] == "garage.pdf"
+    finally:
+        db.close()
+
+
+def test_mobile_send_pdf_gives_way_to_the_picks(session_factory, monkeypatch):
+    import gdx_dispatch.core.transactional_email as tx
+    from gdx_dispatch.core import pdf_generator
+
+    monkeypatch.setattr(pdf_generator, "generate_invoice_pdf", lambda *a, **k: b"%PDF" + b"p" * 60)
+    monkeypatch.setattr(tx, "MAX_ATTACHMENT_BYTES", 100)
+    sent: dict = {}
+    db = session_factory()
+    try:
+        row = _verified_mobile_invoice(session_factory, db)
+        with patch("gdx_dispatch.core.transactional_email.send_transactional_email",
+                   lambda **kw: sent.update(kw) or (True, "test-provider", None)):
+            send = mobile_invoicing.mobile_send_invoice(
+                invoice_id=str(row.id), request=_request(),
+                payload=mobile_invoicing.MobileSendInvoiceIn(attachment_refs=[_photo_ref(50)]),
+                current_user=_TEST_USER, db=db,
+            )
+        assert [a["name"] for a in sent["attachments"]] == ["garage.pdf"]
+        # The tech is told the PDF was left out (the dialog warns on this).
+        assert _as_json(send)["pdf_attached"] is False
+    finally:
+        db.close()
+
+
+def test_mobile_send_bad_pick_flips_nothing(session_factory):
+    from fastapi import HTTPException
+
+    from gdx_dispatch.core.email_attachments import AttachmentRef
+
+    db = session_factory()
+    try:
+        row = _verified_mobile_invoice(session_factory, db)
+        with (
+            patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email") as mailer,
+            pytest.raises(HTTPException) as exc,
+        ):
+            mobile_invoicing.mobile_send_invoice(
+                invoice_id=str(row.id), request=_request(),
+                payload=mobile_invoicing.MobileSendInvoiceIn(
+                    attachment_refs=[AttachmentRef(kind="document", id=str(uuid4()))]),
+                current_user=_TEST_USER, db=db,
+            )
+        assert exc.value.status_code == 404
+        assert not mailer.called
+        db.refresh(row)
+        assert row.status == "draft"
+    finally:
+        db.close()
+
+
+def test_mobile_resend_with_picks_inside_the_window_is_suppressed(session_factory, monkeypatch):
+    """GDXA-1278 guard x picked files: a re-send with new files straight after
+    a delivered send mails nothing (the picks included), audits nothing, and
+    says why. The guard runs before the picks load, so even a pick that would
+    404 is answered as the suppressed repeat."""
+    from sqlalchemy import select
+
+    import gdx_dispatch.core.transactional_email as te
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.core.email_attachments import AttachmentRef
+
+    smtp_calls: list[dict] = []
+
+    def _fake_smtp(**kw):
+        smtp_calls.append(kw)
+        return True, None
+
+    monkeypatch.setattr(te, "_try_smtp", _fake_smtp)
+    db = session_factory()
+    try:
+        inv_id = _verified_invoice_with_customer(session_factory, db)
+        first = _as_json(mobile_invoicing.mobile_send_invoice(
+            invoice_id=inv_id, request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        assert first["email_sent"] is True
+        for refs in ([_photo_ref()], [AttachmentRef(kind="document", id=str(uuid4()))]):
+            again = mobile_invoicing.mobile_send_invoice(
+                invoice_id=inv_id, request=_request(),
+                payload=mobile_invoicing.MobileSendInvoiceIn(attachment_refs=refs),
+                current_user=_TEST_USER, db=db,
+            )
+            assert again.status_code == 200
+            body = _as_json(again)
+            assert body["email_sent"] is False
+            assert body["email_skip_reason"] == "duplicate_send_suppressed"
+        assert len(smtp_calls) == 1
+        audits = db.scalars(select(AuditLog).where(
+            AuditLog.entity_id == inv_id, AuditLog.action == "mobile_invoice_sent",
+        )).all()
+        assert len(audits) == 1
     finally:
         db.close()
 

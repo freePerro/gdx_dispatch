@@ -22,6 +22,7 @@ from gdx_dispatch.core.audit import (
     utcnow,
 )
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.email_attachments import AttachmentRef, attachment_audit_meta, resolve_attachment_refs
 from gdx_dispatch.core.holding_areas import holding_area_id_by_name as _holding_area_id_by_name
 from gdx_dispatch.core.lead_estimates import lead_for_estimate, mark_lead_won_for_estimate, resolve_lead_link
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendEstimateSmsIn  # one composer model for every SMS route
@@ -2245,6 +2246,10 @@ class SendEstimateIn(BaseModel):
     # server or the operator watches their own typing get ignored.
     to_email: str | None = Field(default=None, max_length=254)
     extra_attachment_ids: list[str] | None = None
+    # Anything else the sender picked — job photos and documents, customer
+    # documents, other estimates' and invoices' PDFs, device files — resolved
+    # by core/email_attachments.py under the caller's own reach.
+    attachment_refs: list[AttachmentRef] | None = Field(default=None, max_length=25)
 
 
 @router.post("/{estimate_id}/email-preview", response_model=None, dependencies=[Depends(require_permission("estimates.send"))])
@@ -2398,10 +2403,17 @@ def send_estimate(
     payload: SendEstimateIn | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db)
     if estimate.status in {"accepted", "declined"}:
         raise HTTPException(status_code=409, detail="estimate is finalized")
+    p = payload or SendEstimateIn()
+    # Picked files load (or 404/413) before anything is sent, so a bad pick
+    # never becomes an email without it.
+    picked = resolve_attachment_refs(
+        db, request, _, str(estimate.company_id or ""), p.attachment_refs,
+    ) if p.attachment_refs else []
 
     # Send the estimate email to the customer. Routes through the
     # unified transactional-email helper so an Outlook-connected user
@@ -2415,10 +2427,9 @@ def send_estimate(
     email_skip_reason: str | None = None
     pdf_attached = False
     attachments_skipped: list[str] = []
-    p = payload or SendEstimateIn()
     try:
         from gdx_dispatch.core.transactional_email import (
-            MAX_INLINE_ATTACHMENT_BYTES,
+            MAX_ATTACHMENT_BYTES,
             recently_sent,
             send_transactional_email,
         )
@@ -2443,36 +2454,40 @@ def send_estimate(
             recipient = prep["recipient"]
             if cust is not None and recipient is not None and recipient.ok:
                 # Attach the estimate PDF (same bytes the composer previews)
-                # plus any operator-selected extra documents, inside one raw-
-                # byte budget so an oversized set degrades attachment-by-
-                # attachment instead of Graph rejecting the whole message.
+                # plus any operator-selected extra documents, inside what the
+                # picked files leave of one raw-byte budget, so an oversized
+                # set degrades attachment-by-attachment instead of failing the
+                # whole message. The picked files were checked against the
+                # whole budget up front and always go.
                 attachments: list[dict[str, object]] = []
+                own_pdf_attached = False
+                budget = MAX_ATTACHMENT_BYTES - sum(a["size_bytes"] for a in picked)
                 try:
                     import base64 as _b64
 
                     pdf_bytes = _estimate_pdf_bytes(db, estimate, cust, tid)
-                    if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
+                    if len(pdf_bytes) > budget:
                         log.warning(
                             "estimate_send_pdf_too_large_to_attach estimate=%s bytes=%s",
                             estimate.id, len(pdf_bytes),
                         )
                         attachments_skipped.append("estimate PDF")
-                        budget = MAX_INLINE_ATTACHMENT_BYTES
                     else:
                         attachments.append({
                             "name": f"estimate-{estimate.estimate_number or str(estimate.id)[:8]}.pdf",
                             "content_type": "application/pdf",
                             "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
                         })
-                        budget = MAX_INLINE_ATTACHMENT_BYTES - len(pdf_bytes)
+                        budget -= len(pdf_bytes)
+                        own_pdf_attached = True
                 except Exception:
                     log.exception("estimate_send_pdf_attach_failed")
-                    budget = MAX_INLINE_ATTACHMENT_BYTES
                 extra, extra_skipped = _estimate_extra_attachment_payloads(
                     db, estimate, tid, p.extra_attachment_ids or [], budget,
                 )
                 attachments.extend(extra)
                 attachments_skipped.extend(extra_skipped)
+                attachments.extend(picked)
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
@@ -2488,9 +2503,9 @@ def send_estimate(
                     recipient_source=recipient.source,
                     recipient_contact_id=recipient.contact_id,
                 )
-                pdf_attached = email_sent and any(
-                    a["name"].startswith("estimate-") for a in attachments
-                )
+                # This estimate's own PDF: a picked estimate PDF carries the
+                # same "estimate-" name shape, so the name cannot tell them apart.
+                pdf_attached = email_sent and own_pdf_attached
             elif recipient is not None and recipient.source == "invalid_override":
                 email_skip_reason = "invalid_recipient_email"
             elif cust is not None:
@@ -2526,7 +2541,11 @@ def send_estimate(
             action="estimate_sent",
             entity_type="estimate",
             entity_id=str(estimate.id),
-            details={"status": estimate.status, "provider": email_provider},
+            details={
+                "status": estimate.status,
+                "provider": email_provider,
+                "attachments": attachment_audit_meta(picked) or None,
+            },
         )
         db.commit()
     else:

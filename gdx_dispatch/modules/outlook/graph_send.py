@@ -44,8 +44,8 @@ from gdx_dispatch.modules.outlook.graph_client import (
 log = logging.getLogger("gdx_dispatch.modules.outlook.graph_send")
 
 # Raw bytes of attachments that may ride inline in one sendMail / reply
-# request. Matches transactional_email.MAX_INLINE_ATTACHMENT_BYTES: 2.5 MB raw
-# is ~3.3 MB of base64, leaving the body room under Graph's 4 MB request cap.
+# request: 2.5 MB raw is ~3.3 MB of base64, leaving the body room under
+# Graph's 4 MB request cap.
 INLINE_TOTAL_BYTES = 2_500_000
 
 # Per-file threshold for POST /attachments; above it, an upload session.

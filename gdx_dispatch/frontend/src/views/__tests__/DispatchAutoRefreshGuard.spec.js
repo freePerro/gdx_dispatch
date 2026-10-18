@@ -120,7 +120,8 @@ describe("DispatchView.vue wiring (static-source guard)", () => {
     "_doAssignJob",
     "confirmDurationPrompt",
     "onTimelinePlace",
-    "moveToHoldingArea",
+    "moveJobToArea",
+    "undoLastMove",
     "releaseFromHoldingArea",
   ])("%s routes its optimistic mutation through withBoardWrite", (fn) => {
     const start = SRC.indexOf(`async function ${fn}(`);

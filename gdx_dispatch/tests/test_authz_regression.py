@@ -108,6 +108,10 @@ class _FakeDB:
     def execute(self, *_a, **_k):  # noqa: ANN002, ANN003, ANN201
         return _FakeResult()
 
+    def get_bind(self):  # noqa: ANN201 — job_access picks its join form by dialect
+        from types import SimpleNamespace
+        return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
 
 def test_assert_job_access_dispatch_bypass() -> None:
     from gdx_dispatch.core.job_access import assert_job_access

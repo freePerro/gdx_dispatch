@@ -117,17 +117,23 @@
           label="Email statement"
           icon="pi pi-send"
           :loading="sending"
-          :disabled="stale || !toEmail"
+          :disabled="stale || !toEmail || pickedOver"
           data-testid="statement-send"
           @click="send"
         />
       </div>
+      <EmailAttachmentPicker
+        v-if="canSend"
+        v-model="picked"
+        :customer-id="String(customerId)"
+        :disabled="sending"
+      />
 
       <Message v-if="result" :severity="result.email_sent ? 'success' : 'error'" :closable="false" data-testid="statement-result">
         <template v-if="result.email_sent">
           Statement emailed to {{ result.to_email }}{{ result.pdf_attached ? ' with the PDF attached' : '' }}.
         </template>
-        <template v-else>{{ skipReasonMessage(result.email_skip_reason) }}</template>
+        <template v-else>{{ result.error_text || skipReasonMessage(result.email_skip_reason) }}</template>
       </Message>
     </template>
   </Dialog>
@@ -145,6 +151,8 @@ import { useApi } from '../composables/useApi';
 import { createAuthedBlobUrl, downloadAuthedFile } from '../composables/useAuthedFile';
 import { formatMoney } from '../composables/useFormatters';
 import { usePermission } from '../composables/usePermission';
+import EmailAttachmentPicker from './EmailAttachmentPicker.vue';
+import { MAX_TOTAL_BYTES, knownTotalBytes, sendErrorText, toAttachmentRefs } from '../utils/emailAttachments';
 import {
   DEFAULT_PRESET,
   skipReasonMessage,
@@ -192,6 +200,10 @@ const toEmail = ref('');
 const defaultEmail = ref('');
 const sending = ref(false);
 const result = ref(null);
+// Files picked to go beside the statement PDF (the customer's documents,
+// estimates and invoices, device files).
+const picked = ref([]);
+const pickedOver = computed(() => knownTotalBytes(picked.value) > MAX_TOTAL_BYTES);
 let loadSeq = 0;
 // What the preview on screen actually covers. Download and Email act on its
 // resolved dates, never on the preset key or controls changed since: an edited
@@ -272,9 +284,20 @@ async function send() {
   sending.value = true;
   result.value = null;
   try {
-    result.value = await api.post(`${base()}/send`, { ...params, ...recipientPayload(toEmail.value, defaultEmail.value) });
+    result.value = await api.post(
+      `${base()}/send`,
+      {
+        ...params,
+        ...recipientPayload(toEmail.value, defaultEmail.value),
+        ...(picked.value.length ? { attachment_refs: toAttachmentRefs(picked.value) } : {}),
+      },
+      // The result line below says what happened; a toast on top says it twice.
+      { suppressErrorToast: (e) => e?.status !== 401 },
+    );
+    if (result.value?.email_sent) picked.value = [];
   } catch (err) {
-    result.value = { email_sent: false, email_skip_reason: err?.message || 'send_failed' };
+    // A refused pick (404/413) names the file; a lost connection may have sent.
+    result.value = { email_sent: false, error_text: sendErrorText(err, 'The statement was not sent.') };
   } finally {
     sending.value = false;
   }
@@ -288,6 +311,7 @@ watch(
       customStart.value = '';
       customEnd.value = '';
       toEmail.value = '';
+      picked.value = [];
       load();
     } else {
       loadSeq++;

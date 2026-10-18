@@ -73,20 +73,26 @@ build/
 Thumbs.db
 
 # Claude Code per-machine state — ignore everything under .claude/ except
-# project settings (.claude/settings.json; none committed today) and the
-# checked-in project subagents (.claude/agents/*.md — see
+# project settings (.claude/settings.json; none committed today) and three
+# symlinks: .claude/agents, .claude/rules and .claude/skills point into
+# claude-config/, where the files really live. Claude Code refuses an
+# unattended Edit/Write on any .claude/ path, so agents edit them at
+# claude-config/<dir>/... and Claude Code still loads them from .claude/
+# (GDXA-1417, 2026-10-17). The un-ignore lines name the symlinks without a
+# trailing slash: git sees a symlink as a file, and `dir/` matches only a
+# directory. claude-config/ holds the checked-in project subagents (see
 # docs/design/domain-agents-plan.md), the path-scoped rules and the project
-# skills split out of CLAUDE.md (2026-10-11). Skills are un-ignored by name
-# so a private local skill dropped here is never committed; every file under
-# .claude/rules/ is tracked, so never put a private rule there. settings.local.json,
-# agent memory and session scratch stay ignored.
+# skills split out of CLAUDE.md (2026-10-11). Skills are un-ignored by name so
+# a private local skill dropped there is never committed; every file under
+# claude-config/rules/ is tracked, so never put a private rule there.
+# settings.local.json, agent memory and session scratch stay ignored.
 .claude/*
 !.claude/settings.json
-!.claude/agents/
-!.claude/rules/
-!.claude/skills/
-.claude/skills/*
-!.claude/skills/gdx-harness/
+!.claude/agents
+!.claude/rules
+!.claude/skills
+claude-config/skills/*
+!claude-config/skills/gdx-harness/
 
 # Session notes / dated reports (local scratch files)
 RECOVERY_*.md

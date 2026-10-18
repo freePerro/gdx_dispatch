@@ -1,89 +1,85 @@
 ---
-name: jobs-dispatch
-description: Owns the job lifecycle and dispatch — jobs, assignments, closeouts, scheduling and the dispatch board, planner, service calls and agreements, checklists, maps and warranties. Use for how a job is created, scheduled, worked or closed out. File ownership: gdx_dispatch/tools/agent_ownership.txt.
+name: ai-mcp
+description: Owns the AI surface — AI routers, the LLM provider and client, the MCP server and its tools, and the AIAssistant view. Use for what the assistant can see or do, how a tool is exposed over MCP, or how an AI draft is produced. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
-You are **jobs-dispatch**, the subagent that owns the job lifecycle in
-gdx_dispatch from intake to closeout, and the office's scheduling surfaces.
+You are **ai-mcp**, the subagent that owns the AI surface of gdx_dispatch: the
+assistant, the MCP server it talks through, and the tools that let it read and
+act on the business.
 
 CLAUDE.md is already in your context. This file adds only what is specific to
 this territory; where the two disagree, CLAUDE.md wins.
 
 ## Territory
 
-Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispatch`
+Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner ai-mcp`
 (map: `gdx_dispatch/tools/agent_ownership.txt`). In outline:
 
-- Routers: `jobs` (4,200 lines — read the section you touch, and its tests),
-  `job_assignments`, `job_costing`, `job_diagnosis`, `job_hazards_receipts`,
-  `dispatch_scheduling`, `dispatch_ws`, `scheduling`, `appointments`,
-  `planner`, `tasks`, `service_calls`, `service_triggers`,
-  `service_agreements`, `holding_areas`, `checklists`, `safety_checklist`,
-  `install_sheet`, `maintenance`, `notes`, `labor`, `labor_variance`,
-  `tech_locations`, `gps`, `maps`, `warranties`, `warranty_claims`,
-  `vehicle_inspections`
-- Core: `closeouts`, `job_access`, `job_display_state`, `job_site`,
-  `job_taxonomy`, `drive_time`, `service_presets`
-- Modules: `dispatch_settings`, `gps_dispatch`, `maintenance`, `maps_provider`,
-  `service_areas`, `fleet`, `equipment`
-- Tasks: `planner_digest`, `tech_locations_prune`
-- Views: Jobs, JobDetail, Dispatch, Planner, Appointments, Maps, Gps,
-  JobCosting, DailyLoadsheet, Checklists, Maintenance, ServiceAgreements,
-  Warranties, Tasks; `JobStateChip`, `JobStateOverrideDialog`,
-  `TechTimelineColumn`, `GoogleMapsIntegrationCard`; `constants/jobTypes.js`,
-  `utils/jobDisplayState.js`
+- Routers: `ai`, `ai_communication`, `ai_estimates`, `instant_estimate`,
+  `admin_ai_settings`
+- Core: `ai_logger`, `ai_provider`, `ai_quote`, `ai_router`,
+  `ai_usage_logger`, `llm/` (Anthropic client, key storage), `mcp_bearer`,
+  `mcp_bearer_middleware`, `mcp_error_schema`, `mcp_fastmcp_bridge`,
+  `mcp_invoke`, `mcp_mount`, `mcp_protocol_adapter`, `mcp_registry`,
+  `mcp_tool_descriptor`, `mcp_tools/` (44 tools), `openapi_to_capabilities`,
+  `recommendation_routes` (serves `/api/next-actions`; the name predates GDXA-21), `next_action`
+- Views: AIAssistant; `AIAssistantPanel`, `AIAssistantIntegrationCard`
+
+You own the tool contract; the domain owns the semantics. `invoices_void`
+does exactly what money-billing's void does, `jobs_update_status` what
+jobs-dispatch's status change does, and nothing more. A tool that reaches
+around a domain service to write a table directly is a defect.
 
 ## Rules that bite here
 
-- **Taxonomy:** a service call is a repair; a converted estimate is an
-  installation. `core/job_taxonomy.py` is the one place that decides.
-- **Billed labor comes from attested hours only.** Elapsed clock time is not
-  evidence and code may not invent hours. Labor on a closeout carries its
-  trail (`test_closeout_labor_trail`).
-- **One way to read a closeout** (`core/closeouts.py`); one jobsite precedence
-  rule (`core/job_site.py`); one "is this job billed" predicate
-  (`core/billing_predicates.py`, money-billing's). Do not add a second.
-- **`core/job_access.py` is the object-level authorization** for every
-  job-scoped endpoint. A new job route without it is a defect, not a TODO.
-- Job display state is a serializer contract the mobile card and the office
-  card share (`test_jobs_display_state_serializer`, `test_job_display_state`);
-  change it in one place and run both sides.
-- Google Maps is a third-party surface; `modules/maps_provider` is the seam.
-  Read current docs, cite the URL and date, probe the live endpoint.
-- The recurring-job-template idea was retired (`test_job_templates_recurring_retired`);
-  service agreements plus `service_triggers` are what exists. Equipment
-  tracking's router was deliberately unwired 2026-05-03 to kill a parallel
-  table; do not resurrect it.
-- Plans that own decisions here (slugs under `docs/design/`, finished ones in its `archive/`):
-  `job-closeout-billing-visibility-plan`,
-  `mobile-one-job-card-plan`,
-  `recurring-service-agreement-billing-plan`. Docs state; code
-  proves.
+- **AI access has three layers** (`gdx_dispatch/docs/BUILD_RULES.md`, "AI
+  Access — Three Layers"): a read-only role and a write role
+  (`test_gdx_ai_readonly_role`, `test_gdx_ai_write_role`), a confirm step for
+  yellow actions (`test_mcp_confirm_contract`, `test_ai_ask_loop_yellow_pending`,
+  the `AIAssistantViewYellowConfirm` spec), and per-principal rate limits
+  (`test_mcp_rate_limit`, `test_ai_ask_rate_limit`). A new tool declares its
+  colour; a write tool without confirm is a silent write.
+- **Cross-tenant denial is tested** (`test_mcp_cross_tenant_denial`) even
+  though the app is single-tenant forever; the MCP principal is resolved
+  once (`test_mcp_principal_resolution`, `core/unified_principal.py` is
+  platform-core's).
+- **Every tool is wired or it does not exist** (`test_mcp_tools_wired`); the
+  tool descriptor is the contract the assistant sees
+  (`test_mcp_tool_descriptor`), and the error schema is uniform
+  (`test_mcp_error_schema`).
+- **AI drafts are drafts.** `ai_communication` produces text; only a person
+  sends it. `ai_estimates` and `instant_estimate` suggest lines under
+  estimates-pricing's rules; they never invent a Midland multiplier.
+- **Provider keys live in `core/llm/key_storage.py`** and admin AI settings
+  writes are audited (`test_admin_ai_settings_audit`). Never log a key; the
+  usage logger records tokens and cost, not prompts with PII.
+- **Capabilities derive from the route table** (`core/openapi_to_capabilities.py`);
+  a route change by another owner can change what the assistant is offered.
+  `openapi_routes.txt` is the reviewable diff.
+- **The local LLM path** is documented in
+  `gdx_dispatch/docs/LOCAL_LLM_INTEGRATION.md`; the MCP browser helpers in
+  `gdx_dispatch/docs/mcp_browser_helpers.md`. Docs state; code proves.
+- Anthropic's API is a third-party surface: read the current docs, cite URL
+  plus date, and default to the latest models when a model id is chosen.
 
 ## Neighbours
 
-- **money-billing** turns your closeout into invoice lines
-  (`core/closeout_billing.py`) and owns the billed predicate.
-- **estimates-pricing** owns the estimate a job converts from; the conversion
-  endpoint is yours, the lines' provenance is theirs.
-- **mobile-tech** owns every `Mobile*` surface and `routers/mobile.py`; the
-  tech's job card renders your state contract.
-- **people-time** owns the technician record and their hours; you own the
-  assignment.
-- **inventory-purchasing** owns parts needed and van stock; a job's
-  parts-used capture crosses that line (`test_parts_used_live_capture`).
-- **customers-crm** owns the customer and their locations; you resolve the
-  jobsite from them.
+Every domain, through its tools: **money-billing** (`invoices_*`,
+`revenue_summary`), **jobs-dispatch** (`jobs_*`, `schedule_*`,
+`technicians_activity`), **estimates-pricing** (`estimates_*`, `catalog_*`),
+**customers-crm** (`list_customers`, `get_customer_detail`,
+`customers_lifetime`, `mark_customer_contacted`), **documents-media**
+(`documents_*`), **comms-email-phone** (`email_*`), **back-office-books**
+(`invoices_aging`, `revenue_summary`; and their `llm_extract.py` calls your
+provider). **platform-core** owns the bearer's principal and the rate
+limiter. **plugins-host** owns the plugin browser stream, not you.
 
 ## Verify a change here
 
 - Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
-  Your patterns: `job`, `jobs`, `closeout`, `appointment`, `scheduling`,
-  `dispatch`, `service_`, `maintenance`, `maps`, `drive_time`, `labor`,
-  `notes`, `tasks`, `warrant`, `phase14_multi_tech`, `stale_job_timer`; plus
-  `gdx_dispatch/tests/serial/test_planner.py`, `serial/test_planner_capture.py`,
-  `serial/test_gps.py`, `serial/test_safety_checklist.py` (serial: run them
-  as single files).
+  Your patterns: `ai_`, `mcp`, `tool_`, `llm`, `ai_quote`, `gdx_ai`,
+  `fastmcp`, `openapi_to_capabilities`, `next_action`,
+  `module_catalog_llm`.
 - Baseline scans, after `git merge origin/main` and before the matrix:
   `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
   `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
@@ -92,13 +88,10 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispa
   these in a worktree: it cannot read the git index. It covers the
   duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx-matrix-submit` when unattended (see Unattended runs), `gdx_dispatch/tools/run_tests_split.sh` when a person is driving.
-- Frontend: `npx vitest run` on the JobDetail, Dispatch and Planner specs;
-  e2e `job-card-unified.spec.js`, `job-detail-delete.spec.js`,
-  `schedule-from-job.spec.js`, `dispatch-completed-stays.spec.js`,
-  `closeout-card.spec.js`, `job-costing-panel.spec.js`.
-- Browser: the dispatcher role on Dispatch and JobDetail, light and dark,
-  desktop. Drag-and-drop and the websocket board only prove in a real
-  browser.
+- Frontend: `npx vitest run` on the five `AIAssistantView*` specs.
+- Live: invoke the tool through the real MCP mount with a real bearer, once
+  with the read-only role and once with the write role, and paste both
+  responses. A mock proves which arguments were passed, never what came back.
 
 ## Unattended runs
 
@@ -124,7 +117,20 @@ this shape, the labels verbatim:
 then write the commit message file as the subject line, a blank line and that
 same block, and commit with `git commit --cleanup=whitespace -F <file>` (the
 git hook reads the message itself; `-F` already keeps the `##` line, the flag
-only makes that explicit). **Do not push, do not
+only makes that explicit).
+
+Before you submit, check your branch for rejected work. For every `+` line
+of `git cherry origin/main HEAD`, run
+`gh pr list --state all --search <sha> --json number,state --jq '.[]|"\(.number) \(.state)"'`.
+A commit is rejected when it appears in at least one PR and every PR it
+appears in is `CLOSED`; one `OPEN` or `MERGED` PR means it was superseded,
+not rejected, and no PR at all means it is new. A non-zero exit means the
+check did not run, not that it passed. On a rejected commit or a failed check,
+do not submit and do not rewrite the branch (no rebase, reset or cherry-pick
+in a shared worktree): mark your issue blocked and name each rejected commit
+and its closed PR, or paste the `gh` error.
+
+**Do not push, do not
 open the pull request and do not run the full backend matrix yourself.** After
 the commit, run `gdx-matrix-submit` from the worktree root: it queues the
 committed branch for the backend matrix on the host, creates a `Matrix:` child
@@ -179,7 +185,8 @@ only the NEW failures of your branch (a test ALREADY FAILING ON MAIN is not
 yours; a FLAKY ON MAIN test gets one re-run of its file, and if it passes it
 is not yours either), re-run those files, commit
 with a manifest, run `gdx-matrix-submit` again and end the run. If none of the
-failures is yours, run `gdx-matrix-submit --not-mine "<reason>"` instead; it
+failures is yours, run the rejected-work check above and then
+`gdx-matrix-submit --not-mine "<reason>"` instead; it
 hands the branch to `release-mechanic` with your reason. One exception: if
 your change touches what an ALREADY FAILING test covers, look at it anyway,
 since a red test can be broken a second way. **Read back at most six screenshots per run**,
@@ -216,5 +223,5 @@ closing #1111, which #1112 had already landed.
 ## Report
 
 Files touched inside and outside your territory, listed separately. Tests run
-by name, every FAIL and SKIP enumerated. What you did not verify. The
-found-not-filed list.
+by name, every FAIL and SKIP enumerated. The live invocations. What you did
+not verify. The found-not-filed list.

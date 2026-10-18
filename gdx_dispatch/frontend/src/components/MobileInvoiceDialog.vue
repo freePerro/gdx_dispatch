@@ -22,6 +22,8 @@ import Tag from 'primevue/tag'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import AuthedImage from './AuthedImage.vue'
+import EmailAttachmentPicker from './EmailAttachmentPicker.vue'
+import { INVOICE_PDF_LEFT_OUT_TEXT, MAX_TOTAL_BYTES, knownTotalBytes, sendErrorText, toAttachmentRefs } from '../utils/emailAttachments'
 import SmsLinkDialog from './SmsLinkDialog.vue'
 import { useTenantModules } from '../composables/useTenantModules'
 import { formatMoney } from '../composables/useFormatters'
@@ -229,25 +231,60 @@ async function generateInvoice() {
   }
 }
 
+// Files the tech picked to go beside one invoice's PDF on Re-send — photos
+// from the truck, the job's documents. One invoice's picker open at a time.
+const attachFor = ref(null)
+const resendPicked = ref([])
+const resendPickedOver = computed(() => knownTotalBytes(resendPicked.value) > MAX_TOTAL_BYTES)
+
+function toggleAttach(inv) {
+  if (attachFor.value === inv.id) {
+    attachFor.value = null
+  } else {
+    attachFor.value = inv.id
+  }
+  resendPicked.value = []
+}
+
+function resendLabel(inv) {
+  const n = attachFor.value === inv.id ? resendPicked.value.length : 0
+  return n ? `Re-send with ${n} file${n === 1 ? '' : 's'}` : 'Re-send'
+}
+
 async function resendInvoice(inv) {
   submitting.value = true
+  const picked = attachFor.value === inv.id ? resendPicked.value : []
   try {
-    const res = await api.post(`/api/mobile/invoices/${inv.id}/send`, {})
+    const res = await api.post(
+      `/api/mobile/invoices/${inv.id}/send`,
+      picked.length ? { attachment_refs: toAttachmentRefs(picked) } : {},
+      // A refused pick (404/413) or a dropped connection is said once, below.
+      { suppressErrorToast: (e) => e?.status !== 401 },
+    )
     const payload = res?.data || res
     // Read the delivery result: a suppressed repeat or an undelivered email
     // is not "re-sent" (GDXA-1278). The server names no reason for a
     // non-delivery (no customer address and a refused provider look alike),
-    // so the toast does not guess one.
+    // so the toast does not guess one. A suppressed repeat mailed nothing,
+    // the picks included, so they stay in the picker.
     if (payload?.email_skip_reason === 'duplicate_send_suppressed') {
       toast.add({ severity: 'info', summary: 'Already sent', detail: 'An email for this invoice went out moments ago.', life: 4000 })
     } else if (payload?.email_sent === false) {
       toast.add({ severity: 'warn', summary: 'Email not delivered', detail: 'The customer was not emailed — check their email address, or ask the office.', life: 5000 })
+    } else if (picked.length && payload?.pdf_attached === false) {
+      toast.add({ severity: 'warn', summary: 'Invoice re-sent without its PDF', detail: INVOICE_PDF_LEFT_OUT_TEXT, life: 10000 })
+      attachFor.value = null
+      resendPicked.value = []
     } else {
       toast.add({ severity: 'success', summary: 'Invoice re-sent', life: 2500 })
+      attachFor.value = null
+      resendPicked.value = []
     }
     await loadSummary()
   } catch (e) {
-    toast.add({ severity: 'error', summary: 'Could not re-send', detail: e.message, life: 4000 })
+    if (e?.status !== 401) {
+      toast.add({ severity: 'error', summary: 'Could not re-send', detail: sendErrorText(e, 'Re-send failed'), life: 8000 })
+    }
   } finally {
     submitting.value = false
   }
@@ -358,14 +395,26 @@ async function sendReceipt(inv) {
           <div class="invoice-actions">
             <Button
               v-if="inv.verified_at"
-              label="Re-send"
+              :label="resendLabel(inv)"
               icon="pi pi-envelope"
               size="small"
               text
               :loading="submitting"
+              :disabled="attachFor === inv.id && resendPickedOver"
+              data-testid="mid-resend"
               @click="resendInvoice(inv)"
             />
-            <span v-else class="muted" data-testid="mid-send-blocked">
+            <Button
+              v-if="inv.verified_at && inv.status !== 'void'"
+              :label="attachFor === inv.id ? 'No files' : 'Add files'"
+              :icon="attachFor === inv.id ? 'pi pi-times' : 'pi pi-paperclip'"
+              size="small"
+              text
+              :disabled="submitting"
+              data-testid="mid-resend-attach"
+              @click="toggleAttach(inv)"
+            />
+            <span v-if="!inv.verified_at" class="muted" data-testid="mid-send-blocked">
               Send unlocks when the office verifies the hours.
             </span>
             <Button
@@ -394,6 +443,16 @@ async function sendReceipt(inv) {
               text
               data-testid="mid-open-pay"
               @click="openPayForm(inv)"
+            />
+          </div>
+
+          <!-- Files to go beside the invoice PDF on Re-send. -->
+          <div v-if="attachFor === inv.id" class="resend-attach" data-testid="mid-resend-picker">
+            <EmailAttachmentPicker
+              v-model="resendPicked"
+              :job-id="props.job?.id"
+              :customer-id="inv.customer_id || props.job?.customer_id"
+              :disabled="submitting"
             />
           </div>
 
@@ -532,7 +591,8 @@ async function sendReceipt(inv) {
 .pay-form-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
 .invoice-num { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.2rem; }
 .invoice-totals { font-size: 0.85rem; }
-.invoice-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
+.invoice-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; flex-wrap: wrap; }
+.resend-attach { margin-top: 0.5rem; }
 
 .muted { color: var(--p-text-muted-color, #6b7280); font-size: 0.8rem; }
 

@@ -24,6 +24,12 @@
  * empty, and its cards are as short — so the queue is still one short reach
  * from the tech columns. Anything else wedged in there is the old regression.
  *
+ * 2026-10-16 (Doug: the holding lanes were "too far apart to grab and put on
+ * another lane"): the parking lots left the bottom of this column. They are
+ * a compact strip ABOVE the board — every lane two rows of small cards with
+ * its own scroll — so a lane, another lane and any tech are on one screen.
+ * The techs-then-queue adjacency above is unchanged.
+ *
  * Static-source guard rather than a mount: DispatchView is too heavy for unit
  * tests (same reasoning as the holding-area and labor-exception specs).
  */
@@ -58,11 +64,23 @@ describe("dispatch day-view lane order", () => {
     );
   });
 
-  it("keeps the scheduling queue above the holding areas", () => {
-    // The ORIGINAL regression: queue buried under the parking lots.
-    expect(orderOf('data-testid="unassigned-section"')).toBeLessThan(
-      orderOf('class="holding-areas-section"'),
-    );
+  it("draws the holding areas as one strip above the day board, not under it", () => {
+    // The ORIGINAL regression was the queue buried under the parking lots;
+    // the 2026-10-16 one was the lanes buried under the tech columns.
+    const strip = SRC.indexOf('data-testid="lane-strip"');
+    const dayView = SRC.indexOf("<!-- Day View -->");
+    expect(strip).toBeGreaterThan(-1);
+    expect(strip).toBeLessThan(dayView);
+    expect(SRC.slice(strip - 120, strip)).toMatch(/v-if="viewMode === 'day' \|\| viewMode === 'week'"/);
+    // Nothing in the day column is drawn as a holding-area lane any more.
+    expect(SRC.indexOf('moveToHoldingArea($event', dayView)).toBe(-1);
+  });
+
+  it("keeps every lane to two rows that scroll on their own", () => {
+    const rule = SRC.match(/^\.week-queue-chips \{([^}]*)\}/m);
+    expect(rule, "the lane chip list lost its rule").not.toBeNull();
+    expect(rule[1]).toMatch(/max-height:\s*3\.4rem/);
+    expect(rule[1]).toMatch(/overflow-y:\s*auto/);
   });
 
   it("leaves only Partial Jobs between the techs and the queue", () => {
@@ -81,18 +99,16 @@ describe("dispatch day-view lane order", () => {
     expect(SRC.slice(tagStart, at)).toMatch(/v-if="visiblePartialJobs\.length"/);
   });
 
-  it("keeps the empty-state holding-areas button with its own section", () => {
-    // #299 moved the holding-areas section but left its v-else behind at
-    // order:1, which floats a "Set Up Holding Areas" button up next to the
-    // tech grid on any board with no holding areas configured. The order lives
-    // on the wrapping v-else <div>, not on the Button itself.
+  it("keeps the empty-state holding-areas button with its own strip", () => {
+    // #299 moved the holding-areas section but left its empty state behind,
+    // which floated a "Set Up Holding Areas" button somewhere else. It is
+    // the strip's own v-else-if now.
     const at = SRC.indexOf('data-testid="seed-holding-areas"');
     expect(at).toBeGreaterThan(-1);
-    const wrapper = SRC.lastIndexOf("<div v-else", at);
-    expect(wrapper, "seed-holding-areas is no longer in a v-else div").toBeGreaterThan(-1);
-    const m = SRC.slice(wrapper, at).match(/style="order:\s*(\d+)/);
-    expect(m, "the holding-areas v-else lost its inline order").not.toBeNull();
-    expect(Number(m[1])).toBe(orderOf('class="holding-areas-section"'));
+    const strip = SRC.indexOf('data-testid="lane-strip"');
+    expect(at).toBeGreaterThan(strip);
+    expect(at).toBeLessThan(SRC.indexOf("<!-- Day View -->"));
+    expect(SRC.slice(SRC.lastIndexOf("<div v-else-if", at), at)).toMatch(/viewMode === 'day'/);
   });
 
   it("still lets the queue accept a drop (it is a drop target, not just a list)", () => {

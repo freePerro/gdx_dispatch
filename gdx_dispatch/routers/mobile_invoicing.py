@@ -49,6 +49,7 @@ from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.email_attachments import AttachmentRef, attachment_audit_meta, resolve_attachment_refs
 from gdx_dispatch.core.invoice_paid import paid_to_date
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as MobileSendSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module
@@ -267,6 +268,15 @@ class CreateInvoiceIn(BaseModel):
     # them before the customer gets the bill. Validated server-side against
     # this job, same rule and same helper as the office paths.
     attached_photo_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class MobileSendInvoiceIn(BaseModel):
+    """Optional body for POST /api/mobile/invoices/{invoice_id}/send: files
+    the tech picked to go beside the invoice PDF — photos from the truck,
+    the job's documents (core/email_attachments.py, under the tech's own
+    jobs). An empty body is the plain re-send."""
+
+    attachment_refs: list[AttachmentRef] | None = Field(default=None, max_length=25)
 
 
 class SendReceiptIn(BaseModel):
@@ -1014,8 +1024,14 @@ def _send_invoice_email(
     *,
     tenant_id: str,
     user_id: str | None = None,
+    picked: list[dict[str, Any]] | None = None,
+    report: dict[str, Any] | None = None,
 ) -> bool:
     """Send the invoice email to the customer, if email available.
+    ``picked`` — files the tech chose, already resolved and within the cap —
+    ride beside the invoice PDF, which gets what they leave of the budget.
+    ``report``, when given, receives ``pdf_attached`` on a delivered send, so
+    the caller can tell the tech the picks left the PDF out.
 
     Mirrors the path in invoices.send_estimate (lines 743–795) but for
     invoices. Failures are logged not raised — invoice creation already
@@ -1062,7 +1078,7 @@ def _send_invoice_email(
             import base64 as _b64
 
             from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
-            from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+            from gdx_dispatch.core.transactional_email import MAX_ATTACHMENT_BYTES
             from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
 
             # `_template_config` is resolved OUTSIDE the savepoint on purpose
@@ -1094,7 +1110,7 @@ def _send_invoice_email(
                 tenant_branding=_branding,
                 template_config=_tpl,
             )
-            if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
+            if len(pdf_bytes) > MAX_ATTACHMENT_BYTES - sum(a["size_bytes"] for a in picked or ()):
                 log.warning(
                     "mobile_invoice_pdf_too_large_to_attach invoice=%s bytes=%s",
                     invoice.id, len(pdf_bytes),
@@ -1135,7 +1151,7 @@ def _send_invoice_email(
             to_name=to_name,
             subject=prep["subject"],
             html_body=html,
-            attachments=attachments,
+            attachments=[*(attachments or ()), *(picked or ())] or None,
             # Tagged as the desktop /send tags it, so `recently_sent` (the
             # double-send guard in `mobile_send_invoice`) can see this send.
             # Untagged, a truck send was invisible to every guard.
@@ -1143,6 +1159,8 @@ def _send_invoice_email(
             entity_type="invoice",
             entity_id=str(invoice.id),
         )
+        if report is not None and sent:
+            report["pdf_attached"] = bool(attachments)
         return bool(sent)
     except Exception:
         log.exception("mobile_invoice_email_failed invoice=%s", invoice.id)
@@ -1181,6 +1199,7 @@ def _awaiting_verification_refusal() -> JSONResponse:
 def mobile_send_invoice(
     invoice_id: str,
     request: Request,
+    payload: MobileSendInvoiceIn | None = None,
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
@@ -1215,7 +1234,8 @@ def mobile_send_invoice(
     # `recently_sent`'s docstring). Kind-scoped as there — a receipt right
     # after the invoice email is legitimate; on a PAID invoice this email is
     # itself a receipt and shares that kind, as on the desktop. Nothing was
-    # sent, so nothing is audited.
+    # sent, so nothing is audited. Checked before the picks load: a
+    # suppressed re-send mails nothing, the files picked for it included.
     from gdx_dispatch.core.transactional_email import recently_sent
 
     if recently_sent(db, "invoice", str(invoice.id), kind=_invoice_email_kind(invoice)):
@@ -1223,6 +1243,11 @@ def mobile_send_invoice(
         dup_payload["email_sent"] = False
         dup_payload["email_skip_reason"] = "duplicate_send_suppressed"
         return _jr(dup_payload)
+
+    # Picked files load (or 404/413) before the flip below, so a bad pick
+    # changes nothing.
+    refs = payload.attachment_refs if payload else None
+    picked = resolve_attachment_refs(db, request, user, tenant_id, refs) if refs else []
 
     # Flip to sent and write the audit row BEFORE the email renders, in one
     # commit, as the desktop /send does: the attached PDF is built from this
@@ -1240,16 +1265,22 @@ def mobile_send_invoice(
         action="mobile_invoice_sent",
         entity_type="invoice",
         entity_id=str(invoice.id),
-        details={"invoice_number": invoice.invoice_number},
+        details={
+            "invoice_number": invoice.invoice_number,
+            "attachments": attachment_audit_meta(picked) or None,
+        },
         request=request,
     )
     db.commit()
     db.refresh(invoice)
 
+    send_report: dict[str, Any] = {}
     # The tech's own mailbox, as the desktop /send uses the office user's
     # (GDXA-1369). Without user_id the send skipped Outlook entirely and the
     # outbound_emails row named no initiator.
-    delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id, user_id=user_id)
+    delivered = _send_invoice_email(
+        db, invoice, tenant_id=tenant_id, user_id=user_id, picked=picked, report=send_report,
+    )
 
     # sent_at is a delivery fact. Same tail as the desktop /send (GDXA-673):
     # if the email step left the transaction dead, the commit raises — roll
@@ -1272,6 +1303,8 @@ def mobile_send_invoice(
     db.refresh(invoice)
     resend_payload = _serialize_invoice(invoice, db=db)
     resend_payload["email_sent"] = bool(delivered)
+    if "pdf_attached" in send_report:
+        resend_payload["pdf_attached"] = send_report["pdf_attached"]
     return _jr(resend_payload)
 
 

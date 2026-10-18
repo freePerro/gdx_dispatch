@@ -6,7 +6,7 @@ commit waits on an fsync: ``run_tests_split.sh`` measured
 ``test_mobile_job_clock.py`` at 138 s on disk against 3.5 s on tmpfs
 (2026-10-05). The script injects the flag into its own ``PYTEST``, but a
 single-file run pasted from an agent file or a guide never goes through it.
-GDXA-484 found 13 of the 14 ``.claude/agents/*.md`` files carrying the bare
+GDXA-484 found 13 of the 14 ``claude-config/agents/*.md`` files carrying the bare
 one-liner.
 
 What turns this red: a runnable example — an inline code span (even one
@@ -33,9 +33,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SURFACES = (
-    ".claude/agents/*.md",
-    ".claude/rules/*.md",
-    ".claude/skills/**/*.md",
+    "claude-config/agents/*.md",
+    "claude-config/rules/*.md",
+    "claude-config/skills/**/*.md",
     "CLAUDE.md",
     "gdx_dispatch/docs/**/*.md",
 )
@@ -115,8 +115,8 @@ def _surface_files() -> list[Path]:
 
 def test_surfaces_exist():
     """An empty scan passes vacuously — make sure the agent files are reachable."""
-    agents = list(REPO_ROOT.glob(".claude/agents/*.md"))
-    assert agents, f"no agent files under {REPO_ROOT / '.claude/agents'}"
+    agents = list(REPO_ROOT.glob("claude-config/agents/*.md"))
+    assert agents, f"no agent files under {REPO_ROOT / 'claude-config/agents'}"
 
 
 def test_every_docker_pytest_example_mounts_tmpfs():

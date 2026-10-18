@@ -357,3 +357,143 @@ describe('MobileInvoiceDialog — send outcomes', () => {
     expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ severity: 'error' }));
   });
 });
+
+describe('MobileInvoiceDialog — Re-send with files (2026-10-16)', () => {
+  // The picker's own loading is pinned by EmailAttachmentPicker.spec.js; here
+  // it only has to show who it was opened for.
+  const Picker = {
+    props: ['modelValue', 'jobId', 'customerId', 'disabled'],
+    template: '<div data-testid="picker-stub" :data-job="jobId" :data-customer="customerId" />',
+  };
+  const inv = {
+    id: 'inv-v', invoice_number: '2001', status: 'sent', total: 300, balance_due: 300,
+    customer_id: 'cust-9', verified_at: '2026-09-28T12:00:00Z',
+  };
+  const PHOTO = { kind: 'job_photo', id: 'ph-1', name: 'door.jpg', size_bytes: 1200 };
+
+  const open = async () => {
+    apiGet.mockReset().mockResolvedValue({ ...SUMMARY, invoices: [inv] });
+    const w = mount(MobileInvoiceDialog, {
+      props: { visible: true, job: { id: 'job-1' } },
+      global: { stubs: { ...stubs, EmailAttachmentPicker: Picker } },
+    });
+    await flushPromises();
+    return w;
+  };
+  const resend = (w) => w.find('[data-testid="mid-resend"]');
+
+  it('Add files opens the picker for this job and customer, and the picks ride on Re-send', async () => {
+    const w = await open();
+    expect(w.find('[data-testid="picker-stub"]').exists()).toBe(false);
+    await w.find('[data-testid="mid-resend-attach"]').trigger('click');
+    const picker = w.find('[data-testid="picker-stub"]');
+    expect(picker.attributes('data-job')).toBe('job-1');
+    expect(picker.attributes('data-customer')).toBe('cust-9');
+
+    w.vm.$.setupState.resendPicked = [PHOTO];
+    await flushPromises();
+    expect(resend(w).text()).toBe('Re-send with 1 file');
+    apiPost.mockResolvedValueOnce({ id: 'inv-v', email_sent: true });
+    await resend(w).trigger('click');
+    await flushPromises();
+
+    const [url, body, opts] = apiPost.mock.calls[0];
+    expect(url).toBe('/api/mobile/invoices/inv-v/send');
+    expect(body).toEqual({ attachment_refs: [{ kind: 'job_photo', id: 'ph-1' }] });
+    // A refused pick is said once by this dialog; only a 401 is left to useApi.
+    expect(opts.suppressErrorToast({ status: 404 })).toBe(true);
+    expect(opts.suppressErrorToast({ status: 401 })).toBe(false);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success', summary: 'Invoice re-sent' }));
+    expect(w.find('[data-testid="picker-stub"]').exists()).toBe(false);
+  });
+
+  it('warns when the picks left the invoice PDF out', async () => {
+    const w = await open()
+    await w.find('[data-testid="mid-resend-attach"]').trigger('click')
+    w.vm.$.setupState.resendPicked = [PHOTO]
+    await flushPromises()
+    apiPost.mockResolvedValueOnce({ id: 'inv-v', email_sent: true, pdf_attached: false })
+    await resend(w).trigger('click')
+    await flushPromises()
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'warn', summary: 'Invoice re-sent without its PDF',
+      detail: expect.stringContaining('invoice PDF was not attached'),
+    }))
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ summary: 'Invoice re-sent' }))
+  })
+
+  it('a plain Re-send whose PDF did not go does not blame files nobody added', async () => {
+    const w = await open()
+    apiPost.mockResolvedValueOnce({ id: 'inv-v', email_sent: true, pdf_attached: false })
+    await resend(w).trigger('click')
+    await flushPromises()
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ summary: 'Invoice re-sent without its PDF' }))
+  })
+
+  it('a plain Re-send posts no attachment_refs', async () => {
+    const w = await open();
+    apiPost.mockResolvedValueOnce({ id: 'inv-v', email_sent: true });
+    await resend(w).trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls[0][1]).toEqual({});
+  });
+
+  it('never shows "re-sent" over an email that did not go, files or not', async () => {
+    const w = await open();
+    await w.find('[data-testid="mid-resend-attach"]').trigger('click');
+    w.vm.$.setupState.resendPicked = [PHOTO];
+    await flushPromises();
+    apiPost.mockResolvedValueOnce({ id: 'inv-v', email_sent: false, pdf_attached: false });
+    await resend(w).trigger('click');
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+    expect(toastAdd.mock.calls[0][0]).toMatchObject({ severity: 'warn', summary: 'Email not delivered' });
+  });
+
+  it('a suppressed repeat with files says "Already sent" and keeps the picks', async () => {
+    const w = await open();
+    await w.find('[data-testid="mid-resend-attach"]').trigger('click');
+    w.vm.$.setupState.resendPicked = [PHOTO];
+    await flushPromises();
+    apiPost.mockResolvedValueOnce({ id: 'inv-v', email_sent: false, email_skip_reason: 'duplicate_send_suppressed' });
+    await resend(w).trigger('click');
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+    expect(toastAdd.mock.calls[0][0]).toMatchObject({ severity: 'info', summary: 'Already sent' });
+    expect(w.find('[data-testid="picker-stub"]').exists()).toBe(true);
+    expect(resend(w).text()).toBe('Re-send with 1 file');
+  });
+
+  it('a refused pick says why, once; a 401 is left to the sign-in flow', async () => {
+    const w = await open();
+    await w.find('[data-testid="mid-resend-attach"]').trigger('click');
+    w.vm.$.setupState.resendPicked = [PHOTO];
+    apiPost.mockRejectedValueOnce(Object.assign(new Error('Attachment not found: door.jpg'), { status: 404 }));
+    await resend(w).trigger('click');
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+    expect(toastAdd.mock.calls[0][0]).toMatchObject({ severity: 'error', detail: 'Attachment not found: door.jpg' });
+
+    toastAdd.mockReset();
+    apiPost.mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }));
+    await resend(w).trigger('click');
+    await flushPromises();
+    expect(toastAdd).not.toHaveBeenCalled();
+  });
+
+  it('a dropped connection warns that it may have gone', async () => {
+    const w = await open();
+    apiPost.mockRejectedValueOnce(new Error('Failed to fetch'));
+    await resend(w).trigger('click');
+    await flushPromises();
+    expect(toastAdd.mock.calls[0][0].detail).toContain('Check Sent Items before sending again');
+  });
+
+  it('Re-send is disabled while the picks are over the email cap', async () => {
+    const w = await open();
+    await w.find('[data-testid="mid-resend-attach"]').trigger('click');
+    w.vm.$.setupState.resendPicked = [{ ...PHOTO, size_bytes: 19_000_000 }];
+    await flushPromises();
+    expect(resend(w).attributes('disabled')).toBeDefined();
+  });
+});

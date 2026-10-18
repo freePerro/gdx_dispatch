@@ -3,7 +3,7 @@
 # One rule per line:   <fnmatch glob, repo-relative posix path>   <owner>
 # `*` matches across `/` (fnmatch semantics, not gitignore). LAST MATCH WINS,
 # so list the broad rule first and the exception after it. An owner is the
-# stem of a checked-in agent file: `.claude/agents/<owner>.md`.
+# stem of a checked-in agent file: `claude-config/agents/<owner>.md`.
 #
 # Read by gdx_dispatch/tools/agent_ownership_scan.py and gated by
 # gdx_dispatch/tests/test_agent_ownership.py: every source file under the
@@ -67,6 +67,9 @@ gdx_dispatch/tests/test_roles_canonical.py                   platform-core
 # The real-Postgres pave guard and its pg_dump/psql client resolution, which
 # ci.yml's postgresql-client step feeds (GDXA-1169). Not gated, like pg.py.
 gdx_dispatch/tests/test_pave_rebuild_pg.py                   platform-core
+# The matrix runner's -r flag and its interpreter choice, run against the real
+# tools/run_tests_split.sh (GDXA-1432). Not gated, like pg.py.
+gdx_dispatch/tests/test_run_tests_split_report_opts.py       platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core
@@ -80,14 +83,15 @@ sgconfig.yml                                                 platform-core
 .env.template                                                platform-core
 # The agent definitions themselves — the map's own owner list. Gated: the
 # directory is in COVERED_ROOTS, so an agent file with no rule here is red.
-.claude/agents/*                                             platform-core
-# The area rules (`.claude/rules/*.md`) that load when a matching file is
+claude-config/agents/*                                       platform-core
+# The area rules (`claude-config/rules/*.md`, loaded via the `.claude/rules` symlink) that load when a matching file is
 # read — present-tense instructions every agent follows (GDXA-966). Gated:
 # the directory is in COVERED_ROOTS.
-.claude/rules/*                                              platform-core
+claude-config/rules/*                                        platform-core
 # The skills: gdx-harness carries the merge path and runner facts every agent
-# acts on. Gated: `.claude/skills/` is in COVERED_ROOTS (GDXA-1054).
-.claude/skills/*                                             platform-core
+# acts on. Gated: `claude-config/skills/` is in COVERED_ROOTS (GDXA-1054).
+# These live in claude-config/ behind .claude/ symlinks so agents can edit them (GDXA-1417).
+claude-config/skills/*                                       platform-core
 
 # Ratchet baselines and scanner/harness state at the repo root. Gated, via
 # COVERED_ROOT_GLOBS — `.tenant_plane_redundant_filter_baseline` is line-keyed,

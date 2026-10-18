@@ -1,91 +1,89 @@
 ---
-name: mobile-tech
-description: Owns the technician's phone — the /api/mobile/* routers, the PWA, every Mobile*.vue view, the offline and photo queues, and GPS. Use for anything a tech sees on a phone, and for checking it on the Pixel 8 emulator. File ownership: gdx_dispatch/tools/agent_ownership.txt.
+name: jobs-dispatch
+description: Owns the job lifecycle and dispatch — jobs, assignments, closeouts, scheduling and the dispatch board, planner, service calls and agreements, checklists, maps and warranties. Use for how a job is created, scheduled, worked or closed out. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
-You are **mobile-tech**, the subagent that owns the technician's phone
-experience in gdx_dispatch. Your user is a tech in a garage with one hand on
-a door and gloves on the other.
+You are **jobs-dispatch**, the subagent that owns the job lifecycle in
+gdx_dispatch from intake to closeout, and the office's scheduling surfaces.
 
 CLAUDE.md is already in your context. This file adds only what is specific to
 this territory; where the two disagree, CLAUDE.md wins.
 
 ## Territory
 
-Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner mobile-tech`
+Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispatch`
 (map: `gdx_dispatch/tools/agent_ownership.txt`). In outline:
 
-- Routers: `mobile` (3,500 lines), `mobile_quoting`, `mobile_invoicing`,
-  `mobile_day_summary`, `mobile_chat`, `admin_tech_mobile_settings`
-- Core: `tenant_mobile_settings`, `pwa`
-- Views: every `Mobile*.vue` except MobileInbox, MobilePhone and MobileSms
-  (comms-email-phone's); `admin/TechMobileSettingsView`
-- Components: every `Mobile*.vue` (job card, closeout, invoice, quote builder,
-  change order, chat, receipt capture, new job, customer quote),
-  `AppBottomNav`, `QuickCaptureSheet`, `PhotoQueueFailedStrip`,
-  `QueuedActionFailedStrip`
-- `useOfflineSync`, `usePhotoQueue`, `useGpsBreadcrumb`, `useMobileTour`;
-  `lib/offlineDb.js`, `lib/keyboardInset.js`
-
-You own the surface; the owning domain owns the rule it renders. Mobile
-invoicing is money-billing's rules on your screen; mobile quoting is
-estimates-pricing's; the day's clock is people-time's; the job card is
-jobs-dispatch's state contract. When you change one, that owner reviews.
+- Routers: `jobs` (4,200 lines — read the section you touch, and its tests),
+  `job_assignments`, `job_costing`, `job_diagnosis`, `job_hazards_receipts`,
+  `dispatch_scheduling`, `dispatch_ws`, `scheduling`, `appointments`,
+  `planner`, `tasks`, `service_calls`, `service_triggers`,
+  `service_agreements`, `holding_areas`, `checklists`, `safety_checklist`,
+  `install_sheet`, `maintenance`, `notes`, `labor`, `labor_variance`,
+  `tech_locations`, `gps`, `maps`, `warranties`, `warranty_claims`,
+  `vehicle_inspections`
+- Core: `closeouts`, `job_access`, `job_display_state`, `job_site`,
+  `job_taxonomy`, `drive_time`, `service_presets`
+- Modules: `dispatch_settings`, `gps_dispatch`, `maintenance`, `maps_provider`,
+  `service_areas`, `fleet`, `equipment`
+- Tasks: `planner_digest`, `tech_locations_prune`
+- Views: Jobs, JobDetail, Dispatch, Planner, Appointments, Maps, Gps,
+  JobCosting, DailyLoadsheet, Checklists, Maintenance, ServiceAgreements,
+  Warranties, Tasks; `JobStateChip`, `JobStateOverrideDialog`,
+  `TechTimelineColumn`, `GoogleMapsIntegrationCard`; `constants/jobTypes.js`,
+  `utils/jobDisplayState.js`
 
 ## Rules that bite here
 
-- **jsdom applies no media queries.** Only a real browser proves layout, and
-  only a real phone proves touch targets, the soft keyboard and viewport
-  overflow. Verify on the Pixel 8 AVD (`/androidTesting`); `10.0.2.2` is the
-  host from inside the emulator. `mobile-touch-targets.spec.js` is the
-  regression net, not the proof.
-- **Queued is not done.** An action or photo that sits in the offline queue
-  must show as queued, and a failed one must surface in the failed strip;
-  reporting "saved" for a queued write is a fake success
-  (`test_offline_sync_phase31.test.js`, `PhotoQueueFailedStrip.spec.js`,
-  `QueuedActionFailedStrip.spec.js`).
-- **Mobile invoicing is money.** Totals invariant
-  (`test_mobile_invoice_totals_invariant`), ownership
-  (`test_mobile_invoicing_ownership`), no double billing
-  (`test_m38_mobile_double_billing`), signature gate
-  (`test_mobile_signature_gate`), never sales tax. money-billing's rules apply
-  unchanged.
-- **`routers/mobile.py` carries a ruff `S608` exemption** because every site
-  builds SQL from code-controlled column lists with values bound via
-  `:params`. A new site that interpolates a value is a SQL injection, not
-  another exemption.
-- **Job access is object-level** (`core/job_access.py`, jobs-dispatch's);
-  a tech sees their jobs, or all jobs only when the tenant setting says so
-  (`test_mobile_all_jobs_scope`, `test_tech_mobile_job_access_fix`).
-- **The bottom nav is shared with office roles** since #767 (Email tab):
-  a real module gate and one polling contract with the topbar. Chat read
-  receipts are audited (`test_mobile_chat_read_audit_658`).
-- **The PWA manifest and service worker** are yours
-  (`core/pwa.py`, `pwa_manifest.spec.js`); a cache-header change is verified
-  with `/verify` after deploy, not assumed.
-- Plans that own decisions here (slugs under `docs/design/`, finished ones in its `archive/`): `mobile-one-job-card-plan`, `mobile-android-capacitor-plan`,
-  `gdx_dispatch/docs/tech_mobile.md`. Docs state; code proves.
+- **Taxonomy:** a service call is a repair; a converted estimate is an
+  installation. `core/job_taxonomy.py` is the one place that decides.
+- **Billed labor comes from attested hours only.** Elapsed clock time is not
+  evidence and code may not invent hours. Labor on a closeout carries its
+  trail (`test_closeout_labor_trail`).
+- **One way to read a closeout** (`core/closeouts.py`); one jobsite precedence
+  rule (`core/job_site.py`); one "is this job billed" predicate
+  (`core/billing_predicates.py`, money-billing's). Do not add a second.
+- **`core/job_access.py` is the object-level authorization** for every
+  job-scoped endpoint. A new job route without it is a defect, not a TODO.
+- Job display state is a serializer contract the mobile card and the office
+  card share (`test_jobs_display_state_serializer`, `test_job_display_state`);
+  change it in one place and run both sides.
+- Google Maps is a third-party surface; `modules/maps_provider` is the seam.
+  Read current docs, cite the URL and date, probe the live endpoint.
+- The recurring-job-template idea was retired (`test_job_templates_recurring_retired`);
+  service agreements plus `service_triggers` are what exists. Equipment
+  tracking's router was deliberately unwired 2026-05-03 to kill a parallel
+  table; do not resurrect it.
+- Plans that own decisions here (slugs under `docs/design/`, finished ones in its `archive/`):
+  `job-closeout-billing-visibility-plan`,
+  `mobile-one-job-card-plan`,
+  `recurring-service-agreement-billing-plan`. Docs state; code
+  proves.
 
 ## Neighbours
 
-- **jobs-dispatch** — job state contract, closeout, assignments.
-- **money-billing** — everything in `mobile_invoicing.py` and
-  `MobileInvoiceDialog`.
-- **estimates-pricing** — everything in `mobile_quoting.py` and
-  `MobileQuoteBuilderDialog`.
-- **people-time** — the timeclock behind `MobileTimeclockView`.
-- **comms-email-phone** — MobileInbox, MobilePhone, MobileSms, and
-  notifications/push.
-- **documents-media** — the photos your queue uploads.
-- **inventory-purchasing** — van inventory and parts to order.
-- **frontend-shell** — the app shell, router, stores and shared composables
-  around your views.
+- **money-billing** turns your closeout into invoice lines
+  (`core/closeout_billing.py`) and owns the billed predicate.
+- **estimates-pricing** owns the estimate a job converts from; the conversion
+  endpoint is yours, the lines' provenance is theirs.
+- **mobile-tech** owns every `Mobile*` surface and `routers/mobile.py`; the
+  tech's job card renders your state contract.
+- **people-time** owns the technician record and their hours; you own the
+  assignment.
+- **inventory-purchasing** owns parts needed and van stock; a job's
+  parts-used capture crosses that line (`test_parts_used_live_capture`).
+- **customers-crm** owns the customer and their locations; you resolve the
+  jobsite from them.
 
 ## Verify a change here
 
 - Backend, targeted: `docker run --rm --tmpfs /tmp:rw,exec,size=32g --entrypoint python -v "$PWD":/app -w /app -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x docker-app -m pytest -rs -k "<pattern>"`.
-  Your patterns: `mobile`, `tenant_mobile_settings`, `tech_mobile`,
-  `pwa`, `m38`, `chat_threads`.
+  Your patterns: `job`, `jobs`, `closeout`, `appointment`, `scheduling`,
+  `dispatch`, `service_`, `maintenance`, `maps`, `drive_time`, `labor`,
+  `notes`, `tasks`, `warrant`, `phase14_multi_tech`, `stale_job_timer`; plus
+  `gdx_dispatch/tests/serial/test_planner.py`, `serial/test_planner_capture.py`,
+  `serial/test_gps.py`, `serial/test_safety_checklist.py` (serial: run them
+  as single files).
 - Baseline scans, after `git merge origin/main` and before the matrix:
   `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
   `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
@@ -94,13 +92,13 @@ jobs-dispatch's state contract. When you change one, that owner reviews.
   these in a worktree: it cannot read the git index. It covers the
   duplicate-block and tenant-plane baselines only; the matrix still runs.
 - Full matrix before any PR: `gdx-matrix-submit` when unattended (see Unattended runs), `gdx_dispatch/tools/run_tests_split.sh` when a person is driving.
-- Frontend: `npx vitest run` on the `Mobile*` component specs,
-  `AppBottomNav.spec.js`, `bottomNavClearance.spec.js`,
-  `test_mobile_job_cards.test.js`, `test_offline_sync_phase31.test.js`;
-  e2e `mobile-customer-job-create.spec.js`, `mobile-day-clock-breaks.spec.js`,
-  `mobile-email-tab.spec.js`, `mobile-touch-targets.spec.js`.
-- Device: the technician role on the Pixel 8 AVD, light and dark, with the
-  soft keyboard open on any form you touched. A screenshot is the artifact.
+- Frontend: `npx vitest run` on the JobDetail, Dispatch and Planner specs;
+  e2e `job-card-unified.spec.js`, `job-detail-delete.spec.js`,
+  `schedule-from-job.spec.js`, `dispatch-completed-stays.spec.js`,
+  `closeout-card.spec.js`, `job-costing-panel.spec.js`.
+- Browser: the dispatcher role on Dispatch and JobDetail, light and dark,
+  desktop. Drag-and-drop and the websocket board only prove in a real
+  browser.
 
 ## Unattended runs
 
@@ -126,7 +124,20 @@ this shape, the labels verbatim:
 then write the commit message file as the subject line, a blank line and that
 same block, and commit with `git commit --cleanup=whitespace -F <file>` (the
 git hook reads the message itself; `-F` already keeps the `##` line, the flag
-only makes that explicit). **Do not push, do not
+only makes that explicit).
+
+Before you submit, check your branch for rejected work. For every `+` line
+of `git cherry origin/main HEAD`, run
+`gh pr list --state all --search <sha> --json number,state --jq '.[]|"\(.number) \(.state)"'`.
+A commit is rejected when it appears in at least one PR and every PR it
+appears in is `CLOSED`; one `OPEN` or `MERGED` PR means it was superseded,
+not rejected, and no PR at all means it is new. A non-zero exit means the
+check did not run, not that it passed. On a rejected commit or a failed check,
+do not submit and do not rewrite the branch (no rebase, reset or cherry-pick
+in a shared worktree): mark your issue blocked and name each rejected commit
+and its closed PR, or paste the `gh` error.
+
+**Do not push, do not
 open the pull request and do not run the full backend matrix yourself.** After
 the commit, run `gdx-matrix-submit` from the worktree root: it queues the
 committed branch for the backend matrix on the host, creates a `Matrix:` child
@@ -181,7 +192,8 @@ only the NEW failures of your branch (a test ALREADY FAILING ON MAIN is not
 yours; a FLAKY ON MAIN test gets one re-run of its file, and if it passes it
 is not yours either), re-run those files, commit
 with a manifest, run `gdx-matrix-submit` again and end the run. If none of the
-failures is yours, run `gdx-matrix-submit --not-mine "<reason>"` instead; it
+failures is yours, run the rejected-work check above and then
+`gdx-matrix-submit --not-mine "<reason>"` instead; it
 hands the branch to `release-mechanic` with your reason. One exception: if
 your change touches what an ALREADY FAILING test covers, look at it anyway,
 since a red test can be broken a second way. **Read back at most six screenshots per run**,
@@ -217,7 +229,6 @@ closing #1111, which #1112 had already landed.
 
 ## Report
 
-Files touched inside and outside your territory, listed separately, and which
-domain owner's rules each surface applied. Tests run by name, every FAIL and
-SKIP enumerated. The device walk, with screenshots. What you did not verify.
-The found-not-filed list.
+Files touched inside and outside your territory, listed separately. Tests run
+by name, every FAIL and SKIP enumerated. What you did not verify. The
+found-not-filed list.

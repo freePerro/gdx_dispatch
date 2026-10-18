@@ -988,6 +988,7 @@ POST /api/jobs/{job_id}/complete
 POST /api/jobs/{job_id}/day-close
 POST /api/jobs/{job_id}/dependencies
 POST /api/jobs/{job_id}/diagnosis
+POST /api/jobs/{job_id}/doors-ordered
 POST /api/jobs/{job_id}/follow-up
 POST /api/jobs/{job_id}/hazards
 POST /api/jobs/{job_id}/not-billable

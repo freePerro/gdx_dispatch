@@ -122,6 +122,9 @@ describe("DispatchView — past their date, not closed out", () => {
     getMock.mockReset(); postMock.mockReset(); patchMock.mockReset(); pushMock.mockReset();
     granted = new Set(["jobs.read_all"]);
     lateRows = [];
+    // The card starts folded; these cases read its rows, as a dispatcher
+    // who has opened it this session would.
+    window.sessionStorage.setItem("gdx.dispatch.lateOpenFolded", "0");
   });
 
   it("does not render at all when nothing is late", async () => {
@@ -172,6 +175,19 @@ describe("DispatchView — past their date, not closed out", () => {
     w.findComponent(stubs.MobileJobCloseoutDialog).vm.$emit("closed-out");
     await flushAll();
     expect(w.find('[data-testid="late-open-jobs"]').exists()).toBe(false);
+  });
+
+  it("starts folded to its header and count; Show opens the rows and holds for the session", async () => {
+    window.sessionStorage.removeItem("gdx.dispatch.lateOpenFolded");
+    lateRows = [LATE_JOB];
+    const w = await mountBoard();
+    expect(w.find('[data-testid="late-open-closeout-job-31"]').exists()).toBe(false);
+    expect(w.find('[data-testid="late-open-jobs"]').text()).toContain("Past their date, not closed out");
+    expect(w.find('[data-testid="late-open-jobs"]').text()).toContain("1");
+    await w.find('[data-testid="late-open-toggle"]').trigger("click");
+    expect(w.find('[data-testid="late-open-closeout-job-31"]').exists()).toBe(true);
+    await flushAll();
+    expect(window.sessionStorage.getItem("gdx.dispatch.lateOpenFolded")).toBe("0");
   });
 
   it("Hide folds the rows away but keeps the header and count; Show brings them back", async () => {

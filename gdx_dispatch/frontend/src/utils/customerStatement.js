@@ -8,6 +8,8 @@
  * of UTC onto the previous one.
  */
 
+import { SEND_UNCONFIRMED_TEXT } from './emailAttachments';
+
 export const DEFAULT_PRESET = 'last_90';
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -60,6 +62,7 @@ const SKIP_MESSAGES = {
     'No email account is connected for you. Connect Outlook under Settings, or download the PDF and send it yourself.',
   outlook_reconnect_required: 'Your Outlook connection needs to be renewed under Settings.',
   send_failed: 'The email provider refused the message. Try again, or download the PDF.',
+  outlook_send_unconfirmed: SEND_UNCONFIRMED_TEXT,
 };
 
 export function skipReasonMessage(reason) {
