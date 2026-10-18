@@ -658,3 +658,24 @@ def test_admin_can_still_assign_custom_role_within_grant_set(client):
     target = _seed_user(client, "technician")
     r = client.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": made.json()["id"]})
     assert r.status_code == 201, r.text
+
+
+@pytest.mark.parametrize("snapshot", ["{not json", "5", "null", '"jobs.write"'])
+def test_assigning_a_role_with_an_unreadable_snapshot_is_refused(client, snapshot):
+    """A snapshot that is not a JSON list refuses instead of conferring nothing."""
+    from uuid import UUID
+
+    from gdx_dispatch.models.tenant_models import TenantRole
+
+    made = client.post("/api/role-permissions/roles", json={"name": "Broken", "permissions": ["jobs.read_all"]})
+    role_id = made.json()["id"]
+    s = sessionmaker(bind=client._engine)()
+    try:
+        s.get(TenantRole, UUID(role_id)).permissions = snapshot
+        s.commit()
+    finally:
+        s.close()
+    target = _seed_user(client, "technician")
+    r = client.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": role_id})
+    assert r.status_code == 409, r.text
+    assert client.get(f"/api/role-permissions/users/{target}/roles").json() == []

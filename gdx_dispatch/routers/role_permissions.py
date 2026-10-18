@@ -287,22 +287,36 @@ def _role_grant_set(role: Role) -> list[str]:
 
     owner/admin resolve from BUILTIN_ROLES whatever their DB row says (see
     PLATFORM_LOCKED_ROLES); every other role confers its stored snapshot.
+    An unreadable snapshot refuses rather than reading as empty: the resolver
+    reads it as no permissions, so the assignment would silently strip the
+    user to nothing.
     """
     if role.is_system and role.name in PLATFORM_LOCKED_ROLES:
         return list(BUILTIN_ROLES[role.name])
     try:
-        return list(json.loads(role.permissions) if role.permissions else [])
-    except json.JSONDecodeError:
+        perms = json.loads(role.permissions) if role.permissions else []
+        if not isinstance(perms, list):
+            raise ValueError(f"snapshot is a {type(perms).__name__}, not a list")
+    except ValueError:
         log.exception("_role_grant_set_failed role=%s", role.id)
-        return []
+        raise HTTPException(
+            status_code=409,
+            detail="Role permissions are unreadable; save the role again before assigning it",
+        ) from None
+    return perms
 
 
 def _target_db_role(db: Session, user_id: str) -> str | None:
-    """users.role of the assignment's target, or None when there is no such row."""
+    """users.role of the assignment's target, or None when there is no such row.
+
+    A user_id that is not a UUID names no users row (the column is a string;
+    legacy and test ids are not UUIDs), so there is no role to protect.
+    """
     from gdx_dispatch.models.tenant_models import User as _User
     try:
         uid = UUID(str(user_id))
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError):  # noqa: silent-failure — None for a non-UUID is the contract: no users row, no users.role
+        log.info("role target user_id=%r is not a users.id; no users.role to check", user_id)
         return None
     return db.execute(select(_User.role).where(_User.id == uid)).scalar_one_or_none()
 
