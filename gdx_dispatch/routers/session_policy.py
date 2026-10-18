@@ -6,7 +6,8 @@ PATCH /api/session-policy — admin/owner only (sets the tenant-wide value).
 
 Mirrors gdx_dispatch/modules/dispatch_settings/router.py: tenant from request
 context, the read (create-on-read) through core/settings_row.read_settings_row,
-raw SQL for the write.
+the write through core/settings_audit.audited_settings_upsert so every change
+records who made it.
 """
 from __future__ import annotations
 
@@ -15,10 +16,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.settings_audit import audited_settings_upsert
 from gdx_dispatch.core.settings_row import read_settings_row
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -70,13 +71,10 @@ def update_policy(
 ) -> dict[str, Any]:
     if not _is_admin(user.get("role")):
         raise HTTPException(status_code=403, detail="admin or owner required")
-    tid = _tenant_uuid(request)
-    db.execute(
-        text(
-            f"INSERT INTO tenant_settings (tenant_id, {_COL}) VALUES (:tid, :v) "  # noqa: S608 — _COL is a module constant; tenant id and value are bound
-            f"ON CONFLICT (tenant_id) DO UPDATE SET {_COL} = :v"
-        ),
-        {"tid": str(tid), "v": payload.idle_timeout_minutes},
+    return audited_settings_upsert(
+        db, request, user,
+        tenant_id=_tenant_uuid(request),
+        values={_COL: payload.idle_timeout_minutes},
+        action="session_policy_updated",
+        read=_read,
     )
-    db.commit()
-    return _read(db, tid)
