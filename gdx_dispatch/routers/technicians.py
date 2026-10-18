@@ -97,10 +97,10 @@ def _linked_user_id(db: Session, raw: str | None) -> str | None:
     non-deleted user is accepted, and its id is stored in the dashed form
     those joins compare against."""
     value = (raw or "").strip()
-    try:
-        wanted = uuid.UUID(value)
-    except (ValueError, AttributeError):
-        return None
+    hex_digits = value.replace("-", "")
+    if len(hex_digits) != 32 or not all(c in "0123456789abcdefABCDEF" for c in hex_digits):
+        return None  # an email or a name slug: not a users.id, refused with a 400
+    wanted = uuid.UUID(hex_digits)
     found = db.execute(
         select(User.id).where(User.id == wanted).where(User.deleted_at.is_(None))
     ).scalar_one_or_none()
