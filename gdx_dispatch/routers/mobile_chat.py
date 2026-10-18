@@ -103,12 +103,15 @@ def _job_visible_to_user(db: Session, job_id: str, user: dict[str, Any]) -> bool
     ).scalar()
     if row:
         return True
+    # A soft-deleted assignment is a removed tech: it grants nothing
+    # (GDXA-1545).
     row = db.execute(
         _text(
             """
             SELECT 1 FROM job_assignments ja
             JOIN technicians t ON t.id = ja.tech_id
-            WHERE ja.job_id = :jid AND CAST(t.user_id AS TEXT) = :uid AND t.active IS NOT FALSE
+            WHERE ja.job_id = :jid AND ja.deleted_at IS NULL
+              AND CAST(t.user_id AS TEXT) = :uid AND t.active IS NOT FALSE
             LIMIT 1
             """
         ),
