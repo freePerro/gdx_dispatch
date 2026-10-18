@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.settings_audit import audited_settings_upsert
+from gdx_dispatch.core.settings_row import read_settings_row
 from gdx_dispatch.models.tenant_models import PayrollEntry
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -184,6 +186,22 @@ class SourceIn(BaseModel):
     payroll_source: str
 
 
+_SOURCES = ["manual", "csv_import", "gusto", "qbo_payroll"]
+
+
+def _tenant_uuid(request: Request) -> UUID:
+    tid = str(getattr(request.state, "tenant", {}).get("id", ""))
+    try:
+        return UUID(tid)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid tenant context") from exc
+
+
+def _read_config(db: Session, tid: UUID) -> dict[str, Any]:
+    row = read_settings_row(db, tid, ("payroll_source",))
+    return {"payroll_source": row[0] or "manual"}
+
+
 @router.get("/config", response_model=None)
 def get_config(
     request: Request,
@@ -191,18 +209,9 @@ def get_config(
     cdb: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _ = user
-    tid = str(getattr(request.state, "tenant", {}).get("id", ""))
-    try:
-        UUID(tid)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail="invalid tenant context") from exc
-    row = cdb.execute(
-        text("SELECT payroll_source FROM tenant_settings WHERE tenant_id = :tid"),
-        {"tid": tid},
-    ).first()
     return {
-        "payroll_source": row[0] if row else "manual",
-        "candidates": ["manual", "csv_import", "gusto", "qbo_payroll"],
+        **_read_config(cdb, _tenant_uuid(request)),
+        "candidates": list(_SOURCES),
         "wired_today": ["manual"],
     }
 
@@ -215,20 +224,13 @@ def update_config(
     cdb: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_admin(user)
-    tid = str(getattr(request.state, "tenant", {}).get("id", ""))
-    try:
-        UUID(tid)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail="invalid tenant context") from exc
-    if payload.payroll_source not in {"manual", "csv_import", "gusto", "qbo_payroll"}:
+    tid = _tenant_uuid(request)
+    if payload.payroll_source not in _SOURCES:
         raise HTTPException(status_code=422, detail="invalid payroll_source")
-    cdb.execute(
-        text(
-            "INSERT INTO tenant_settings (tenant_id, payroll_source) "
-            "VALUES (:tid, :src) "
-            "ON CONFLICT (tenant_id) DO UPDATE SET payroll_source = EXCLUDED.payroll_source"
-        ),
-        {"tid": tid, "src": payload.payroll_source},
+    return audited_settings_upsert(
+        cdb, request, user,
+        tenant_id=tid,
+        values={"payroll_source": payload.payroll_source},
+        action="payroll_source_updated",
+        read=_read_config,
     )
-    cdb.commit()
-    return {"payroll_source": payload.payroll_source}

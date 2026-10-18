@@ -7,7 +7,6 @@
  * Settings → Security. 0 = disabled. Mount once near the app root.
  */
 import { onMounted, onUnmounted, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import { useAuthStore } from '../stores/auth';
 import { createApiClient } from './useApi';
@@ -29,7 +28,6 @@ export function setIdleTimeoutMin(min) {
 
 export function useIdleLogout() {
   const auth = useAuthStore();
-  const router = useRouter();
   const toast = useToast();
   const apiClient = createApiClient();
   let timer = null;
@@ -57,6 +55,10 @@ export function useIdleLogout() {
   function onTimeout() {
     clear();
     if (!auth.isAuthenticated) return;
+    // Not chosen, so the gdx:auth-logout listener (router/index.js) sends the
+    // person to /login?redirect=<this page>&reason=expired. Do not push a
+    // bare '/login' here: it supersedes that navigation and drops the way
+    // back (GDXA-1492).
     auth.logout();
     toast.add({
       severity: 'info',
@@ -64,7 +66,6 @@ export function useIdleLogout() {
       detail: 'You were logged out due to inactivity.',
       life: 6000,
     });
-    router.push('/login');
   }
 
   function reset() {
