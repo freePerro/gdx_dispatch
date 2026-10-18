@@ -67,6 +67,25 @@ def _job_match_text_only(column: str) -> str:
     return f"(CAST({column} AS TEXT) IN (:j, :jh))"
 
 
+def _same_job_id(db: Session, a: str, b: str) -> str:
+    """SQL fragment equating two job-id COLUMNS, whatever their spelling.
+
+    A join key, not a filter — :func:`_job_match` stays the selective WHERE.
+    ``job_assignments.job_id`` is a varchar the ORM writes dashed, while
+    ``jobs.id`` on SQLite is 32 dashless hex, so a bare ``CAST = CAST`` join
+    matched no crew row there (GDXA-1427). On SQLite, stripping dashes on
+    both sides makes the spellings agree. Postgres renders ``uuid`` dashed,
+    so the bare join already agrees there, and wrapping the indexed
+    ``job_assignments.job_id`` in REPLACE would cost its index (EXPLAIN:
+    index-only scan -> seq scan), so Postgres keeps the plain comparison.
+    All three crew sites below use this so they cannot drift.
+    """
+    if db.get_bind().dialect.name == "sqlite":
+        return (f"REPLACE(CAST({a} AS TEXT), '-', '') = "
+                f"REPLACE(CAST({b} AS TEXT), '-', '')")
+    return f"CAST({a} AS TEXT) = CAST({b} AS TEXT)"
+
+
 def _job_id_params(job_id: str) -> tuple[str, dict]:
     """(sql-fragment-builder-key, params) for one job id.
 
@@ -136,7 +155,7 @@ def job_belongs_to_user(db: Session, tenant_id: str, job_id: str, user_id: str |
             # column name chosen by _job_match/_job_match_text_only above;
             # every caller-supplied value is a bound parameter.
             "JOIN technicians te ON te.id = ja.tech_id "
-            "JOIN jobs j ON CAST(j.id AS TEXT) = CAST(ja.job_id AS TEXT) "
+            "JOIN jobs j ON " + _same_job_id(db, "j.id", "ja.job_id") + " "
             "WHERE " + match("ja.job_id") + " AND ja.deleted_at IS NULL "
             "AND j.company_id = :t AND j.deleted_at IS NULL "
             "AND te.user_id = :u LIMIT 1"
@@ -163,7 +182,8 @@ def user_job_ids(db: Session, tenant_id: str, user_id: str | None) -> list[str]:
         return []
     rows = db.execute(
         text(
-            "SELECT CAST(j.id AS TEXT) AS jid FROM jobs j "
+            "SELECT CAST(j.id AS TEXT) AS jid FROM jobs j "  # noqa: S608 — the only interpolation is
+            # _same_job_id over hardcoded column names; every value is bound.
             "LEFT JOIN technicians t ON t.id = j.assigned_to "
             "WHERE j.company_id = :t AND j.deleted_at IS NULL "
             "AND (j.assigned_to = :u OR t.user_id = :u) "
@@ -172,9 +192,9 @@ def user_job_ids(db: Session, tenant_id: str, user_id: str | None) -> list[str]:
             "JOIN technicians te ON te.id = a.tech_id "
             "WHERE a.company_id = :t AND a.deleted_at IS NULL AND te.user_id = :u "
             "UNION "
-            "SELECT CAST(ja.job_id AS TEXT) FROM job_assignments ja "
+            "SELECT CAST(j2.id AS TEXT) FROM job_assignments ja "
             "JOIN technicians te ON te.id = ja.tech_id "
-            "JOIN jobs j2 ON CAST(j2.id AS TEXT) = CAST(ja.job_id AS TEXT) "
+            "JOIN jobs j2 ON " + _same_job_id(db, "j2.id", "ja.job_id") + " "
             "WHERE ja.deleted_at IS NULL AND j2.company_id = :t "
             "AND j2.deleted_at IS NULL AND te.user_id = :u"
         ),
@@ -348,7 +368,7 @@ def creator_of_unassigned_job(
                 "AND j.assigned_to IS NULL "
                 "AND NOT EXISTS ("
                 "  SELECT 1 FROM job_assignments ja "
-                "  WHERE CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT) "
+                "  WHERE " + _same_job_id(db, "ja.job_id", "j.id") + " "
                 "  AND ja.deleted_at IS NULL"
                 ") LIMIT 1"
             ),
