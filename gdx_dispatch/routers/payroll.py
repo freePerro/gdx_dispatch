@@ -1,23 +1,26 @@
 """
-Payroll router — technician hours + revenue + commissions + CSV export.
+Payroll router — commission rate history, and payroll's `time_entries` hours
+reader.
 
-Gated behind the "timeclock" module. Calculates weekly overtime (40h base +
-1.5x rate), commission by rate type (percent/flat/hourly), and exports CSV.
+Gated behind the "timeclock" module. The summary, per-tech and CSV export
+routes (/api/payroll/summary, /tech/{tech_id}, /export) were deleted in
+GDXA-1560 (Doug, 2026-10-18): no UI called them, every call was a 503 behind
+the broken commission revenue query (money audit M27), and plugins read the
+shared database through plugin_api rather than core REST routes, so a future
+payroll plugin had no use for them either. Their overtime, commission and
+revenue helpers went with them.
 
 Pattern mirrors gdx_dispatch/routers/change_orders.py (tenant scoping, audit, pydantic bounds).
 Inline model follows gdx_dispatch/routers/collections.py pattern.
 """
 from __future__ import annotations
 
-import csv
-import io
 import logging
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -25,13 +28,8 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import contained_read, get_db
-from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sql
 from gdx_dispatch.core.modules import require_module, require_permission
-from gdx_dispatch.core.pay_periods import (
-    shop_day_of,
-    shop_today_from_settings,
-    shop_tz_name_from_settings,
-)
+from gdx_dispatch.core.pay_periods import shop_day_of, shop_tz_name_from_settings
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -41,11 +39,6 @@ router = APIRouter(
     tags=["payroll"],
     dependencies=[Depends(require_module("timeclock")), Depends(require_permission("payroll.read"))],
 )
-
-
-RATE_TYPES = ("percent", "flat", "hourly")
-OT_THRESHOLD_HOURS = 40.0
-OT_MULTIPLIER = 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -80,27 +73,6 @@ def _user_id(user: Any) -> str:
     if not isinstance(user, dict):
         return "system"
     return str(user.get("sub") or user.get("user_id") or user.get("email") or "system")
-
-
-def _parse_date(value: str | None, default: date) -> date:
-    if not value:
-        return default
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid date: {value!r} (expect YYYY-MM-DD)") from None
-
-
-def _resolve_range(db: Session, start: str | None, end: str | None) -> tuple[date, date]:
-    """The requested range, defaulting to month to date in the shop's
-    calendar: on the UTC clock a 10pm Central request on the last of the
-    month asked for next month (GDXA-510)."""
-    today = shop_today_from_settings(db)
-    s = _parse_date(start, today.replace(day=1))
-    e = _parse_date(end, today)
-    if e < s:
-        raise HTTPException(status_code=422, detail="end must be >= start")
-    return s, e
 
 
 def _serialize_rate(r: TechCommissionRate) -> dict[str, Any]:
@@ -149,115 +121,22 @@ def _audit(
 
 
 # ---------------------------------------------------------------------------
-# Overtime + commission math (pure functions — unit-testable)
-# ---------------------------------------------------------------------------
-def calculate_weekly_overtime(
-    daily_hours: dict[date, float],
-) -> tuple[float, float]:
-    """Return (regular_hours, overtime_hours) summed across ISO calendar weeks.
-
-    Hours within a week over 40 are overtime.
-    """
-    by_week: dict[tuple[int, int], float] = {}
-    for day, hours in daily_hours.items():
-        if hours <= 0:
-            continue
-        iso = day.isocalendar()
-        key = (iso[0], iso[1])
-        by_week[key] = by_week.get(key, 0.0) + float(hours)
-
-    regular = 0.0
-    overtime = 0.0
-    for _, total in by_week.items():
-        if total <= OT_THRESHOLD_HOURS:
-            regular += total
-        else:
-            regular += OT_THRESHOLD_HOURS
-            overtime += total - OT_THRESHOLD_HOURS
-    return regular, overtime
-
-
-def calculate_commission(
-    *,
-    rate_type: str,
-    rate_value: float,
-    revenue: float,
-    jobs_completed: int,
-    hours_worked: float,
-) -> float:
-    """Commission by rate_type: percent of revenue, flat per job, or hourly bonus."""
-    rv = float(rate_value or 0)
-    if rate_type == "percent":
-        return float(revenue or 0) * (rv / 100.0)
-    if rate_type == "flat":
-        return rv * int(jobs_completed or 0)
-    if rate_type == "hourly":
-        return rv * float(hours_worked or 0)
-    return 0.0
-
-
-def calculate_gross_pay(
-    *,
-    regular_hours: float,
-    overtime_hours: float,
-    base_rate: float,
-    commission: float,
-) -> float:
-    """Gross = (regular * base) + (overtime * base * 1.5) + commission."""
-    base = float(base_rate or 0)
-    return (
-        float(regular_hours) * base
-        + float(overtime_hours) * base * OT_MULTIPLIER
-        + float(commission or 0)
-    )
-
-
-# ---------------------------------------------------------------------------
 # Data aggregation
 # ---------------------------------------------------------------------------
-def _fetch_active_rate(
-    db: Session, *, tenant_id: str, tech_id: str
-) -> TechCommissionRate | None:
-    stmt = (
-        select(TechCommissionRate)
-        .where(
-            TechCommissionRate.company_id == tenant_id,
-            TechCommissionRate.tech_id == tech_id,
-            TechCommissionRate.deleted_at.is_(None),
-            TechCommissionRate.active == True,  # noqa: E712
-            TechCommissionRate.effective_until.is_(None),
-        )
-        .order_by(TechCommissionRate.effective_from.desc())
-    )
-    try:
-        # SAVEPOINT, but PRE-EMPTIVE — and say so, because the first draft of
-        # this comment claimed a live consequence ("$0.00 commission for the
-        # whole crew") that cannot happen. `_build_summary_rows` calls
-        # `_fetch_tech_revenue` BEFORE it reaches this loop, and that raises
-        # `RevenueBasisUnavailable` on every call: it queries
-        # `j.assigned_tech_id`, a column on no database (see the note at the top
-        # of `_fetch_tech_revenue`; prod-checked 2026-09-27, 0 in
-        # information_schema). So the payroll summary is a 503 today and this
-        # function does not execute in production at all.
-        #
-        # Kept rather than skipped: the shape is right, it costs one round trip,
-        # and the day M27's revenue basis is fixed this loop goes live with the
-        # containment already in place. What it WOULD protect: the loop reads
-        # per tech on one session, so an uncontained failure on the first tech
-        # would zero every later tech's rate. See core.database.contained_read.
-        with contained_read(db):
-            return db.execute(stmt).scalars().first()
-    except SQLAlchemyError:
-        log.exception("payroll_fetch_active_rate_failed tech_id=%s", tech_id)
-        return None
-
-
 def _fetch_tech_hours(
     db: Session, *, tenant_id: str, start: date, end: date, tech_id: str | None = None
 ) -> dict[str, dict[date, float]]:
     """Return {tech_id: {date: hours}} from time_entries table.
 
     Returns empty dict if the table is missing (graceful degrade).
+
+    No route calls this since GDXA-1560 deleted the payroll summary. It stays
+    because the labor-trail guards (closeout, day close, mobile timer, stale
+    timer repair, the #478 soft-delete test) assert through it that a
+    `time_entries` row never reaches pay without a user_id, a clock_out and no
+    deleted_at. Whether those guards should read the timesheet authority
+    (core/timesheet_hours.py, which reads `timeclock_entries`) instead is not
+    decided here.
     """
     # Prod time_entries schema uses clock_in/clock_out + a pre-computed
     # duration_minutes column. Historical code computed hours via
@@ -300,13 +179,7 @@ def _fetch_tech_hours(
         # SAVEPOINT: the "graceful degrade" this docstring promises is only true
         # on SQLite. On Postgres a missing `time_entries` aborts the caller's
         # transaction, so the empty dict would be followed by every later read
-        # in `_build_summary_rows` failing as well.
-        #
-        # This one DOES run — it is called before `_fetch_tech_revenue`'s
-        # unconditional `RevenueBasisUnavailable` — but be honest that the
-        # containment still changes no user-visible outcome today, because that
-        # 503 lands either way two calls later. Pre-emptive, like the other two
-        # in this file; see the note in `_fetch_active_rate`.
+        # on the caller's session failing as well.
         with contained_read(db):
             rows = db.execute(text(sql), params).all()
     except OperationalError:
@@ -332,297 +205,9 @@ def _fetch_tech_hours(
     return result
 
 
-# The single log key the 503 body points at. Both failure arms emit it.
-REVENUE_BASIS_LOG_KEY = "payroll_revenue_basis_unavailable"
-
-
-class RevenueBasisUnavailable(RuntimeError):
-    """The revenue side of commission could not be computed.
-
-    Raised instead of returning an empty result, because a payroll surface
-    that reports $0.00 it did not actually calculate is worse than one that
-    refuses. Callers surface it; they do not default it to zero.
-
-    Callers report the REASON, not the driver error. v1.80.0 returned the
-    raw psycopg2 message in the 503 body — authenticated and permission
-    gated, so low risk, but a DB error naming internal columns is not
-    something to hand a client. It is logged instead (log.exception below).
-
-    Known live cause (money audit M27, 2026-08-23): `_fetch_tech_revenue`
-    queries `j.assigned_tech_id`, which exists in no schema here — the column
-    is `assigned_to`. A second defect sits behind it: the query matches
-    `j.status = 'completed'` while this tenant's data holds 'Complete' (32
-    jobs) and 'Completed' (17), so even with the column fixed it would match
-    nothing. Both are left as-is deliberately: commission is heading for a
-    plugin rather than a core repair (owner decision, 2026-08). What is NOT
-    acceptable in the
-    meantime is reporting a computed-looking zero.
-    """
-
-
-def _fetch_tech_revenue(
-    db: Session, *, tenant_id: str, start: date, end: date, tech_id: str | None = None
-) -> dict[str, tuple[int, float]]:
-    """Return {tech_id: (jobs_completed, revenue)} joined from jobs+invoices.
-
-    Revenue is each invoice's total net of its credit memos (GDXA-597): a
-    credit memo lowers only ``balance_due``, never ``Invoice.total``.
-    """
-    sql = f"""
-        SELECT j.assigned_tech_id AS tech_id,
-               COUNT(DISTINCT j.id) AS jobs_completed,
-               COALESCE(SUM({invoice_net_billed_sql("i")}), 0) AS revenue
-          FROM jobs j
-          LEFT JOIN invoices i
-                 ON i.job_id = j.id
-                AND i.company_id = :tenant_id
-         WHERE j.company_id = :tenant_id
-           AND j.status = 'completed'
-           AND DATE(j.completed_at) >= :start
-           AND DATE(j.completed_at) <= :end
-           AND j.assigned_tech_id IS NOT NULL
-    """  # noqa: S608 — the splice is a fixed alias; values are bound params
-    params: dict[str, Any] = {
-        "tenant_id": tenant_id,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-    }
-    if tech_id:
-        sql += " AND j.assigned_tech_id = :tech_id"
-        params["tech_id"] = tech_id
-    sql += " GROUP BY j.assigned_tech_id"
-
-    result: dict[str, tuple[int, float]] = {}
-    try:
-        rows = db.execute(text(sql), params).all()
-    except OperationalError as exc:
-        # FAIL LOUDLY. This used to swallow the error and return {}, so every
-        # tech got revenue = 0.00 and a commission of $0.00 presented as fact.
-        # It has been failing that way continuously: the query names
-        # `j.assigned_tech_id`, a column that does not exist on any database
-        # here — the jobs table has `assigned_to`. An empty dict is
-        # indistinguishable from "this tech earned nothing", which is the
-        # difference between a number and a guess on a pay surface.
-        log.exception("%s cause=OperationalError", REVENUE_BASIS_LOG_KEY)
-        raise RevenueBasisUnavailable(str(exc)) from exc
-    except SQLAlchemyError as exc:
-        # ONE key for both arms, because the 503 points the reader at it and a
-        # pointer that is right in tests and wrong in production is worse than
-        # none. The live cause — the missing `j.assigned_tech_id` column —
-        # raises psycopg2 UndefinedColumn on Postgres, which maps to
-        # SQLAlchemy ProgrammingError. ProgrammingError is NOT a subclass of
-        # OperationalError, so prod lands HERE while SQLite (which raises
-        # OperationalError for the same SQL) lands above. Verified on prod
-        # 2026-08-23: 0 hits for the old first-arm key, 2 for this one, from
-        # the two requests that produced them.
-        log.exception("%s cause=%s", REVENUE_BASIS_LOG_KEY, type(exc).__name__)
-        raise RevenueBasisUnavailable(str(exc)) from exc
-    for row in rows:
-        tid = str(row[0]) if row[0] is not None else ""
-        if not tid:
-            continue
-        result[tid] = (int(row[1] or 0), float(row[2] or 0))
-    return result
-
-
-def _fetch_tech_names(
-    db: Session, *, tenant_id: str, tech_ids: list[str]
-) -> dict[str, str]:
-    if not tech_ids:
-        return {}
-    sql = """
-        SELECT id, COALESCE(name, email, id) AS display
-          FROM users
-         WHERE company_id = :tenant_id
-           AND id IN :ids
-    """
-    try:
-        db.execute(
-            text(sql).bindparams(),
-            {"tenant_id": tenant_id},
-        )
-        # Fallback simple lookup per-id (IN-binding across dialects is tricky)
-    except Exception:
-        # NOT a savepoint site, and deliberately left alone (GDXA-164). `:ids`
-        # above is never bound, so SQLAlchemy raises StatementError while
-        # processing parameters — client-side, before anything reaches the
-        # server. Measured on PG 16: the transaction is NOT aborted and the next
-        # statement on the same connection succeeds. So there is no transaction
-        # damage here to contain; `contained_read` would be pure noise.
-        # What IS wrong with this block is a different class: it cannot ever
-        # succeed, so it is dead code. It is dead twice over, in fact — the
-        # enclosing `_fetch_tech_names` is itself unreachable behind
-        # `_fetch_tech_revenue`'s unconditional `RevenueBasisUnavailable`, so
-        # this never logs at all. (An earlier draft said "logs an exception on
-        # every payroll summary"; that is wrong, and wrong in the direction
-        # that makes it sound urgent.) Out of scope for a containment sweep,
-        # and left for a ruling rather than deleted here.
-        log.exception("_fetch_tech_names_failed extra_context=%s", "unknown")
-        pass
-
-    names: dict[str, str] = {}
-    for tid in tech_ids:
-        try:
-            # SAVEPOINT: one lookup per id, and a name is cosmetic — but on
-            # Postgres the first failure would abort the transaction and every
-            # remaining id would come back unnamed, then `_build_summary_rows`
-            # would keep reading rates on a dead session. Pre-emptive like
-            # `_fetch_active_rate`'s: `_fetch_tech_revenue` raises before
-            # `_build_summary_rows` ever reaches this call, so it does not
-            # execute in production today. Read that note, not this one, for
-            # the reasoning.
-            with contained_read(db):
-                row = db.execute(
-                    text(
-                        "SELECT COALESCE(name, email, id) FROM users "
-                        "WHERE company_id = :tenant_id AND id = :tid LIMIT 1"
-                    ),
-                    {"tenant_id": tenant_id, "tid": tid},
-                ).first()
-            if row and row[0]:
-                names[tid] = str(row[0])
-        except OperationalError:
-            log.exception("payroll_users_table_missing")
-            return names
-        except SQLAlchemyError:
-            log.exception("payroll_user_name_lookup_failed tid=%s", tid)
-    return names
-
-
-def _build_summary_rows(
-    db: Session,
-    *,
-    tenant_id: str,
-    start: date,
-    end: date,
-    tech_id: str | None = None,
-) -> list[dict[str, Any]]:
-    hours_by_tech = _fetch_tech_hours(
-        db, tenant_id=tenant_id, start=start, end=end, tech_id=tech_id
-    )
-    revenue_by_tech = _fetch_tech_revenue(
-        db, tenant_id=tenant_id, start=start, end=end, tech_id=tech_id
-    )
-
-    all_techs = set(hours_by_tech.keys()) | set(revenue_by_tech.keys())
-    if tech_id:
-        all_techs.add(tech_id)
-    names = _fetch_tech_names(db, tenant_id=tenant_id, tech_ids=sorted(all_techs))
-
-    out: list[dict[str, Any]] = []
-    for tid in sorted(all_techs):
-        daily = hours_by_tech.get(tid, {})
-        total_hours = sum(daily.values())
-        regular, overtime = calculate_weekly_overtime(daily)
-        jobs_done, revenue = revenue_by_tech.get(tid, (0, 0.0))
-
-        rate = _fetch_active_rate(db, tenant_id=tenant_id, tech_id=tid)
-        if rate is not None:
-            commission = calculate_commission(
-                rate_type=rate.rate_type,
-                rate_value=float(rate.rate_value or 0),
-                revenue=revenue,
-                jobs_completed=jobs_done,
-                hours_worked=total_hours,
-            )
-        else:
-            commission = 0.0
-
-        # Gross pay: without a base hourly wage field on the rate, treat gross
-        # as commission only. Frontend can layer base wage separately.
-        gross = commission
-
-        out.append(
-            {
-                "tech_id": tid,
-                "tech_name": names.get(tid, tid),
-                "hours_worked": round(total_hours, 2),
-                "regular_hours": round(regular, 2),
-                "overtime_hours": round(overtime, 2),
-                "jobs_completed": jobs_done,
-                "revenue": round(revenue, 2),
-                "commission": round(commission, 2),
-                "gross_pay": round(gross, 2),
-            }
-        )
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-@router.get("/api/payroll/summary", response_model=None)
-def payroll_summary(
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    start: str | None = None,
-    end: str | None = None,
-) -> list[dict[str, Any]]:
-    tenant_id = _tenant_id(request)
-    s, e = _resolve_range(db, start, end)
-    try:
-        return _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)
-    except RevenueBasisUnavailable as exc:
-        # 503, not an empty list. The caller asked what the techs earned; the
-        # honest answer is "this cannot be computed", not a page of $0.00 rows
-        # that look calculated.
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Payroll revenue cannot be computed — the commission revenue "
-                "query is broken against this schema. Hours are unaffected. "
-                f"See the server log ({REVENUE_BASIS_LOG_KEY}) for the "
-                "database error."
-            ),
-        ) from exc
-
-
-@router.get("/api/payroll/tech/{tech_id}", response_model=None)
-def payroll_tech_detail(
-    tech_id: str,
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    start: str | None = None,
-    end: str | None = None,
-) -> dict[str, Any]:
-    tenant_id = _tenant_id(request)
-    s, e = _resolve_range(db, start, end)
-
-    try:
-        rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e, tech_id=tech_id)
-    except RevenueBasisUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Payroll revenue cannot be computed — the commission revenue "
-                "query is broken against this schema. Hours are unaffected. "
-                f"See the server log ({REVENUE_BASIS_LOG_KEY}) for the "
-                "database error."
-            ),
-        ) from exc
-    row = rows[0] if rows else {
-        "tech_id": tech_id,
-        "tech_name": tech_id,
-        "hours_worked": 0.0,
-        "regular_hours": 0.0,
-        "overtime_hours": 0.0,
-        "jobs_completed": 0,
-        "revenue": 0.0,
-        "commission": 0.0,
-        "gross_pay": 0.0,
-    }
-    daily_hours = _fetch_tech_hours(
-        db, tenant_id=tenant_id, start=s, end=e, tech_id=tech_id
-    ).get(tech_id, {})
-    row["daily"] = [
-        {"date": d.isoformat(), "hours": round(h, 2)}
-        for d, h in sorted(daily_hours.items())
-    ]
-    return row
-
-
 @router.get("/api/payroll/commission-rates", response_model=None)
 def list_commission_rates(
     request: Request,
@@ -708,62 +293,3 @@ def create_commission_rate(
     )
     return _serialize_rate(rate)
 
-
-@router.get("/api/payroll/export", response_model=None)
-def export_payroll_csv(
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    start: str | None = None,
-    end: str | None = None,
-) -> Response:
-    tenant_id = _tenant_id(request)
-    s, e = _resolve_range(db, start, end)
-
-    try:
-        rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)
-    except RevenueBasisUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Payroll revenue cannot be computed — the commission revenue "
-                "query is broken against this schema. Hours are unaffected. "
-                f"See the server log ({REVENUE_BASIS_LOG_KEY}) for the "
-                "database error."
-            ),
-        ) from exc
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(
-        [
-            "tech_id",
-            "tech_name",
-            "regular_hours",
-            "overtime_hours",
-            "total_hours",
-            "revenue",
-            "commission",
-            "gross_pay",
-        ]
-    )
-    for r in rows:
-        writer.writerow(
-            [
-                r.get("tech_id", ""),
-                r.get("tech_name", ""),
-                r.get("regular_hours", 0),
-                r.get("overtime_hours", 0),
-                r.get("hours_worked", 0),
-                r.get("revenue", 0),
-                r.get("commission", 0),
-                r.get("gross_pay", 0),
-            ]
-        )
-
-    filename = f"payroll_{s.isoformat()}_{e.isoformat()}.csv"
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
