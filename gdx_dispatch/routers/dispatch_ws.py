@@ -66,8 +66,10 @@ def _decode_token(websocket: WebSocket, token: str) -> dict[str, Any] | None:
 
     The same check as the bearer fallback in core/modules.py: signature and
     expiry, ``typ`` absent or ``"access"``, and the ``jti`` not on the
-    revocation denylist (GDXA-1188). Raises HTTPException(503) when the
-    denylist check itself fails. Run at the handshake, and by ``_recheck``.
+    revocation denylist (GDXA-1188). Raises HTTPException(503) only when an
+    error escapes the denylist lookup; a Redis outage reads as "not revoked"
+    (fail-open), so a revocation recorded only in Redis is not seen while
+    Redis is down. Run at the handshake, and by ``_recheck``.
     """
     return decode_live_access_token(token, websocket) or None
 
@@ -81,9 +83,11 @@ def _recheck(websocket: WebSocket, token: str) -> set[str] | None:
     the denylist; deleting, deactivating or demoting a user revokes only the
     refresh tokens, so only ``_board_permissions`` sees those. Sync, for the
     threadpool: the denylist may call Redis and the permissions read the DB.
-    Raises HTTPException(5xx) when the denylist check fails. A database
-    outage does not raise: ``_db_verify_user`` treats it as no users row, so
-    it reads as not admitted (1008), failing closed.
+    Raises HTTPException(503) when an error escapes the denylist lookup, and
+    re-raises an HTTPException(5xx) from the permissions read; a Redis outage
+    does not raise (see ``_decode_token``), so it fails open on revocation. A
+    database outage does not raise either: ``_db_verify_user`` treats it as
+    no users row, so it reads as not admitted (1008), failing closed.
     """
     claims = _decode_token(websocket, token)
     if not claims:
