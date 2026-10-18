@@ -89,7 +89,12 @@ Moved here from `CLAUDE.md` on 2026-10-11 so it loads when a session needs it, n
   images install `gdx_dispatch/requirements.lock` (GDXA-467), and the
   runner's dependency check fails an image that lacks any of its pins.
 - `pytest.ini` already carries `-q`; adding another makes output useless. To
-  read a CI failure use the `jobs/<id>/logs` API, not `gh run view --log`.
+  read a CI failure use the jobs API, not `gh run view --log`:
+  `gh api --allow-escape-sequences repos/freePerro/gdx_dispatch/actions/jobs/<jobId>/logs`.
+  The flag is required: CI logs carry terminal escapes, and without it gh
+  writes nothing to stdout (refusal on stderr, exit 1), so a piped `grep -c`
+  prints 0 for a command that never ran (GDXA-1416, gh 2.102.0). A zero from
+  grep counts only after `| wc -c` shows the log is non-empty.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
   runs go through `nohup`, watched by ONE `Monitor` or a single until-loop —
   never a poll loop.

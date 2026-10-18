@@ -39,7 +39,7 @@ def test_every_rule_matches_a_tracked_file(report):
 
 
 def test_every_owner_has_an_agent_file(report):
-    """The map names an owner with no ``.claude/agents/<owner>.md`` checked in."""
+    """The map names an owner with no ``claude-config/agents/<owner>.md`` checked in."""
     assert not report.owners_without_agent, (
         "owner(s) named in the map with no agent file:\n  " + "\n  ".join(report.owners_without_agent)
     )
