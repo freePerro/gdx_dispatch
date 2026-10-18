@@ -271,6 +271,109 @@ describe('TechTimelineColumn', () => {
     expect(block.find('.block-overflow').text()).toMatch(/over/);
   });
 
+  // GDXA-1486: block geometry stays inside the card and the lane.
+  const px = (el, prop) => parseFloat(el.attributes('style').match(new RegExp(`${prop}:\\s*(-?[\\d.]+)px`))[1]);
+
+  it('folds a 1h card at compact zoom to one line that still shows the start time', () => {
+    const sel = new Date(2026, 4, 21);
+    const job = {
+      id: 'c1', customer_name: 'Acme', title: 'Spring repair',
+      scheduled_at: new Date(2026, 4, 21, 10, 0).toISOString(),
+      scheduled_duration_hours: 1,
+    };
+    const w = mountColumn({ jobs: [job], selectedDate: sel, pxPerHour: 30 });
+    const block = w.find('[data-testid="timeline-job-c1"]');
+    expect(px(block, 'height')).toBe(30);
+    expect(block.classes()).toContain('job-block--short');
+    // No second line to clip: the meta and title lines are gone, the start
+    // time leads the one line, and hover/aria still carry everything.
+    expect(block.find('.block-meta').exists()).toBe(false);
+    expect(block.find('.block-title').exists()).toBe(false);
+    expect(block.find('.block-start').text()).toMatch(/^10:00\s?AM$/);
+    expect(block.find('.block-customer').text()).toBe('Acme');
+    expect(block.attributes('title')).toContain('1h');
+    expect(block.attributes('title')).toContain('Spring repair');
+    // The same card at default zoom keeps its two lines.
+    const wide = mountColumn({ jobs: [job], selectedDate: sel, pxPerHour: 48 })
+      .find('[data-testid="timeline-job-c1"]');
+    expect(wide.classes()).not.toContain('job-block--short');
+    expect(wide.find('.block-meta').exists()).toBe(true);
+    expect(wide.find('.block-start').exists()).toBe(false);
+  });
+
+  it('pins a job that starts before the shift to the lane top and says how early', () => {
+    const sel = new Date(2026, 4, 21);
+    // 06:00 + 3h against an 08:00 shift start: 2h above the lane, 1h inside.
+    const job = {
+      id: 'e1', customer_name: 'Early bird',
+      scheduled_at: new Date(2026, 4, 21, 6, 0).toISOString(),
+      scheduled_duration_hours: 3,
+    };
+    for (const pxPerHour of [48, 30]) {
+      const w = mountColumn({ jobs: [job], selectedDate: sel, pxPerHour });
+      const block = w.find('[data-testid="timeline-job-e1"]');
+      expect(px(block, 'top')).toBe(0);
+      expect(px(block, 'height')).toBe(pxPerHour);
+      expect(block.classes()).toContain('job-block--early');
+      // The time on the card is the real start, not the lane top.
+      expect(block.attributes('aria-label')).toMatch(/6:00\s?AM.*\+2h early/);
+      expect(block.attributes('title')).toContain('+2h early');
+      // A two-line card says it on the time line, never in a corner over
+      // the customer; a one-line card (compact) has only the red edge.
+      if (pxPerHour === 48) {
+        expect(block.find('.block-meta .block-early').text()).toBe('· +2h early');
+      } else {
+        expect(block.find('.block-early').exists()).toBe(false);
+      }
+    }
+  });
+
+  it('lays jobs wholly before the shift side by side instead of stacking them', () => {
+    const sel = new Date(2026, 4, 21);
+    // The demo report: jobs at 3, 4, 5 and 7 AM against an 8 AM start all pin
+    // to the top. They do not conflict in time, so no red outline, but they
+    // must not draw on top of each other.
+    const jobs = [3, 4, 5, 7].map((h) => ({
+      id: `p${h}`, customer_name: `C${h}`,
+      scheduled_at: new Date(2026, 4, 21, h, 0).toISOString(),
+      scheduled_duration_hours: 1,
+    }));
+    const w = mountColumn({ jobs, selectedDate: sel });
+    const blocks = jobs.map((j) => w.find(`[data-testid="timeline-job-${j.id}"]`));
+    for (const b of blocks) {
+      expect(px(b, 'top')).toBeGreaterThanOrEqual(0);
+      expect(b.classes()).not.toContain('job-block--overlap');
+    }
+    const lefts = blocks.map((b) => parseFloat(b.attributes('style').match(/left:\s*([\d.]+)%/)[1]));
+    expect(lefts).toEqual([0, 25, 50, 75]);
+    expect(blocks[0].attributes('title')).toContain('+5h early');
+  });
+
+  it('pins a job that starts after the shift to the lane bottom', () => {
+    const sel = new Date(2026, 4, 21);
+    const job = {
+      id: 'l1', customer_name: 'Late',
+      scheduled_at: new Date(2026, 4, 21, 19, 0).toISOString(),
+      scheduled_duration_hours: 1,
+    };
+    const w = mountColumn({ jobs: [job], selectedDate: sel });
+    const block = w.find('[data-testid="timeline-job-l1"]');
+    const bodyPx = 9 * 48;
+    expect(px(block, 'top') + px(block, 'height')).toBeLessThanOrEqual(bodyPx);
+    expect(block.attributes('title')).toContain('+3h over');
+    expect(block.attributes('aria-label')).toContain('+3h over');
+  });
+
+  it('keeps drop math on the shift axis (clamped blocks do not move it)', () => {
+    const w = mountColumn({ pxPerHour: 30 });
+    const fakeEl = { getBoundingClientRect: () => ({ top: 100 }) };
+    // Above the body clamps to shift start; 45px down at 30px/h is 9:30.
+    let d = new Date(w.vm.dropYToISO(50, fakeEl));
+    expect([d.getHours(), d.getMinutes()]).toEqual([8, 0]);
+    d = new Date(w.vm.dropYToISO(145, fakeEl));
+    expect([d.getHours(), d.getMinutes()]).toEqual([9, 30]);
+  });
+
   // Multi-day jobs plan §5.3 (PR 2b): two days of one job in one column are
   // two cards, keyed by visit, each with its day; a started or closed day
   // cannot be dragged.
