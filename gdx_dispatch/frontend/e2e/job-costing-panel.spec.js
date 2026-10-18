@@ -77,6 +77,17 @@ test.describe('#653 job costing panel', () => {
       // ...and the live one is, so this is not vacuous.
       expect(requested.some((u) => u.includes('/api/costing/jobs/'))).toBe(true);
 
+      // GDXA-1561: the labor-variance route has a caller, and its section
+      // settles into data (loaded or empty). The error state is a failure here:
+      // a 403 or 500 must not pass as "the route is wired".
+      expect(requested).toContain(`GET /api/jobs/${openedId}/labor-variance`);
+      const labor = page.locator('[data-testid="jc-labor-variance"]');
+      await expect(labor).toBeVisible();
+      await expect(
+        labor.locator('[data-testid="jc-labor-hours"], [data-testid="jc-labor-empty"]'),
+      ).toHaveCount(1, { timeout: 15000 });
+      await expect(labor.locator('[data-testid="jc-labor-error"]')).toHaveCount(0);
+
       // No control that cannot save survived.
       for (const id of ['add-part-btn', 'add-item-btn', 'save-costing-btn']) {
         await expect(page.locator(`[data-testid="${id}"]`)).toHaveCount(0);

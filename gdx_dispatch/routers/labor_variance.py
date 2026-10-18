@@ -42,6 +42,14 @@ router = APIRouter(
 )
 
 
+def _as_uuid(value: Any) -> UUID | None:
+    """User ids reach here as strings from JobAssignment/Technician; None if not a UUID."""
+    try:
+        return value if isinstance(value, UUID) else UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_rate(
     db: Session,
     tech_id: str | None,
@@ -84,10 +92,7 @@ def _resolve_rate(
             return (Decimal(tech_row.hourly_rate), "technician")
 
     if payroll_user_id:
-        try:
-            user_uuid = payroll_user_id if isinstance(payroll_user_id, UUID) else UUID(str(payroll_user_id))
-        except (TypeError, ValueError):
-            user_uuid = None
+        user_uuid = _as_uuid(payroll_user_id)
         if user_uuid is not None:
             user_row = db.execute(
                 select(User).where(User.id == user_uuid)
@@ -96,6 +101,22 @@ def _resolve_rate(
                 return (Decimal(str(user_row.hourly_rate)), "user")
 
     return (None, "none")
+
+
+def _tech_name(db: Session, tech_id: str | None, user_id: str | None) -> str | None:
+    """Display name for the Job Costing table: the technician row, else the user."""
+    if tech_id is not None:
+        tech_row = db.execute(
+            select(Technician).where(Technician.id == tech_id)
+        ).scalar_one_or_none()
+        if tech_row is not None and tech_row.name:
+            return tech_row.name
+    user_uuid = _as_uuid(user_id) if user_id else None
+    if user_uuid is not None:
+        user_row = db.execute(select(User).where(User.id == user_uuid)).scalar_one_or_none()
+        if user_row is not None:
+            return user_row.full_name or user_row.name or user_row.email
+    return None
 
 
 @router.get(
@@ -199,6 +220,7 @@ def labor_variance(
             "assignment_id": a.id,
             "tech_id": a.tech_id,
             "user_id": a.user_id,
+            "tech_name": _tech_name(db, a.tech_id, a.user_id),
             "is_lead": bool(a.is_lead),
             "arrived_at": a.arrived_at.isoformat() if a.arrived_at else None,
             "completed_at": a.completed_at.isoformat() if a.completed_at else None,
