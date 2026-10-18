@@ -323,6 +323,31 @@ def _normalize_tech_id_list(
     return out
 
 
+def _norm_id(value: Any) -> str | None:
+    """An id in one comparable form: dashed lowercase for a uuid, the trimmed
+    string otherwise, None for blank. Crew and lane ids arrive dashed from the
+    SPA and may be stored either way."""
+    s = str(value).strip() if value is not None else ""
+    if not s:
+        return None
+    try:
+        return str(uuid.UUID(s))
+    except ValueError:
+        return s
+
+
+def _current_lead(db: Session, job: Job) -> str | None:
+    """The live lead assignment's tech, normalized, else None."""
+    row = db.execute(
+        select(JobAssignment.tech_id).where(
+            JobAssignment.job_id == str(job.id),
+            JobAssignment.deleted_at.is_(None),
+            JobAssignment.is_lead.is_(True),
+        ).limit(1)
+    ).scalar_one_or_none()
+    return _norm_id(row)
+
+
 def _set_job_assignments(
     db: Session,
     *,
@@ -1265,6 +1290,53 @@ def update_job(
                 updates["started_at"] = now
             if len(updates) == 1:  # only updated_at left — nothing to change
                 return jsonable_response(_job_patch_result(job))
+
+        # Crew and lane guard (GDXA-1499). The stage guard above only runs
+        # when a stage is requested, so a finished job's crew and lane, and an
+        # under-way job's whole crew, could be rewritten here by any client
+        # holding a stale or unread crew. A resend of what is stored is
+        # dropped rather than refused: the Jobs list edit dialog resends the
+        # crew on every save.
+        if apply_assignments or "holding_area_id" in updates:
+            from gdx_dispatch.services.visit_sync import FINISHED_STAGES, job_crew
+
+            crew_now = [_norm_id(t) for t in job_crew(db, job)]
+            crew_changed = False
+            if apply_assignments:
+                # A crew with no lead row reads its first tech as lead, as
+                # _set_job_assignments resolves it.
+                lead_now = _current_lead(db, job) or (crew_now[0] if crew_now else None)
+                crew_changed = (
+                    set(crew_now) != {_norm_id(t) for t in desired_tech_ids}
+                    or (bool(desired_lead) and _norm_id(desired_lead) != lead_now)
+                )
+            lane_changed = (
+                "holding_area_id" in updates
+                and _norm_id(updates["holding_area_id"]) != _norm_id(job.holding_area_id)
+            )
+            if stored_stage in FINISHED_STAGES:
+                if crew_changed or lane_changed:
+                    return jsonable_response({
+                        "detail": f"This job is {stored_stage}. Its crew and lane "
+                                  "stay as they were; re-open it on the job page "
+                                  "to change them.",
+                        "use": "reopen",
+                    }, 409)
+                if apply_assignments:
+                    apply_assignments = False
+                    updates.pop("assigned_to", None)
+                updates.pop("holding_area_id", None)
+                if len(updates) == 1:  # only updated_at left — nothing to change
+                    return jsonable_response(_job_patch_result(job))
+            elif (
+                apply_assignments and crew_now and not desired_tech_ids
+                and (updates.get("lifecycle_stage") or stored_stage) == "in_progress"
+            ):
+                return jsonable_response({
+                    "detail": "This job is under way, so it keeps a crew. Change "
+                              "who is on it on the job page.",
+                    "use": "crew",
+                }, 409)
 
         # Sprint customer-multi-location: validate against the resolved
         # customer_id (whichever the patch ends with, not just the payload).
