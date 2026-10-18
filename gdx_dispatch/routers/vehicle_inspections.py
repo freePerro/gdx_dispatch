@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import VehicleInspection
 from gdx_dispatch.routers.auth import get_current_user
@@ -111,7 +112,6 @@ def create_inspection(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> InspectionOut:
-    _ = request
     if payload.inspection_type not in VALID_TYPES:
         raise HTTPException(
             status_code=422, detail=f"inspection_type must be one of {sorted(VALID_TYPES)}"
@@ -134,6 +134,19 @@ def create_inspection(
             updated_at=datetime.now(UTC),
         )
         db.add(insp)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=_user_id(current_user),
+            action="create_vehicle_inspection",
+            entity_type="vehicle_inspection",
+            entity_id=str(insp.id),
+            details={
+                "inspection_type": insp.inspection_type,
+                "vehicle_id": insp.vehicle_id,
+                "odometer": insp.odometer,
+            },
+        )
         db.commit()
         db.refresh(insp)
         return _to_response(insp)
@@ -150,8 +163,6 @@ def delete_inspection(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    _ = current_user
-    _ = request
     try:
         insp_uuid = _uuid.UUID(inspection_id)
     except (ValueError, AttributeError):
@@ -166,6 +177,15 @@ def delete_inspection(
         if not insp:
             raise HTTPException(status_code=404, detail="Inspection not found")
         insp.deleted_at = datetime.now(UTC)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=_user_id(current_user),
+            action="delete_vehicle_inspection",
+            entity_type="vehicle_inspection",
+            entity_id=str(insp.id),
+            details={"id": str(insp.id), "vehicle_id": insp.vehicle_id},
+        )
         db.commit()
         return {"deleted": True}
     except SQLAlchemyError:
