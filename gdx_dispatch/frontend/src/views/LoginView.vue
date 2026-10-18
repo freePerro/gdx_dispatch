@@ -413,6 +413,14 @@ input {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+/* The icon gutter. Scoped `input` compiles to (0,1,1), the same specificity as
+   responsive.css's mobile `input[type="email"], input[type="password"]
+   { padding: 8px 12px }`, which then wins below 768px and puts the text under
+   the icon. The wrapper class lifts this to (0,2,1). */
+.input-wrapper input {
+  padding-left: 2.5rem;
+}
+
 input:focus {
   outline: none;
   border-color: var(--primary, #3b82f6);
