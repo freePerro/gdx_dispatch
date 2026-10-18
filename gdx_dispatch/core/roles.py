@@ -5,8 +5,8 @@ The same role has historically been spelled multiple ways:
   * DB (``users.role``) stores LONG canonical forms (``"technician"``,
     ``"dispatcher"``): ``routers/users.py`` normalizes on write and migration
     009 backfilled legacy short rows (#45). Short rows (``"tech"``/``"dispatch"``)
-    can still exist — un-migrated rows, and ``routers/admin_ops.py`` user
-    create/patch store the role as sent.
+    can still exist in un-migrated rows. ``routers/admin_ops.py`` user
+    create/patch stored the role as sent until GDXA-1460.
   * RBAC catalog (:data:`core.permissions.BUILTIN_ROLES`) and ``tenant_roles.name``
     use LONG forms: ``"technician"``, ``"dispatcher"``.
   * A platform "superadmin" role (spelled three ways) existed until 2026-09-06;
@@ -38,7 +38,7 @@ SALES: Final = "sales"
 ACCOUNTING: Final = "accounting"
 VIEWER: Final = "viewer"
 # Not a BUILTIN_ROLES key: matches only a users.role written as "manager"
-# (admin_ops user create/patch, or a direct write). A custom tenant role of
+# (admin_ops user create/patch before GDXA-1460, or a direct write). A custom tenant role of
 # that name never reaches users.role (role_permissions assign_role syncs only
 # BUILTIN_ROLES names).
 MANAGER: Final = "manager"
@@ -57,8 +57,7 @@ ROLE_ALIASES: Final[dict[str, str]] = {
 # (POST /api/admin/users/invite). Those two once kept separate lists: the users
 # router lacked "viewer" and the invite lacked "sales", so the Users and
 # Settings dialogs each offered a role their own endpoint 422ed (GDXA-1200).
-# NOT yet read by POST/PATCH /api/admin/users, which still store the role as
-# sent (no UI calls them; deferred, see GDXA-1200's report).
+# POST/PATCH /api/admin/users take the same input pattern since GDXA-1460.
 # Every entry is a core.permissions.BUILTIN_ROLES key (a test pins it).
 # "accounting" is a builtin role no assignment path has ever offered; adding
 # it is a product decision, not a vocabulary fix.
@@ -70,8 +69,9 @@ ASSIGNABLE_ROLES: Final[tuple[str, ...]] = (
 def assignable_role_input_pattern() -> str:
     """Regex accepting every assignable role plus its legacy short spellings.
 
-    Callers normalize with :func:`normalize_role` after matching, so only the
-    canonical form is stored.
+    Callers normalize with :func:`normalize_role` (``routers/users.py`` after
+    matching, ``routers/admin_ops.py`` before), so only the canonical form is
+    stored.
     """
     spellings = set(ASSIGNABLE_ROLES) | {
         alias for alias, canon in ROLE_ALIASES.items() if canon in ASSIGNABLE_ROLES
