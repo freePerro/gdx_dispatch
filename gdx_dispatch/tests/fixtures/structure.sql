@@ -1573,9 +1573,7 @@ CREATE TABLE public.job_photos (
     uploaded_by character varying(200),
     uploaded_at timestamp with time zone NOT NULL,
     deleted_at timestamp with time zone,
-    content_type character varying(150),
-    created_at timestamp with time zone,
-    file_size integer
+    created_at timestamp with time zone
 );
 
 

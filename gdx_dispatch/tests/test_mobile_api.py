@@ -155,7 +155,7 @@ def test_get_job_detail_success(session_factory):
                 """
                 INSERT INTO job_photos (
                     id, company_id, job_id, kind, url, uploaded_at,
-                    filename, content_type, file_size, created_at, deleted_at
+                    filename, mime_type, size_bytes, created_at, deleted_at
                 )
                 VALUES (
                     'photo-1', 'tenant-a', :job_id, 'during', '/uploads/a.jpg', :created_at,
@@ -186,6 +186,10 @@ def test_get_job_detail_success(session_factory):
         assert data["job"]["navigation_link"].startswith("https://maps.google.com/?q=")
         assert len(data["notes"]) == 1
         assert len(data["photos"]) == 1
+        # The response keeps the names content_type/file_size; the values come
+        # from mime_type/size_bytes, the columns the writer fills (GDXA-1587).
+        assert data["photos"][0]["content_type"] == "image/jpeg"
+        assert data["photos"][0]["file_size"] == 12
     finally:
         db.close()
 
