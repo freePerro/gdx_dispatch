@@ -2,7 +2,7 @@
 
 Bug class this catches
 ----------------------
-The project subagents in ``.claude/agents/*.md`` (decided 2026-09-24, see
+The project subagents in ``claude-config/agents/*.md`` (Claude Code loads them via the ``.claude/agents`` symlink) (decided 2026-09-24, see
 ``domain-agents-plan`` under ``docs/design/``) each own a slice of the tree. An
 ownership map that lives only in prose rots the way every present-tense doc
 in this repo has rotted: a router is added, nobody claims it, and the agent
@@ -19,7 +19,7 @@ scan is its guard. Five things must hold:
    root's ratchet baselines).
 2. **Every rule still matches a tracked file.** A rule for a renamed or
    deleted file is dead weight that misleads the next reader; it goes red.
-3. **Every owner named in the map has an agent file**, ``.claude/agents/<owner>.md``.
+3. **Every owner named in the map has an agent file**, ``claude-config/agents/<owner>.md``.
 4. **Every agent file owns something.** An agent with no territory is a
    definition nobody maintains.
 5. **Every repo-root rule is gated or recorded as ungated.** Root coverage is a
@@ -66,7 +66,8 @@ from gdx_dispatch.tools.tracked_files import tracked_or_none
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAP_PATH = REPO_ROOT / "gdx_dispatch" / "tools" / "agent_ownership.txt"
-AGENTS_DIR = ".claude/agents/"
+# The real files; .claude/agents|rules|skills are symlinks into claude-config/ (GDXA-1417).
+AGENTS_DIR = "claude-config/agents/"
 
 # Directories where every file must have an owner. Tests, docs and migrations
 # are shared surfaces and are not roots (the map may still list them).
@@ -87,13 +88,13 @@ COVERED_ROOTS = (
     "gdx_dispatch/frontend/android/",
     # The agent files carry the copy-paste commands every agent runs, so they
     # need an owner who keeps them right (GDXA-484: 13 of 14 lacked --tmpfs).
-    ".claude/agents/",
+    "claude-config/agents/",
     # The area rules load into every agent's context when it touches a file in
     # that area, so they rot like any present-tense doc (GDXA-966).
-    ".claude/rules/",
+    "claude-config/rules/",
     # The skills carry the harness facts (merge path, matrix runner) the agents
     # act on; gdx-harness/SKILL.md sat UNOWNED until GDXA-1054.
-    ".claude/skills/",
+    "claude-config/skills/",
 )
 
 # Repo-root files where every match must have an owner. The root cannot be a
