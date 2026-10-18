@@ -100,11 +100,10 @@ def _recheck(websocket: WebSocket, token: str) -> set[str] | None:
 def _next_wake(claims: dict[str, Any]) -> float:
     """Seconds until the receive loop next re-checks the token: the recheck
     interval, or sooner if the token expires first."""
-    try:
-        until_exp = float(claims["exp"]) - time.time()
-    except (KeyError, TypeError, ValueError):
+    exp = claims.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
         return _RECHECK_SECONDS
-    return max(_MIN_WAKE_SECONDS, min(_RECHECK_SECONDS, until_exp))
+    return max(_MIN_WAKE_SECONDS, min(_RECHECK_SECONDS, exp - time.time()))
 
 
 def _normalize_message(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -175,6 +174,8 @@ async def dispatch_board_ws(websocket: WebSocket, token: str = "") -> None:
             try:
                 incoming = await asyncio.wait_for(websocket.receive_json(), timeout=_next_wake(payload))
             except TimeoutError:
+                # No frame before the wake: re-check an idle socket anyway.
+                log.debug("dispatch_ws_idle_recheck sub=%s", user_id)
                 incoming = None
             # Re-check before acting on the frame, so a revoked holder's last
             # frame is not rebroadcast. After accept the close code reaches
