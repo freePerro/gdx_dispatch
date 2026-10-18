@@ -654,7 +654,8 @@ def update_role_permissions(
     if existing:
         try:
             old_permissions = json.loads(existing.permissions or "null")
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            log.warning("role %s: stored permissions are not JSON (%s); auditing them raw", body.role, exc)
             old_permissions = existing.permissions
         existing.permissions = serialized
         existing.updated_at = now_dt
