@@ -1141,9 +1141,9 @@ onMounted(() => {
 }
 
 .segment-chip.active {
-  background: var(--accent-b);
-  border-color: var(--accent-b);
-  color: #fff;
+  background: var(--p-primary-color);
+  border-color: var(--p-primary-color);
+  color: var(--p-primary-contrast-color);
 }
 
 .bulk-toolbar {
@@ -1167,7 +1167,7 @@ onMounted(() => {
 }
 
 .customer-link {
-  color: var(--accent-b);
+  color: var(--link-color);
   font-weight: 600;
   text-decoration: none;
 }

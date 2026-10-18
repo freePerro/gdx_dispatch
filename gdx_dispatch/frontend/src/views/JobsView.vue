@@ -331,10 +331,17 @@
                 display="chip"
                 filter
                 showClear
+                :disabled="isEditMode && !crewKnown"
                 data-testid="job-tech-dropdown"
                 class="w-full"
               />
-              <small v-if="(jobForm.assigned_tech_ids || []).length > 1" class="lead-row">
+              <small v-if="isEditMode && crewLoading" class="optional-hint" data-testid="job-crew-loading">
+                Loading the crew…
+              </small>
+              <small v-else-if="isEditMode && !crewKnown" class="optional-hint" data-testid="job-crew-unread">
+                The crew on this job could not be read, so saving here leaves it as it is. Change it on the job page.
+              </small>
+              <small v-if="(jobForm.assigned_tech_ids || []).length > 1 && (!isEditMode || crewKnown)" class="lead-row">
                 Lead:
                 <Select
                   v-model="jobForm.lead_tech_id"
@@ -490,7 +497,7 @@
               type="submit"
               :label="isEditMode ? 'Save Changes' : 'Create Job'"
               :loading="isSaving"
-              :disabled="hardGateBlocksSave"
+              :disabled="hardGateBlocksSave || (isEditMode && crewLoading)"
               :title="hardGateBlocksSave ? 'A technician is required for scheduled jobs (company policy).' : undefined"
               data-testid="job-submit-btn"
             />
@@ -652,6 +659,13 @@ function openAppointmentsFromForm() {
 const showFormDialog = ref(false);
 const showDeleteDialog = ref(false);
 const formMode = ref("create");
+// The edit dialog's crew comes from GET /assignments, and the server takes
+// assigned_tech_ids as the whole crew: a save sent before that read lands
+// would send [] and empty the crew, and one sent after a failed read would
+// cut a crew to its primary tech (GDXA-1499). Save waits while crewLoading;
+// with crewKnown false after the read, the save leaves the crew out.
+const crewLoading = ref(false);
+const crewKnown = ref(true);
 const deleteTarget = ref(null);
 
 // Canonical lifecycle stages (matches jobs.lifecycle_stage PG enum).
@@ -964,6 +978,8 @@ function extractId(payload) {
 
 function openCreateDialog() {
   formMode.value = "create";
+  crewLoading.value = false;
+  crewKnown.value = true;
   _seedingLocation.value = true;
   jobForm.value = emptyForm();
   _createdCustomerMemo.value = null;
@@ -1020,22 +1036,35 @@ async function openEditDialog(job) {
   showFormDialog.value = true;
 
   // Load existing crew so the MultiSelect/Lead controls reflect reality.
-  // .catch — endpoint is permission-gated; on a 403 we fall back to the
-  // legacy single-tech assigned_to that came in via the row.
+  // The endpoint is permission-gated; on a failure the picker shows the
+  // row's primary tech, read-only, and the save leaves the crew alone.
+  crewLoading.value = true;
+  crewKnown.value = false;
+  let known = false;
+  let crew = null;
   try {
     const assignments = await api.get(`/api/jobs/${job.id}/assignments`);
+    known = true;
     if (Array.isArray(assignments) && assignments.length) {
-      jobForm.value.assigned_tech_ids = assignments.map((a) => String(a.tech_id));
       const lead = assignments.find((a) => a.is_lead);
-      jobForm.value.lead_tech_id = lead ? String(lead.tech_id) : null;
-    } else if (job.assigned_tech_id || job.assigned_to) {
-      jobForm.value.assigned_tech_ids = [String(job.assigned_tech_id || job.assigned_to)];
+      crew = {
+        ids: assignments.map((a) => String(a.tech_id)),
+        lead: lead ? String(lead.tech_id) : null,
+      };
     }
   } catch {
-    if (job.assigned_tech_id || job.assigned_to) {
-      jobForm.value.assigned_tech_ids = [String(job.assigned_tech_id || job.assigned_to)];
-    }
+    known = false;
   }
+  // The dialog may have been reopened on another job while this read ran.
+  if (formMode.value !== "edit" || String(jobForm.value.id) !== String(job.id)) return;
+  if (crew) {
+    jobForm.value.assigned_tech_ids = crew.ids;
+    jobForm.value.lead_tech_id = crew.lead;
+  } else if (job.assigned_tech_id || job.assigned_to) {
+    jobForm.value.assigned_tech_ids = [String(job.assigned_tech_id || job.assigned_to)];
+  }
+  crewKnown.value = known;
+  crewLoading.value = false;
 }
 
 function handleNewCustomerToggle(value) {
@@ -1094,6 +1123,7 @@ function apptRequestNote(form) {
 }
 
 async function submitForm() {
+  if (isEditMode.value && crewLoading.value) return;
   formError.value = "";
   formErrorToAppointments.value = false;
   // Each save re-evaluates the soft gate from scratch — acknowledging once
@@ -1218,6 +1248,9 @@ async function submitForm() {
 
     const techIds = (jobForm.value.assigned_tech_ids || []).filter(Boolean).map(String);
     const leadTechId = techIds.length > 1 ? (jobForm.value.lead_tech_id || null) : null;
+    // An unread crew is not sent: the picker holds a guess, and the server
+    // would take it as the whole crew.
+    const sendCrew = !isEditMode.value || crewKnown.value;
     const payload = {
       title,
       description: jobForm.value.description || "",
@@ -1254,6 +1287,12 @@ async function submitForm() {
       // lie — so the request is preserved where dispatch will actually read it.
       notes: apptRequestNote(jobForm.value) || jobForm.value.notes || "",
     };
+
+    if (!sendCrew) {
+      delete payload.assigned_tech_ids;
+      delete payload.lead_tech_id;
+      delete payload.assigned_tech_id;
+    }
 
     if (isEditMode.value) {
       payload.lifecycle_stage = jobForm.value.status;
