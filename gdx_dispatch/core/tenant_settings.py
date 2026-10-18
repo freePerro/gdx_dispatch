@@ -6,8 +6,8 @@ Two metadata objects exist on purpose (see docs/BUILD_RULES.md):
   by ``create_all()`` from the container entrypoint.
 * ``Base`` here — the metadata ``migrations/env.py`` autogenerates against.
   Its tables come from migration 001's baseline and later migrations, never
-  from ``create_all``. ``routers/admin_db.py`` suppresses them from the
-  ORM-drift check for that reason.
+  from ``create_all``. ``routers/admin_db.py`` compares both metadata
+  objects in its ORM-drift check (GDXA-1537).
 
 This module lives under ``core/`` (an empty-``__init__`` package), NOT under
 ``models/``, on purpose: ``models/__init__.py`` is the create_all registry and

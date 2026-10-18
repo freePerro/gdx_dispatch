@@ -58,7 +58,7 @@ described the shared-database SaaS this deployment never ran.)
 ### Two metadata objects, two creation paths
 
 - **`TenantBase`** (`models/tenant_models.py`, registry in `models/__init__.py`) — every business table. Created by `TenantBase.metadata.create_all()`, which `tools/bootstrap_app.create_orm_tables()` runs from the container entrypoint on every boot, *before* Alembic. **`create_all` creates missing tables only; it never adds a column to an existing table.**
-- **The Alembic base** (`gdx_dispatch/core/tenant_settings.py` — `Tenant`, `TenantSettings`, the game tables — plus everything migration 001's baseline creates; moved out of a `control/` package 2026-09-06) — owned by `alembic upgrade head`, also run by the entrypoint. `routers/admin_db.py` suppresses these tables from its ORM-drift check because `compare_metadata` runs against `TenantBase` only.
+- **The Alembic base** (`gdx_dispatch/core/tenant_settings.py` — `Tenant`, `TenantSettings`, the game tables — plus everything migration 001's baseline creates; moved out of a `control/` package 2026-09-06) — owned by `alembic upgrade head`, also run by the entrypoint. `routers/admin_db.py` runs its ORM-drift check (`compare_metadata`) against both metadata objects together, so drift on these tables is reported like drift on `TenantBase`; it suppresses only `server_errors`, which no model on either base declares (GDXA-1537, 2026-10-18; it compared `TenantBase` alone before, which hid `game_events.created_by_user_id`, fixed by migration 094). A nullability mismatch is severity `mismatch` and sets the panel's verdict to drift.
 
 #### Adding a column to an existing `TenantBase` table
 

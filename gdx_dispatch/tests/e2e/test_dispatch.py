@@ -234,29 +234,9 @@ class TestDispatchBoard:
             f"WS endpoint without auth returned unexpected {resp.status_code}"
         )
 
-    def test_disp_11_tenant_isolation(self, api):
-        """DISP-11: API enforces tenant isolation on dispatch data."""
-        import httpx
-
-        # Request with a bogus tenant ID should not return real data
-        fake_tenant = "00000000-0000-0000-0000-000000000000"
-        resp = httpx.get(
-            f"{BASE_URL}/api/jobs",
-            headers={
-                "Authorization": f"Bearer {api._client.headers['Authorization'].split(' ')[1]}",
-                "x-tenant-id": fake_tenant,
-                "Content-Type": "application/json",
-            },
-            verify=False,
-            timeout=10,
-        )
-        # Should either fail (401/403/404) or return empty data
-        if resp.status_code == 200:
-            data = resp.json()
-            items = data if isinstance(data, list) else (
-                data.get("items") or data.get("data") or data.get("results") or []
-            )
-            assert len(items) == 0, "Fake tenant returned non-empty job list — tenant isolation broken"
+    # DISP-11 (tenant isolation via a forged x-tenant-id) was deleted in
+    # GDXA-1535: the system is single-tenant, isolation is the connection, and
+    # no server code reads that header (test_saas_surfaces_retired pins that).
 
     def test_disp_12_dispatch_with_no_jobs(self, navigate, console_tracker, authenticated_page):
         """DISP-12: Dispatch board with no jobs shows empty state, no JS errors."""
