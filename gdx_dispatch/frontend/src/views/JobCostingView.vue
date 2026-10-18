@@ -672,24 +672,39 @@ function marginSeverity(value) {
   return 'danger';
 }
 
+// Every loader below writes only if its request is still the newest one of its
+// kind. Comparing the target (job id, date range) is not enough: open A, B,
+// then A again, and both A requests match, so whichever lands last wins, even
+// a failure arriving after the newer success (GDXA-1572).
+let profitabilitySeq = 0;
+let markupSeq = 0;
+let jobDetailSeq = 0;
+let laborVarianceSeq = 0;
+let lineItemsSeq = 0;
+let calculatorSeq = 0;
+
 async function loadProfitability() {
+  const seq = ++profitabilitySeq;
   profitabilityLoading.value = true;
   try {
     const days = rangeDays.value;
     const data = await api.get(`/api/costing/profitability?days=${days}`);
+    if (seq !== profitabilitySeq) return;
     profitabilityRows.value = Array.isArray(data) ? data : data?.items || data?.rows || [];
   } finally {
-    profitabilityLoading.value = false;
+    if (seq === profitabilitySeq) profitabilityLoading.value = false;
   }
 }
 
 async function loadMarkupRules() {
+  const seq = ++markupSeq;
   markupLoading.value = true;
   try {
     const data = await api.get('/api/costing/markup-rules');
+    if (seq !== markupSeq) return;
     markupRules.value = Array.isArray(data) ? data : data?.items || [];
   } finally {
-    markupLoading.value = false;
+    if (seq === markupSeq) markupLoading.value = false;
   }
 }
 
@@ -739,26 +754,35 @@ async function deleteRule(rule) {
 async function openJobDetail(row) {
   const id = row.job_id || row.id;
   if (!id) return;
+  const seq = ++jobDetailSeq;
   showJobDetail.value = true;
   jobLoading.value = true;
   jobDetail.value = null;
   try {
-    jobDetail.value = await api.get(`/api/costing/jobs/${id}`);
+    const data = await api.get(`/api/costing/jobs/${id}`);
+    if (seq === jobDetailSeq) jobDetail.value = data;
   } finally {
-    jobLoading.value = false;
+    if (seq === jobDetailSeq) jobLoading.value = false;
   }
 }
 
 function closeJobDetail() {
+  jobDetailSeq++;
   showJobDetail.value = false;
+  jobLoading.value = false;
   jobDetail.value = null;
 }
 
 watch(currentJobId, (jobId) => {
   if (!jobId) {
+    // Retire whatever is in flight for the job just left.
+    laborVarianceSeq++;
+    lineItemsSeq++;
     jobLineItems.value = [];
+    lineItemsLoading.value = false;
     laborVariance.value = null;
     laborVarianceError.value = '';
+    laborVarianceLoading.value = false;
     return;
   }
   loadLaborVariance(jobId);
@@ -774,12 +798,13 @@ watch(currentJobId, (jobId) => {
 // failure, one message, in the place the number would have been.
 async function loadLaborVariance(jobId) {
   if (!jobId) return;
+  const seq = ++laborVarianceSeq;
   laborVarianceLoading.value = true;
   laborVarianceError.value = '';
   laborVariance.value = null;
-  // A reply for a job the dialog has since moved off is dropped, so job A's
-  // late response can never render under job B's heading.
-  const stale = () => currentJobId.value !== jobId;
+  // Only the newest request may write: job A's late reply never renders under
+  // job B, nor does a failed first visit to A overwrite a later visit's data.
+  const stale = () => seq !== laborVarianceSeq;
   try {
     const data = await api.get(`/api/jobs/${jobId}/labor-variance`, {
       suppressErrorToast: true,
@@ -793,16 +818,19 @@ async function loadLaborVariance(jobId) {
 }
 
 async function loadJobLineItems(jobId) {
+  const seq = ++lineItemsSeq;
   if (!jobId) {
     jobLineItems.value = [];
     return;
   }
   lineItemsLoading.value = true;
+  jobLineItems.value = [];
   try {
     const data = await api.get(`/api/jobs/${jobId}/line-items`);
+    if (seq !== lineItemsSeq) return;
     jobLineItems.value = Array.isArray(data) ? data : data?.items || [];
   } finally {
-    lineItemsLoading.value = false;
+    if (seq === lineItemsSeq) lineItemsLoading.value = false;
   }
 }
 
@@ -815,14 +843,16 @@ async function loadJobLineItems(jobId) {
 
 async function calculatePrice() {
   if (!calculatorCategory.value || calculatorCost.value === null || calculatorCost.value === undefined) return;
+  const seq = ++calculatorSeq;
   calculatorLoading.value = true;
   try {
-    calculatorResult.value = await api.post('/api/costing/calculate-price', {
+    const result = await api.post('/api/costing/calculate-price', {
       category: calculatorCategory.value,
       cost: calculatorCost.value,
     });
+    if (seq === calculatorSeq) calculatorResult.value = result;
   } finally {
-    calculatorLoading.value = false;
+    if (seq === calculatorSeq) calculatorLoading.value = false;
   }
 }
 
