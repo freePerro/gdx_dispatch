@@ -178,9 +178,9 @@ jobs:
           # --forked above. Never -rs: -r REPLACES pytest's "fE" default rather
           # than adding to it, so -rs would delete the FAILED and ERROR summary
           # lines (see that script's comment). Under CI an unreachable Postgres
-          # FAILS rather than skips (#440), but the 8 TEST_DATABASE_URL role
-          # tests and the GDX_TEST_CONTROL_DB_URL tests still skip green here —
-          # this is what names them. Report-only: it cannot change a verdict.
+          # FAILS rather than skips (#440). The TEST_DATABASE_URL AI role tests
+          # skip here and run in the ai-roles job below (GDXA-1564); the
+          # GDX_TEST_CONTROL_DB_URL tests still skip green — this names them. Report-only: it cannot change a verdict.
           #
           # No -q here: pytest.ini addopts already carries -q, and a second one
           # makes it -qq, which drops the final "N passed, M skipped" counts line
@@ -202,6 +202,106 @@ jobs:
               exit "$rc"
               ;;
           esac
+
+  # The AI role tests (test_gdx_ai_readonly_role.py, test_gdx_ai_write_role.py)
+  # need a paved tenant database with gdx_ai_readonly and gdx_ai_write already
+  # created, and read only TEST_DATABASE_URL. The shards above leave it unset on
+  # purpose: 40 Postgres test files read TEST_DATABASE_URL before DATABASE_URL,
+  # and pointing them at a second database would change what they run against.
+  # So this job builds that database itself: the ORM schema (what a pave's
+  # create_all builds), one seeded customer, then the checked-in
+  # gdx_dispatch/tools/gdx_ai_roles.sql, and runs the two files. It fails unless
+  # exactly the expected number pass: a skip here means the contract went
+  # unchecked, and a lower count means a test stopped being collected
+  # (GDXA-1564). Adding a test to either file means raising EXPECTED below.
+  ai-roles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: gdx_ai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: test
+      PGPASSWORD: test
+      PGDATABASE: gdx_ai
+      # Throwaway values for a throwaway database; they protect nothing real.
+      GDX_AI_READONLY_PASSWORD: ci-ai-readonly
+      GDX_AI_WRITE_PASSWORD: ci-ai-write
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: gdx_dispatch/requirements.lock
+
+      - name: Install dependencies
+        # Same install as the test job: the lock, --no-deps, then pip check.
+        run: |
+          pip install --no-deps -r gdx_dispatch/requirements.lock
+          pip check
+
+      - name: PostgreSQL client matching the service
+        # gdx_ai_roles.sql reads its passwords with \getenv, which needs psql 15
+        # or newer. Same install as the test job's step of this name; keep
+        # PG_MAJOR in lockstep with services.postgres.image above.
+        env:
+          PG_MAJOR: "16"
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          if [ ! -x "/usr/lib/postgresql/$PG_MAJOR/bin/psql" ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends postgresql-common
+            sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+            sudo apt-get install -y -q --no-install-recommends "postgresql-client-$PG_MAJOR"
+          fi
+          echo "/usr/lib/postgresql/$PG_MAJOR/bin" >> "$GITHUB_PATH"
+
+      - name: Build the tenant schema, seed a customer, apply the AI roles
+        env:
+          # Importing the models imports the auth router, which refuses to load
+          # without a signing key. A throwaway CI value.
+          JWT_SECRET: ci-ai-roles-secret-at-least-32-bytes-long
+        run: |
+          psql --version
+          python -c "
+          import gdx_dispatch.models
+          from gdx_dispatch.core.audit import TenantBase
+          from sqlalchemy import create_engine
+          TenantBase.metadata.create_all(create_engine('postgresql://test:test@localhost:5432/gdx_ai'))
+          "
+          # The write tests need a row to UPDATE, and gdx_ai_write cannot INSERT one.
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO customers (id, name, company_id) VALUES (gen_random_uuid(), 'ci-seed', 'ci')"
+          psql -f gdx_dispatch/tools/gdx_ai_roles.sql
+
+      - name: Run the AI role tests
+        env:
+          TEST_DATABASE_URL: postgresql://test:test@localhost:5432/gdx_ai
+          EXPECTED: "10"
+        run: |
+          set -o pipefail
+          python -m pytest gdx_dispatch/tests/test_gdx_ai_readonly_role.py \
+            gdx_dispatch/tests/test_gdx_ai_write_role.py --tb=short -ra \
+            -p no:nose -p no:pastebin -p no:doctest | tee "$RUNNER_TEMP/ai_roles.out"
+          # pytest exits 0 with skips. Only "$EXPECTED passed" (and warnings) counts.
+          grep -Eq "^=* ?${EXPECTED} passed(, [0-9]+ warnings?)? in " "$RUNNER_TEMP/ai_roles.out" \
+            || { echo "::error::expected exactly ${EXPECTED} AI role tests to pass, none skipped; see the summary above"; exit 1; }
 
   build:
     runs-on: ubuntu-latest

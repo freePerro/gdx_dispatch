@@ -95,7 +95,9 @@ def test_assign_role_syncs_users_role_for_builtin(db):
     db.commit()
 
     actor = {"user_id": str(uuid4()), "role": "owner"}
-    assign_role(str(uid), AssignRoleIn(role_id=str(owner.id)), _req(), actor, db)
+    req = _req()
+    req.state.user_permissions = {WILDCARD}  # what require_permission caches for an owner
+    assign_role(str(uid), AssignRoleIn(role_id=str(owner.id)), req, actor, db)
 
     refreshed = db.get(User, uid)
     assert refreshed.role == "owner"  # users.role synced to the assigned builtin role
