@@ -37,7 +37,8 @@ def test_pytest_ini_addopts_is_already_quiet():
 def test_ci_yml_runs_pytest():
     """The guard below must have something to inspect, or it passes vacuously."""
     cmds = _pytest_commands((WORKFLOWS / "ci.yml").read_text())
-    assert len(cmds) == 2, cmds  # the shard run and its native-crash retry
+    # The shard run, its native-crash retry, and the ai-roles job (GDXA-1564).
+    assert len(cmds) == 3, cmds
 
 
 def test_matcher_ignores_lines_that_only_name_pytest():
