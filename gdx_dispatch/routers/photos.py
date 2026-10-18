@@ -86,12 +86,6 @@ def _user_id(user: Any) -> str:
     return str(user.get("sub") or user.get("user_id") or user.get("email") or "system")
 
 
-def _user_name(user: Any) -> str | None:
-    if not isinstance(user, dict):
-        return None
-    return user.get("name") or user.get("email") or None
-
-
 def _serialize(p: JobPhoto) -> dict[str, Any]:
     return {
         "id": str(p.id),
