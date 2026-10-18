@@ -113,13 +113,15 @@ def _job_belongs_to_tech(db: Session, job_id: str, user_id: str, tenant_id: str,
     ).scalar()
     if row:
         return True
-    # Multi-tech (Phase 1.4) — check job_assignments via Technician.user_id
+    # Multi-tech (Phase 1.4) — check job_assignments via Technician.user_id.
+    # A soft-deleted assignment is a removed tech and grants nothing (GDXA-1545).
     row = db.execute(
         _text(
             """
             SELECT 1 FROM job_assignments ja
             JOIN technicians t ON t.id = ja.tech_id
-            WHERE ja.job_id = :jid AND CAST(t.user_id AS TEXT) = :uid AND t.active IS NOT FALSE
+            WHERE ja.job_id = :jid AND ja.deleted_at IS NULL
+              AND CAST(t.user_id AS TEXT) = :uid AND t.active IS NOT FALSE
             LIMIT 1
             """
         ),
