@@ -44,7 +44,9 @@ the scan greps every ``gdx/**.py`` for:
 whitespace, ``(``, ``,``, ``.``, or start-of-string; followed by the
 same plus ``)`` and ``;``). Catches both the reader form
 (``SELECT name FROM customers``) and the writer form
-(``INSERT INTO webhook_endpoints (…, secret, …)``).
+(``INSERT INTO webhook_endpoints (…, secret, …)``). The argument need
+not be a literal: f-strings, concatenation, local names and same-module
+helper calls are resolved (``_SqlResolver``; GDXA-1528).
 
 False positives
 ---------------
@@ -153,9 +155,101 @@ def _build_token_re(identifier: str) -> re.Pattern[str]:
     )
 
 
+_MAX_RESOLVE_DEPTH = 6
+
+
+class _SqlResolver:
+    """Best-effort static resolution of the SQL a ``text(...)`` argument
+    carries, so the scan does not stop at a bare string literal.
+
+    GDXA-1528: ``routers/segments.py`` built its rollup in a helper that
+    returns an f-string and called ``text(_customer_stats_sql(...))`` —
+    the literal-only matcher never saw ``c.address`` and the segment
+    customer list served ciphertext. Resolved here:
+
+      * string constants, f-strings (literal parts only), ``a + b``,
+        ``x if c else y``;
+      * a bare name — every assignment to it in the enclosing function
+        and at module level;
+      * a call to a function defined in the same module — every
+        ``return`` value of that function.
+
+    Over-approximates on purpose (every branch, every assignment): a
+    false positive costs one ``# noqa: RAWENC1``, a false negative ships
+    ciphertext. Imported helpers, attributes and dynamic SQL stay
+    invisible.
+    """
+
+    def __init__(self, tree: ast.AST) -> None:
+        self.parents: dict[ast.AST, ast.AST] = {}
+        self.functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                self.parents[child] = parent
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.functions.setdefault(parent.name, []).append(parent)
+        self.tree = tree
+
+    def _scope_of(self, node: ast.AST) -> list[ast.AST]:
+        scopes: list[ast.AST] = []
+        cur = self.parents.get(node)
+        while cur is not None:
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scopes.append(cur)
+            cur = self.parents.get(cur)
+        scopes.append(self.tree)
+        return scopes
+
+    def _assignments(self, name: str, scope: ast.AST) -> list[ast.expr]:
+        values: list[ast.expr] = []
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value:
+                targets = [node.target]
+            else:
+                continue
+            if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                values.append(node.value)
+        return values
+
+    def resolve(self, node: ast.AST, depth: int = 0) -> str:
+        if depth > _MAX_RESOLVE_DEPTH:
+            return ""
+        nxt = depth + 1
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else ""
+        if isinstance(node, ast.JoinedStr):
+            return "".join(
+                v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else " "
+                for v in node.values
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return self.resolve(node.left, nxt) + self.resolve(node.right, nxt)
+        if isinstance(node, ast.IfExp):
+            return self.resolve(node.body, nxt) + "\n" + self.resolve(node.orelse, nxt)
+        if isinstance(node, ast.Name):
+            parts: list[str] = []
+            for scope in self._scope_of(node):
+                for value in self._assignments(node.id, scope):
+                    if value is not node:
+                        parts.append(self.resolve(value, nxt))
+                if parts:
+                    break
+            return "\n".join(parts)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            parts = []
+            for fn in self.functions.get(node.func.id, []):
+                for sub in ast.walk(fn):
+                    if isinstance(sub, ast.Return) and sub.value is not None:
+                        parts.append(self.resolve(sub.value, nxt))
+            return "\n".join(parts)
+        return ""
+
+
 def _find_text_calls(tree: ast.AST) -> list[tuple[int, str]]:
-    """Return [(lineno, sql_literal), …] for every ``text("…")`` Call
-    whose first arg is a string constant. Catches the common shapes:
+    """Return [(lineno, sql), …] for every ``text(...)`` Call whose first
+    arg resolves to SQL (see ``_SqlResolver``). Catches the common shapes:
 
       * ``text("SELECT … FROM …")``
       * ``sqlalchemy.text("…")``
@@ -164,10 +258,10 @@ def _find_text_calls(tree: ast.AST) -> list[tuple[int, str]]:
         2026-07-16 tech-mobile ciphertext bug lived behind
         ``from sqlalchemy import text as _text``; the exact-name match
         made every query in that module invisible to this scan.
-
-    f-strings and concatenated multi-arg variants are NOT inspected
-    (documented limitation — same as tenant_plane_redundant_filter_scan).
+      * ``text(f"…")``, ``text(sql)``, ``text(_build_sql(...))`` —
+        resolved within the module (GDXA-1528).
     """
+    resolver: _SqlResolver | None = None
     out: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not node.args:
@@ -185,6 +279,12 @@ def _find_text_calls(tree: ast.AST) -> list[tuple[int, str]]:
         first = node.args[0]
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             out.append((node.lineno, first.value))
+            continue
+        if resolver is None:
+            resolver = _SqlResolver(tree)
+        sql = resolver.resolve(first)
+        if sql.strip():
+            out.append((node.lineno, sql))
     return out
 
 

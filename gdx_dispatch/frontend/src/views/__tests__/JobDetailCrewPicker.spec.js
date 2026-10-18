@@ -242,3 +242,60 @@ describe("job page Technician picker on a crew job", () => {
     expect(w.vm.$.setupState.selectedTech).toBe("t1");
   });
 });
+
+// The Schedule dialog sends assigned_tech_ids, which the server takes as the
+// whole crew; seeded after a failed read it held the job's lone assigned_to,
+// so a reschedule cut a crew to one (GDXA-1499).
+describe("job page Schedule dialog on an unread crew", () => {
+  async function saveSchedule(w) {
+    const s = w.vm.$.setupState;
+    s.openSchedule();
+    await flushPromises();
+    await s.saveSchedule();
+    await flushPromises();
+    return patchMock.mock.calls.find(([url]) => url === "/api/jobs/job-1")?.[1];
+  }
+
+  it("leaves the crew out when the read failed", async () => {
+    routeGet({ crew: CREW, job: { ...OPEN, scheduled_at: "2026-10-20T14:30:00Z" }, crewFails: true });
+    const w = await mountView();
+    const payload = await saveSchedule(w);
+    expect(payload).toBeTruthy();
+    expect(payload).not.toHaveProperty("assigned_tech_ids");
+    expect(payload.scheduled_at).toBe("2026-10-20T14:30:00.000Z");
+  });
+
+  it("a dialog opened before the read lands sends the crew the read returned", async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    routeGet({ crew: CREW, job: { ...OPEN, scheduled_at: "2026-10-20T14:30:00Z" } });
+    const base = getMock.getMockImplementation();
+    getMock.mockImplementation(async (url) => {
+      if (String(url) === "/api/jobs/job-1/assignments") { await held; }
+      return base(url);
+    });
+    const w = await mountView();
+    const s = w.vm.$.setupState;
+    s.openSchedule();
+    await flushPromises();
+    // The guess (assigned_to alone) is on the form, read-only, and Save waits.
+    expect(s.scheduleForm.tech_ids).toEqual(["t1"]);
+    expect(s.scheduleForm.crewFromRead).toBe(false);
+    await s.saveSchedule();
+    await flushPromises();
+    expect(patchMock).not.toHaveBeenCalled();
+    release();
+    await flushPromises();
+    await s.saveSchedule();
+    await flushPromises();
+    const payload = patchMock.mock.calls.find(([url]) => url === "/api/jobs/job-1")?.[1];
+    expect(payload.assigned_tech_ids).toEqual(["t1", "t2"]);
+  });
+
+  it("sends the crew it read (control)", async () => {
+    routeGet({ crew: CREW, job: { ...OPEN, scheduled_at: "2026-10-20T14:30:00Z" } });
+    const w = await mountView();
+    const payload = await saveSchedule(w);
+    expect(payload.assigned_tech_ids).toEqual(["t1", "t2"]);
+  });
+});

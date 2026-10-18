@@ -681,6 +681,11 @@ class TestAdmission:
         title-only admission test does not cover it."""
         client, db, job, _dep, be, cust = ctx
         _ = cust
+        # The fixture job is completed, and a finished job keeps its crew
+        # (GDXA-1499, test_job_patch_crew_guard.py); the board reassigns a
+        # live one.
+        job.lifecycle_stage, job.completed_at = "scheduled", None
+        db.commit()
         be(str(uuid4()), "dispatcher")
         r = _call(client, "PATCH", f"/api/jobs/{job.id}",
                   {"assigned_tech_ids": [STRANGER_TECH]})
