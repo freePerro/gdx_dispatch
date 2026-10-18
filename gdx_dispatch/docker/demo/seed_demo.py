@@ -17,6 +17,8 @@ What it does:
      tax-follows-the-job rule (tax.service.resolve_rate_for_job), and is paid
      by a Payment row when it is paid. Uses only model-verified fields + enum
      values (tenant_models.py).
+  3. Ensures the dispatch board's holding areas by name, every run, and parks
+     a few open jobs in them, so the board's lanes and "Move to…" show.
 
 Idempotent-ish: if the tenant already has live customers, business seeding is
 skipped. The nightly reset (reset-demo.sh) wipes the DB first and re-runs this,
@@ -47,6 +49,7 @@ from gdx_dispatch.core.pricing_provenance import build_invoice_line
 from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.models.tenant_models import (
     Customer,
+    HoldingArea,
     Invoice,
     Job,
     JobAssignment,
@@ -171,6 +174,29 @@ TECH_JOBS = [
     (8, "Weather seal + roller package", 15, "scheduled"),
 ]
 
+# The dispatch board's holding areas (GDXA-1454). With none, the board draws
+# no lanes and hides "Move to…" (DispatchView gates both on every area but
+# Ready to Schedule). The names are the ones the app routes to itself:
+# routers/holding_areas.DEFAULT_AREAS, plus "Order Doors", where an accepted
+# estimate's job lands (routers/estimates). Ensured by name on every run, so
+# a re-seed adds only the missing ones.  (name, color)
+HOLDING_AREAS = [
+    ("Ready to Schedule", "#10b981"),
+    ("Needs Parts", "#f59e0b"),
+    ("Waiting on Customer", "#8b5cf6"),
+    ("Order Doors", "#0ea5e9"),
+]
+
+# Undated, open jobs parked in a lane. An undated open job is on every day
+# the board opens, so the lanes are never empty.
+#   (customer_index, title, job_type, lifecycle, area_name)
+PARKED_JOBS = [
+    (2, "Commercial opener replacement — motor on backorder", "Repair", "service_call", "Needs Parts"),
+    (9, "Rusted bottom bracket pair — parts ordered", "Repair", "service_call", "Needs Parts"),
+    (4, "Door style choice — sent three quotes", "Service", "service_call", "Waiting on Customer"),
+    (6, "Two 16×7 insulated doors — on order", "Installation", "scheduled", "Order Doors"),
+]
+
 
 def _money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -249,6 +275,21 @@ def seed() -> None:
             db.commit()
             print(f"[seed] technician profile {tech_id} -> {tech_user.email}")
 
+        # 1d. The board's holding areas, by name, every run.
+        live_areas = {
+            a.name: a.id for a in db.execute(
+                select(HoldingArea).where(HoldingArea.deleted_at.is_(None))
+            ).scalars()
+        }
+        for order, (name, color) in enumerate(HOLDING_AREAS):
+            if name not in live_areas:
+                area = HoldingArea(id=str(uuid4()), company_id=tenant_id, name=name,
+                                   color=color, sort_order=order, created_at=NOW)
+                db.add(area)
+                live_areas[name] = area.id
+                print(f"[seed] holding area {name}")
+        db.commit()
+
         # 2. Skip business seeding if data already exists.
         existing = db.execute(
             select(Customer).where(
@@ -287,6 +328,18 @@ def seed() -> None:
         db.add_all(jobs)
         db.flush()
         print(f"[seed] {len(jobs)} jobs")
+
+        for ci, title, jtype, lifecycle, area_name in PARKED_JOBS:
+            db.add(Job(
+                customer_id=cust_ids[ci], title=title, job_type=jtype,
+                job_number=allocate_job_number(tenant_id, customer_name=CUSTOMERS[ci][0]),
+                lifecycle_stage=lifecycle, dispatch_status="unassigned",
+                billing_status="unbilled", status=lifecycle,
+                holding_area_id=live_areas[area_name],
+                priority="Normal", is_demo=True, source="demo",
+                company_id=tenant_id,
+            ))
+        print(f"[seed] {len(PARKED_JOBS)} jobs parked in holding areas")
 
         # Today's route for the demo tech (assigned_to = Technician.id).
         if tech_id:
