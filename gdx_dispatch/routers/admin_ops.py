@@ -341,6 +341,7 @@ def deactivate_user(
     if u is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    was_active = bool(u.active)
     u.active = False
     u.updated_at = datetime.now(UTC)
     db.commit()
@@ -351,7 +352,7 @@ def deactivate_user(
         action="user_deactivated",
         entity_type="user",
         entity_id=id,
-        details={"active": False},
+        details={"active": False, "old_active": was_active},
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )
@@ -647,7 +648,14 @@ def update_role_permissions(
 
     now_dt = datetime.now(UTC)
     existing = db.execute(select(RolePermission).where(RolePermission.role == body.role)).scalar_one_or_none()
+    # The overwrite below is the only copy of the prior set; the audit row
+    # keeps it (GDXA-1461).
+    old_permissions = None
     if existing:
+        try:
+            old_permissions = json.loads(existing.permissions or "null")
+        except (TypeError, ValueError):
+            old_permissions = existing.permissions
         existing.permissions = serialized
         existing.updated_at = now_dt
     else:
@@ -660,7 +668,7 @@ def update_role_permissions(
         action="permissions_changed",
         entity_type="role_permissions",
         entity_id=body.role,
-        details={"permissions": body.permissions},
+        details={"permissions": body.permissions, "old_permissions": old_permissions},
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )

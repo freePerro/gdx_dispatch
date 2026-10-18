@@ -538,6 +538,10 @@ def update_role(
         details={
             "fields": list(payload.model_dump(exclude_unset=True).keys()),
             "name": row.name,
+            # A rename or new description overwrites the only copy (GDXA-1461).
+            "before_name": before["name"],
+            "before_description": before["description"],
+            "after_description": row.description,
             "before_permissions": before["permissions"],
             "after_permissions": row.permissions,
         },
@@ -720,6 +724,7 @@ def assign_role(
     # lower set (an owner stuck on admin perms, 2026-06-26). change_role already
     # syncs both directions — assign_role must too. (Custom roles leave
     # users.role alone; the snapshot drives their perms.)
+    details: dict[str, Any] = {"user_id": user_id, "role_id": str(role_uuid), "role_name": role.name}
     if role.name in BUILTIN_ROLES:
         from gdx_dispatch.models.tenant_models import User as _User
         try:
@@ -727,6 +732,8 @@ def assign_role(
         except (ValueError, AttributeError):
             target = None
         if target is not None and (target.role or "") != role.name:
+            # The audit row keeps the role this overwrites (GDXA-1461).
+            details["users_role"] = {"from": target.role, "to": role.name}
             target.role = role.name
             target.updated_at = utcnow()
             db.commit()
@@ -737,7 +744,7 @@ def assign_role(
         action="user_role_assigned",
         entity_type="user_role_assignment",
         entity_id=str(assignment.id),
-        details={"user_id": user_id, "role_id": str(role_uuid), "role_name": role.name},
+        details=details,
         request=request,
     )
     # Privilege change → revoke the user's sessions so an unexpired token can't
