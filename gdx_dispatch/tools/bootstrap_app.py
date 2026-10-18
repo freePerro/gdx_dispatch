@@ -88,6 +88,21 @@ def _admin_banner(title: str, email: str, password: str, *, generated: bool) -> 
     )
 
 
+def _revive_owner(db, tenant_id: str, user, password_hash: str) -> None:
+    """Restore a soft-deleted admin row in place as the tenant's owner."""
+    user.deleted_at = None
+    user.active = True
+    user.role = "owner"
+    user.password_hash = password_hash
+    user.must_change_password = True
+    # A surviving assignment row outranks users.role in the permission
+    # resolver, so the restored owner would keep the tombstone's old role
+    # (GDXA-1453).
+    from gdx_dispatch.routers.users import _sync_user_role_assignment
+
+    _sync_user_role_assignment(db, tenant_id, str(user.id), "owner")
+
+
 def create_orm_tables() -> None:
     """Create the ORM-managed (TenantBase) tables (idempotent; checkfirst).
 
@@ -171,11 +186,7 @@ def main() -> int:
             # The first account on a self-hosted single-tenant deploy owns the
             # whole tenant.
             if tombstoned is not None:
-                tombstoned.deleted_at = None
-                tombstoned.active = True
-                tombstoned.role = "owner"
-                tombstoned.password_hash = _hash_password(admin_password)
-                tombstoned.must_change_password = True
+                _revive_owner(db, tenant_id, tombstoned, _hash_password(admin_password))
                 revived = True
             else:
                 db.add(
