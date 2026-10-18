@@ -99,18 +99,24 @@ def test_seeded_tech_can_get_and_post_chat_on_every_route_job(seeded):
         assert bodies == ["On my way"], job.title
 
 
-def test_without_the_crew_row_the_seeded_tech_is_refused(seeded):
-    """Control: the crew row is what grants access. Delete it and the same
-    job is invisible, which is the demo as it was before this fix."""
+def test_without_the_crew_row_or_the_assignment_the_seeded_tech_is_refused(seeded):
+    """Control: since GDXA-1541 chat reads ``assigned_to`` as the technician
+    id it is, so either the crew row or ``assigned_to`` grants access. Drop
+    the crew row and the tech still gets in; clear ``assigned_to`` too and
+    the same job is invisible."""
     db, user = seeded["db"], seeded["user"]
-    job_id = str(seeded["route"][0].id)
-    assert mobile_chat._job_visible_to_user(db, job_id, user) is True
+    job = seeded["route"][0]
+    job_id = str(job.id)
+    assert mobile_chat._job_visible_to_user(db, TENANT, job_id, user) is True
     for row in db.execute(
         select(JobAssignment).where(JobAssignment.job_id == job_id)
     ).scalars():
         db.delete(row)
     db.flush()
-    assert mobile_chat._job_visible_to_user(db, job_id, user) is False
+    assert mobile_chat._job_visible_to_user(db, TENANT, job_id, user) is True
+    job.assigned_to = None
+    db.flush()
+    assert mobile_chat._job_visible_to_user(db, TENANT, job_id, user) is False
     got = mobile_chat.get_job_chat(job_id=job_id, request=_req(), current_user=user, db=db)
     assert got.status_code == 404
     db.rollback()
