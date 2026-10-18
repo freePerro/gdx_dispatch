@@ -107,29 +107,9 @@ class TestDispatchBoard:
         )
         console_tracker.assert_no_errors("DISP-03")
 
-    def test_disp_04_websocket_connection(self, navigate, console_tracker, authenticated_page):
-        """DISP-04: WebSocket connection is established on dispatch page load."""
-        page = navigate("/dispatch")
-        page.wait_for_timeout(3000)  # allow WS to connect
-
-        # Check for WebSocket status indicator in the UI
-        ws_indicator = page.locator(
-            "[data-testid='ws-status'], .ws-status, .connection-status, "
-            "[class*='websocket'], [class*='connection']"
-        )
-        # If a WS indicator exists, it should be visible
-        if ws_indicator.count() > 0:
-            expect(ws_indicator.first).to_be_visible(timeout=5000)
-
-        # Alternatively, check via JS that a WebSocket was opened
-        page.evaluate("""() => {
-            // Check if any WebSocket is tracked by the app
-            return !!(window.__ws || window._ws || window.dispatchSocket ||
-                     document.querySelector('[data-ws-connected]'));
-        }""")
-        # We don't hard-fail if WS detection isn't possible from outside,
-        # but we do assert no console errors
-        console_tracker.assert_no_errors("DISP-04")
+    # DISP-04 (WebSocket connects) was deleted in GDXA-1562 with /ws/dispatch;
+    # the board never opened a socket, and DISP-01 already asserts no console
+    # errors on /dispatch.
 
     def test_disp_05_websocket_status_badge(self, navigate, console_tracker, authenticated_page):
         """DISP-05: WebSocket status badge shows connection state."""
@@ -216,23 +196,8 @@ class TestDispatchBoard:
         page.wait_for_timeout(1000)
         console_tracker.assert_no_errors("DISP-09")
 
-    def test_disp_10_websocket_auth(self, api):
-        """DISP-10: WebSocket without valid token is rejected."""
-        import httpx
-
-        # Attempt WS upgrade without auth — expect rejection
-        # We test the HTTP upgrade endpoint returns 401/403
-        resp = httpx.get(
-            f"{BASE_URL}/ws/dispatch",
-            headers={"Upgrade": "websocket", "Connection": "Upgrade"},
-            verify=False,
-            timeout=5,
-            follow_redirects=False,
-        )
-        # Should get 4xx (auth error or bad request) — not 200
-        assert resp.status_code in (400, 401, 403, 404, 426), (
-            f"WS endpoint without auth returned unexpected {resp.status_code}"
-        )
+    # DISP-10 (WebSocket auth) was deleted in GDXA-1562 with /ws/dispatch
+    # itself: the endpoint had no client and no server-side producer.
 
     # DISP-11 (tenant isolation via a forged x-tenant-id) was deleted in
     # GDXA-1535: the system is single-tenant, isolation is the connection, and

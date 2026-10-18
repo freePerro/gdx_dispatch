@@ -16,7 +16,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispa
 
 - Routers: `jobs` (4,200 lines — read the section you touch, and its tests),
   `job_assignments`, `job_costing`, `job_diagnosis`, `job_hazards_receipts`,
-  `dispatch_scheduling`, `dispatch_ws`, `scheduling`, `appointments`,
+  `dispatch_scheduling`, `scheduling`, `appointments`,
   `planner`, `tasks`, `service_calls`, `service_triggers`,
   `service_agreements`, `holding_areas`, `checklists`, `safety_checklist`,
   `install_sheet`, `maintenance`, `notes`, `labor`, `labor_variance`,
@@ -97,8 +97,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispa
   `schedule-from-job.spec.js`, `dispatch-completed-stays.spec.js`,
   `closeout-card.spec.js`, `job-costing-panel.spec.js`.
 - Browser: the dispatcher role on Dispatch and JobDetail, light and dark,
-  desktop. Drag-and-drop and the websocket board only prove in a real
-  browser.
+  desktop. Drag-and-drop only proves in a real browser.
 
 ## Unattended runs
 
