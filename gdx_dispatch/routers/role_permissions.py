@@ -47,6 +47,7 @@ from gdx_dispatch.core.permissions import (  # noqa: E402
     PERMISSIONS,
     PLATFORM_LOCKED_ROLES,
     WILDCARD,
+    assert_can_assign_role,
 )
 from gdx_dispatch.core.plugin_permissions import (  # noqa: E402
     catalog_entries as plugin_catalog_entries,
@@ -280,6 +281,45 @@ def _enforce_delegation_cap(
             status_code=403,
             detail=f"Cannot grant permissions you don't have: {overreach}",
         )
+
+
+def _role_grant_set(role: Role) -> list[str]:
+    """The permissions an assignment of ``role`` actually confers.
+
+    owner/admin resolve from BUILTIN_ROLES whatever their DB row says (see
+    PLATFORM_LOCKED_ROLES); every other role confers its stored snapshot.
+    An unreadable snapshot refuses rather than reading as empty: the resolver
+    reads it as no permissions, so the assignment would silently strip the
+    user to nothing.
+    """
+    if role.is_system and role.name in PLATFORM_LOCKED_ROLES:
+        return list(BUILTIN_ROLES[role.name])
+    try:
+        perms = json.loads(role.permissions) if role.permissions else []
+        if not isinstance(perms, list):
+            raise ValueError(f"snapshot is a {type(perms).__name__}, not a list")
+    except ValueError:
+        log.exception("_role_grant_set_failed role=%s", role.id)
+        raise HTTPException(
+            status_code=409,
+            detail="Role permissions are unreadable; save the role again before assigning it",
+        ) from None
+    return perms
+
+
+def _target_db_role(db: Session, user_id: str) -> str | None:
+    """users.role of the assignment's target, or None when there is no such row.
+
+    A user_id that is not a UUID names no users row (the column is a string;
+    legacy and test ids are not UUIDs), so there is no role to protect.
+    """
+    from gdx_dispatch.models.tenant_models import User as _User
+    try:
+        uid = UUID(str(user_id))
+    except (ValueError, AttributeError):  # noqa: silent-failure — None for a non-UUID is the contract: no users row, no users.role
+        log.info("role target user_id=%r is not a users.id; no users.role to check", user_id)
+        return None
+    return db.execute(select(_User.role).where(_User.id == uid)).scalar_one_or_none()
 
 
 def _audit(
@@ -681,6 +721,13 @@ def assign_role(
 
     role = _get_role_scoped(db, role_uuid, tenant_id)
 
+    # The same two checks every other role writer runs (GDXA-1469): only an
+    # owner grants the admin/owner tier or touches a user already in it (any
+    # assignment changes what the resolver hands that user), and nobody confers
+    # permissions they do not hold themselves.
+    assert_can_assign_role(user, role.name, _target_db_role(db, user_id))
+    _enforce_delegation_cap(request, _role_grant_set(role))
+
     from gdx_dispatch.models.tenant_models import User as _User
     try:
         target = db.execute(select(_User).where(_User.id == UUID(str(user_id)))).scalar_one_or_none()
@@ -725,6 +772,11 @@ def assign_role(
     stale_names = dict(
         db.execute(select(Role.id, Role.name).where(Role.id.in_([a.role_id for a in stale]))).all()
     ) if stale else {}
+    # Each replaced row is an unassign: run unassign_role's check on its name,
+    # or an admin strips an admin row that DELETE would refuse (users.role and
+    # the assignment rows can disagree).
+    for name in stale_names.values():
+        assert_can_assign_role(user, name, target.role if target is not None else None)
     removed = [{"role_id": str(a.role_id), "role_name": stale_names.get(a.role_id)} for a in stale]
     for a in stale:
         db.delete(a)
@@ -807,6 +859,12 @@ def unassign_role(
     ).scalar_one_or_none()
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
+    # Removing an assignment changes the target's permissions as surely as
+    # adding one (GDXA-1469): owner-only for an admin/owner role or user.
+    removed_role_name = db.execute(
+        select(Role.name).where(Role.id == role_id)
+    ).scalar_one_or_none()
+    assert_can_assign_role(user, removed_role_name, _target_db_role(db, user_id))
     db.delete(assignment)
     db.commit()
     _audit(
