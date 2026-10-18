@@ -35,6 +35,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.job_access import job_belongs_to_user
+from gdx_dispatch.core.link_sms import as_uuid
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.core.user_display import resolve_author_name
@@ -70,14 +71,6 @@ def _tenant_id(request: Request) -> str:
 
 def _user_id(user: dict[str, Any]) -> str:
     return str(user.get("user_id") or user.get("sub") or "")
-
-
-def _as_uuid(value: str) -> _UUID | None:
-    """``value`` as a UUID, or None when it is not one (binds as NULL)."""
-    try:
-        return _UUID(str(value))
-    except (ValueError, TypeError):
-        return None
 
 
 def _role(user: dict[str, Any]) -> str:
@@ -370,7 +363,7 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
                     ) s WHERE user_id IS NOT NULL
                     """
                 ).bindparams(bindparam("jid_uuid", type_=Uuid(as_uuid=True))),
-                {"jid": job_id, "jid_uuid": _as_uuid(job_id)},
+                {"jid": job_id, "jid_uuid": as_uuid(job_id)},
             ).all()
         for r in rows:
             try:
