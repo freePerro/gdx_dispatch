@@ -37,6 +37,7 @@ import os
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import uuid4
 
 from sqlalchemy import select
 from werkzeug.security import generate_password_hash
@@ -48,6 +49,7 @@ from gdx_dispatch.models.tenant_models import (
     Customer,
     Invoice,
     Job,
+    JobAssignment,
     Payment,
     Technician,
     User,
@@ -174,6 +176,17 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def _assign_lead(db, job: Job, tech_id: str) -> None:
+    # The crew row the app writes beside assigned_to (jobs._set_job_assignments).
+    # Mobile chat, the day summary and visits read job_assignments, so a job
+    # with only assigned_to is invisible to its own tech there (GDXA-1551).
+    db.flush()
+    db.add(JobAssignment(
+        id=str(uuid4()), job_id=str(job.id), tech_id=tech_id,
+        is_lead=True, assigned_at=NOW,
+    ))
+
+
 def seed() -> None:
     tenant_id = company_id()
     db = SessionLocal()
@@ -280,7 +293,7 @@ def seed() -> None:
             tech_job_count = 0
             for ci, title, hour, lifecycle in TECH_JOBS:
                 sched = NOW.replace(hour=hour, minute=0, second=0, microsecond=0)
-                db.add(Job(
+                route_job = Job(
                     customer_id=cust_ids[ci], title=title, job_type="Service",
                     job_number=allocate_job_number(tenant_id, customer_name=CUSTOMERS[ci][0]),
                     lifecycle_stage=lifecycle,
@@ -289,9 +302,11 @@ def seed() -> None:
                     scheduled_at=sched, assigned_to=tech_id,
                     priority="Normal", is_demo=True, source="demo",
                     company_id=tenant_id,
-                ))
+                )
+                db.add(route_job)
+                _assign_lead(db, route_job, tech_id)
                 tech_job_count += 1
-            print(f"[seed] {tech_job_count} jobs on the tech's route for today")
+            print(f"[seed] {tech_job_count} jobs on the tech's route for today, each with its crew row")
 
             # An INSTALL job on the tech's route today + the door/opener
             # equipment (CustomerEquipment is the app's real door/equipment
@@ -306,7 +321,7 @@ def seed() -> None:
             )
             db.add(install_cust)
             db.flush()
-            db.add(Job(
+            install_job = Job(
                 customer_id=install_cust.id,
                 job_number=allocate_job_number(tenant_id, customer_name=install_cust.name),
                 title="New garage door installation — 9×7 insulated steel",
@@ -316,7 +331,9 @@ def seed() -> None:
                 scheduled_at=NOW.replace(hour=9, minute=0, second=0, microsecond=0),
                 assigned_to=tech_id, priority="High", is_demo=True,
                 source="demo", company_id=tenant_id,
-            ))
+            )
+            db.add(install_job)
+            _assign_lead(db, install_job, tech_id)
             today = NOW.date()
             db.add(CustomerEquipment(
                 customer_id=install_cust.id, equipment_type="garage_door",
