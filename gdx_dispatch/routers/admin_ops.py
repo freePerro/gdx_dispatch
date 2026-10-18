@@ -297,13 +297,38 @@ def patch_user(
     if current is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    next_role = body.role if body.role is not None else (current.role or "user")
+    old_role = current.role or "user"
+    next_role = body.role if body.role is not None else old_role
     next_active = body.active if body.active is not None else bool(current.active)
     assert_can_assign_role(_, next_role, current.role)
+    role_changed = next_role != old_role
+    if role_changed:
+        from gdx_dispatch.core.roles import is_role_admin_actor
+        from gdx_dispatch.core.tenant import company_id
+        from gdx_dispatch.routers.users import _assert_not_last_owner, _sync_user_role_assignment
+
+        tenant_id = company_id()
+        # Once the demotion below takes effect, the last owner could demote
+        # themselves out of the tier no one else can grant.
+        if is_role_admin_actor(old_role) and not is_role_admin_actor(next_role):
+            _assert_not_last_owner(db, tenant_id, current, action="demote")
+        # The resolver trusts a UserRoleAssignment row over users.role, so a
+        # role write that leaves the old row behind keeps the old permissions
+        # (GDXA-1453). Rewritten in the same commit. Not on an unchanged role:
+        # a custom-role assignment beside an unchanged users.role is intended.
+        _sync_user_role_assignment(db, tenant_id, str(current.id), next_role)
     current.role = next_role
     current.active = next_active
     current.updated_at = datetime.now(UTC)
     db.commit()
+    revoked = 0
+    if role_changed:
+        try:
+            from gdx_dispatch.core.auth_revoke import revoke_user_sessions
+
+            revoked = revoke_user_sessions(str(current.id), reason="role_changed")
+        except Exception:
+            log.exception("patch_user_revoke_failed user_id=%s", current.id)
     action = "user_deactivated" if next_active is False else "user_updated"
     log_audit_event_sync(
         db=db,
@@ -312,7 +337,7 @@ def patch_user(
         action=action,
         entity_type="user",
         entity_id=id,
-        details={"role": next_role, "active": bool(next_active)},
+        details={"role": next_role, "old_role": old_role, "active": bool(next_active), "sessions_revoked": revoked},
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )
