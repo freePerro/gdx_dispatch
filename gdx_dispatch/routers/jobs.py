@@ -772,7 +772,7 @@ def list_jobs(
             key = _canon_status(cr.get("st"))
             status_counts[key] = status_counts.get(key, 0) + int(cr.get("n") or 0)
         rows = db.execute(
-            _uuid_text(
+            _uuid_text(  # noqa: RAWENC1  # address here is cl.address (customer_locations, plaintext), never c.address
                 "SELECT j.id, j.job_number, j.title, j.description, j.status, j.lifecycle_stage, "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 "j.dispatch_status, j.scheduled_at, j.completed_at, "
                 "j.priority, j.job_type, j.customer_id, j.assigned_to, j.holding_area_id, "
