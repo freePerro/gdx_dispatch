@@ -1,4 +1,4 @@
-"""The demo seed's invoices reconcile (GDXA-951).
+"""The demo seed's invoices reconcile (GDXA-951); its holding areas show (GDXA-1454).
 
 The public demo opened on INV-2026-1001: $612.40 + $50.52 sales tax, no job,
 no lines, and the paid invoices were "paid" by a zeroed balance with no
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, Payment
+from gdx_dispatch.models.tenant_models import HoldingArea, Invoice, InvoiceLine, Job, Payment
 from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
 from gdx_dispatch.modules.tax.service import is_install_lane
 from gdx_dispatch.tests.conftest import make_fresh_db, production_sessionmaker
@@ -30,28 +30,34 @@ def _cents(value) -> Decimal:
 
 
 @pytest.fixture
-def seeded(monkeypatch):
+def seed_demo(monkeypatch):
+    """The seed module, pointed at a fresh in-memory DB (``.SessionLocal``)."""
     spec = importlib.util.spec_from_file_location("seed_demo_under_test", SEED_PATH)
     seed_demo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed_demo)
 
     engine = make_fresh_db()
-    Session = production_sessionmaker(engine)
     numbers = itertools.count(1)
-    monkeypatch.setattr(seed_demo, "SessionLocal", Session)
+    monkeypatch.setattr(seed_demo, "SessionLocal", production_sessionmaker(engine))
     monkeypatch.setattr(seed_demo, "company_id", lambda: TENANT)
     monkeypatch.setattr(
         seed_demo, "allocate_job_number",
         lambda _tenant, customer_name=None: f"J-{next(numbers):04d}",
     )
-    seed_demo.seed()
+    try:
+        yield seed_demo
+    finally:
+        engine.dispose()
 
-    db = Session()
+
+@pytest.fixture
+def seeded(seed_demo):
+    seed_demo.seed()
+    db = seed_demo.SessionLocal()
     try:
         yield db
     finally:
         db.close()
-        engine.dispose()
 
 
 def _invoices(db):
@@ -128,3 +134,44 @@ def test_app_recalculation_leaves_every_seeded_invoice_unchanged(seeded):
                  _cents(inv.total), _cents(inv.balance_due))
         assert after == before, inv.invoice_number
     db.rollback()
+
+
+def test_seed_parks_open_jobs_in_the_boards_holding_areas(seeded):
+    """GDXA-1454: with no holding area but Ready to Schedule, the dispatch
+    board draws no lanes and hides "Move to…". Every parking area has a job
+    in it, and each parked job is undated and open, which /api/jobs lists on
+    every day the board opens (routers/jobs list_jobs' date clause)."""
+    db = seeded
+    areas = {
+        a.id: a.name for a in db.execute(
+            select(HoldingArea).where(HoldingArea.deleted_at.is_(None))
+        ).scalars()
+    }
+    parking = {aid for aid, name in areas.items() if name != "Ready to Schedule"}
+    assert len(parking) >= 2, areas
+
+    parked = db.execute(
+        select(Job).where(Job.holding_area_id.is_not(None), Job.deleted_at.is_(None))
+    ).scalars().all()
+    assert {j.holding_area_id for j in parked} == parking
+    for job in parked:
+        assert job.scheduled_at is None, job.title
+        assert job.lifecycle_stage not in ("completed", "cancelled"), job.title
+        assert job.customer_id is not None, job.title
+
+
+def test_reseed_adds_no_second_copy_of_any_holding_area(seed_demo):
+    seed_demo.seed()
+    seed_demo.seed()
+    db = seed_demo.SessionLocal()
+    try:
+        names = db.execute(
+            select(HoldingArea.name).where(HoldingArea.deleted_at.is_(None))
+        ).scalars().all()
+        parked = db.execute(
+            select(Job).where(Job.holding_area_id.is_not(None))
+        ).scalars().all()
+    finally:
+        db.close()
+    assert sorted(names) == sorted(name for name, _color in seed_demo.HOLDING_AREAS)
+    assert len(parked) == len(seed_demo.PARKED_JOBS)
