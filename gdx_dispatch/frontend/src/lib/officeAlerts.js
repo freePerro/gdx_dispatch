@@ -17,7 +17,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { getServerUrl } from './serverConfig';
 import { destinationFor } from './notificationDestinations';
-import { isPlannerApp } from './appMode';
 
 const OfficeAlerts = registerPlugin('OfficeAlerts');
 
@@ -102,10 +101,8 @@ async function _mintAndStart(api) {
     .finally(() => clearTimeout(timer));
   // The owner is recorded before the service has the token, never after.
   try { localStorage.setItem(OWNER_KEY, String(owner || '')); } catch { /* ignore */ }
-  // The plugin revokes the token this one replaces. GDX Planner's feed carries
-  // the user's own planner reminders; GDX Dispatch's the office's alerts.
-  const scope = isPlannerApp() ? 'planner' : 'office';
-  return { ...OFF, ...(await OfficeAlerts.start({ serverUrl, token, scope })) };
+  // The plugin revokes the token this one replaces.
+  return { ...OFF, ...(await OfficeAlerts.start({ serverUrl, token })) };
 }
 
 /**

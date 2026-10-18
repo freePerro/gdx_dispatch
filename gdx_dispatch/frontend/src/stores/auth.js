@@ -159,7 +159,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     // NOT cleared here: `gdx_draft_*` (useFormDraft's unsaved form text).
     // Clearing them looks right by analogy with the route cache above, and is
-    // wrong: useIdleLogout calls logout() on the inactivity timer (line 60),
+    // wrong: useIdleLogout calls logout() on the inactivity timer (onTimeout),
     // and every refresh-401 lands here too. Wiping drafts on this path means
     // stepping away from the desk destroys the half-typed note the feature
     // exists to keep — the original bug, back through a side door. The drafts

@@ -35,13 +35,14 @@ the seed inserted a SECOND row and every settings page showed defaults
 spelling per dialect. The read, the seed and the audited write all go through
 them; a raw `str(tenant_id)` bind against this table is the defect, not a
 style choice. Not every site is converted yet: the maintainer ruled the fix
-narrow (two files), so raw dashed binds remain in `routers/session_policy.py`,
-`core/settings_flags.py`, `modules/numbering/service.py`,
-`modules/payroll/router.py` and three domain modules (`estimates_features`,
+narrow (two files), so raw dashed binds remain in `core/settings_flags.py`,
+`modules/numbering/service.py` and three domain modules (`estimates_features`,
 `catalog_policy`, `billing_terms`) — listed in GDXA-292. On SQLite those now
-address a different row than this helper; `test_settings_row.py` pins the
-session-policy write. GDXA-382 (2026-10-09) converted `routers/jobs.py`
-(`_load_workflow_flags`), `modules/dispatch_settings` and `modules/maps_provider`.
+address a different row than this helper. GDXA-382 (2026-10-09) converted
+`routers/jobs.py` (`_load_workflow_flags`), `modules/dispatch_settings` and
+`modules/maps_provider`; GDXA-1506 (2026-10-18) converted
+`routers/session_policy.py` and the `modules/payroll/router.py` config
+endpoints, both now writing through `core/settings_audit.py`.
 """
 
 from __future__ import annotations

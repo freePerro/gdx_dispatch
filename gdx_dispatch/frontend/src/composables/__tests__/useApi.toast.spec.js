@@ -11,7 +11,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 import PrimeVue from 'primevue/config';
 import ToastService from 'primevue/toastservice';
 import Toast from 'primevue/toast';
-import { useApi } from '../useApi';
+import { useApi, resetOutageToasts, OUTAGE_TOAST_WINDOW_MS } from '../useApi';
 
 function mkResponse(body, { ok = true, status = 200 } = {}) {
   return {
@@ -56,6 +56,7 @@ describe('useApi toast contract', () => {
     toastSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     // JSDOM persists document.body across tests in a single file; clear toast container
     document.body.innerHTML = '';
+    resetOutageToasts();
   });
 
   afterEach(() => {
@@ -315,5 +316,146 @@ describe('useApi delete alias toast contract (contract-gap Tier 1.1)', () => {
     expect(url).toBe('/api/vendors/v1');
     expect(init.method).toBe('DELETE');
     wrapper.unmount();
+  });
+});
+
+describe('useApi outage toasts (GDXA-1490)', () => {
+  let fetchMock;
+  let mounted;
+
+  // PrimeVue's toast bus is global: a harness left mounted renders the next
+  // test's toasts too.
+  function harness() {
+    const h = makeHarness();
+    mounted.push(h.wrapper);
+    return h;
+  }
+
+  beforeEach(() => {
+    mounted = [];
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    document.body.innerHTML = '';
+    resetOutageToasts();
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    sessionStorage.removeItem('gdx_access_token');
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function count(text) {
+    return document.body.innerHTML.split(text).length - 1;
+  }
+
+  // Every failing call is followed by its client-error report POST.
+  function queue502s(n) {
+    for (let i = 0; i < n; i++) {
+      fetchMock
+        .mockResolvedValueOnce(mkResponse(undefined, { ok: false, status: 502 }))
+        .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    }
+  }
+
+  it('several 5xx from separate useApi instances inside the window toast once', async () => {
+    queue502s(4);
+    const a = harness().api;
+    const b = harness().api;
+
+    for (const api of [a, b, a, b]) {
+      await expect(api.get('/api/poll')).rejects.toThrow();
+    }
+    await nextTick();
+    await nextTick();
+
+    // Two harnesses each render a Toast container, so one toast shows twice.
+    expect(count('Something went wrong')).toBe(2);
+  });
+
+  it('a 5xx after the window toasts again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    queue502s(2);
+    const { api } = harness();
+
+    await expect(api.get('/api/poll')).rejects.toThrow();
+    await nextTick();
+    expect(count('Something went wrong')).toBe(1);
+
+    vi.setSystemTime(Date.now() + OUTAGE_TOAST_WINDOW_MS + 1);
+    await expect(api.get('/api/poll')).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+    expect(count('Something went wrong')).toBe(2);
+  });
+
+  it('a 5xx on /auth/refresh behind concurrent 401 polls toasts once and keeps the session', async () => {
+    sessionStorage.setItem('gdx_access_token', 'stale');
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/auth/refresh') return mkResponse(undefined, { ok: false, status: 502 });
+      if (url === '/api/feedback/client-error') return mkResponse({});
+      return mkResponse({ detail: 'expired' }, { ok: false, status: 401 });
+    });
+    const { api, router } = harness();
+    const a = harness().api;
+
+    const results = await Promise.allSettled([
+      api.get('/api/poll/1'), a.get('/api/poll/2'), api.get('/api/poll/3'), a.get('/api/poll/4'),
+    ]);
+    await nextTick();
+    await nextTick();
+
+    expect(results.every((r) => r.status === 'rejected' && r.reason.status === 502)).toBe(true);
+    expect(count('Something went wrong')).toBe(2); // one toast, two Toast containers
+    expect(sessionStorage.getItem('gdx_access_token')).toBe('stale');
+    expect(router.currentRoute.value.path).not.toBe('/login');
+  });
+
+  it('a 5xx just after the first toast has gone still toasts', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    queue502s(2);
+    const { api } = harness();
+
+    await expect(api.get('/api/poll')).rejects.toThrow();
+    vi.setSystemTime(Date.now() + 5000); // the first toast's 4s life is over
+    await expect(api.post('/api/save', {})).rejects.toThrow();
+    await nextTick();
+    await nextTick();
+    expect(count('Something went wrong')).toBe(2);
+  });
+
+  it('repeated network failures toast once inside the window', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    const { api } = harness();
+
+    for (let i = 0; i < 3; i++) {
+      await expect(api.get('/api/poll')).rejects.toThrow();
+    }
+    await nextTick();
+    await nextTick();
+    expect(count('Network error')).toBe(1);
+  });
+
+  it('the window does not swallow 403 or 429 toasts', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: 'Forbidden' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }))
+      .mockResolvedValueOnce(mkResponse({ detail: 'Forbidden' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: false, status: 429 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: false, status: 429 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+    const { api } = harness();
+
+    for (let i = 0; i < 4; i++) {
+      await expect(api.get('/api/foo')).rejects.toThrow();
+    }
+    await nextTick();
+    await nextTick();
+    expect(count('Permission denied')).toBe(2);
+    expect(count('Slow down')).toBe(2);
   });
 });

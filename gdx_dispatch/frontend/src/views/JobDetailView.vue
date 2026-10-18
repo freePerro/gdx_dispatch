@@ -3507,7 +3507,7 @@ onMounted(async () => {
 .activity-list { list-style: none; padding: 0; margin: 0; }
 .activity-row { display: flex; gap: 0.75rem; padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
 .activity-row:last-child { border-bottom: none; }
-.activity-symbol { width: 12px; height: 12px; background: var(--accent-b); border-radius: 50%; margin-top: 4px; }
+.activity-symbol { width: 12px; height: 12px; background: var(--p-primary-color); border-radius: 50%; margin-top: 4px; }
 .activity-text { font-size: 0.9rem; margin: 0; }
 .activity-meta { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--p-text-muted-color); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
