@@ -83,7 +83,6 @@ gdx_dispatch/routers/mobile_invoicing.py|S1-except_logs_and_returns_empty|98b859
 gdx_dispatch/routers/mobile_invoicing.py|S1-except_logs_and_returns_empty|98b85992322d1fd8
 gdx_dispatch/routers/mobile_quoting.py|S1-except_logs_and_returns_empty|98b85992322d1fd8
 gdx_dispatch/routers/parts_needed.py|S1-except_logs_and_returns_empty|4906bb5409cc34d7
-gdx_dispatch/routers/payroll.py|S1-except_logs_and_returns_empty|fde3da240cb3bc43
 gdx_dispatch/routers/pdf.py|S1-except_logs_and_returns_empty|98b85992322d1fd8
 gdx_dispatch/routers/pdf.py|S1-except_logs_and_returns_empty|d4c0420af81ee6c6
 gdx_dispatch/routers/performance.py|S1-except_logs_and_returns_empty|01902bed253b1af1

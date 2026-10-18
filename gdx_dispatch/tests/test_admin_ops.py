@@ -303,6 +303,78 @@ def test_patch_admin_user_same_role_keeps_a_custom_assignment(db: Session):
     revoke.assert_not_called()
 
 
+def _stored_role(db: Session, user_id: str) -> str:
+    return db.execute(text("SELECT role FROM users WHERE id = :id"), {"id": uuid.UUID(user_id).hex}).scalar_one()
+
+
+@pytest.mark.parametrize("stored, sent", [("technician", "Technician"), ("technician", " TECH "), ("tech", "technician")])
+def test_patch_admin_user_spelling_variant_of_current_role_is_a_no_op(db: Session, stored: str, sent: str):
+    """GDXA-1460: an un-normalized UserPatch.role made "Technician" a role change
+    against "technician": custom assignment dropped, users.role rewritten,
+    sessions revoked."""
+    user_id = _seed_user(db, username="variant", email="variant@example.com", role=stored, company_id=company_id())
+    _tenant_role(db, "technician", ["jobs.read_own"])
+    lead = TenantRole(id=uuid.uuid4(), company_id=company_id(), name="Lead Tech",
+                      permissions=json.dumps(["jobs.read_own", "invoices.write"]), is_system=False)
+    db.add(lead)
+    db.flush()
+    _assign(db, user_id, lead)
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions") as revoke:
+        body = admin_ops.patch_user(user_id, admin_ops.UserPatch(role=sent), _owner_user(), db)
+
+    assert _assigned(db, user_id) == [lead.id]
+    revoke.assert_not_called()
+    assert _stored_role(db, user_id) == "technician"
+    assert body["role"] == "technician"
+
+
+def test_patch_admin_user_canonical_spelling_repairs_a_legacy_short_role(db: Session):
+    # The resolver looks users.role up in BUILTIN_ROLES as stored, so a "tech"
+    # row with no assignment resolves to no permissions; PATCH "technician"
+    # must still write the canonical spelling.
+    user_id = _seed_user(db, username="legacy", email="legacy@example.com", role="tech", company_id=company_id())
+    stale = {"user_id": user_id, "role": "tech"}
+    assert _load_user_permissions(db, _tenant_request(), stale) == set()
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions") as revoke:
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(role="technician"), _owner_user(), db)
+
+    assert _stored_role(db, user_id) == "technician"
+    assert _load_user_permissions(db, _tenant_request(), stale)
+    revoke.assert_not_called()
+
+
+@pytest.mark.parametrize("model", [admin_ops.UserPatch, admin_ops.UserCreate])
+@pytest.mark.parametrize("role", ["manager", "user", "accounting", "superadmin", "Lead Tech", ""])
+def test_admin_user_role_input_outside_the_assignable_vocabulary_is_refused(model, role: str):
+    from pydantic import ValidationError
+
+    fields = {"role": role}
+    if model is admin_ops.UserCreate:
+        fields |= {"username": "u", "email": "u@example.com", "password": "password1234"}
+    with pytest.raises(ValidationError):
+        model(**fields)
+
+
+def test_admin_user_role_input_is_normalized():
+    assert admin_ops.UserPatch(role="Dispatch").role == "dispatcher"
+    assert admin_ops.UserPatch().role is None
+    created = admin_ops.UserCreate(username="u", email="u@example.com", password="password1234", role="Technician")
+    assert created.role == "technician"
+
+
+def test_post_admin_users_stores_the_canonical_role(db: Session):
+    request = Request({"type": "http", "headers": [], "method": "POST"})
+    request.state.tenant = {"id": "tenant-test"}
+    payload = admin_ops.UserCreate(username="tc", email="tc@example.com", password="password1234", role="Tech")
+
+    body = admin_ops.create_user(payload, _admin_user(), db, request=request)
+
+    assert body["role"] == "technician"
+    assert _stored_role(db, body["id"]) == "technician"
+
+
 def test_patch_admin_user_active_only_leaves_assignment_and_sessions(db: Session):
     user_id = _seed_user(db, username="keepme", email="keepme@example.com", role="admin", company_id=company_id())
     admin_role = _tenant_role(db, "admin", ["jobs.read_all"])

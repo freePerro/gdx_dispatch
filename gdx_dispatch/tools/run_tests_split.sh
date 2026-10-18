@@ -243,9 +243,11 @@ fi
 # fixtures/pg.py already names), with the same variables CI sets, and one
 # database per shard as CI has one service per shard, so a migration test's
 # fixed schema name cannot meet another shard's or another run's.
-# DATABASE_URL, not TEST_DATABASE_URL: CI sets only DATABASE_URL, and the two
-# gdx_ai_* role tests that read TEST_DATABASE_URL alone want a dedicated role
-# CI never creates, so there they skip — here too.
+# DATABASE_URL, not TEST_DATABASE_URL: the CI shards set only DATABASE_URL, and
+# the two gdx_ai_* role test files read TEST_DATABASE_URL alone. They need a
+# seeded tenant database with gdx_dispatch/tools/gdx_ai_roles.sql applied, which
+# CI's ai-roles job builds and this script does not, so here they skip
+# (GDXA-1564).
 # TEST_PG=0 opts out; TEST_PG_CONTAINER names another container.
 PG_DBS=()
 if [ "$MODE" = "matrix" ] && [ "${TEST_PG:-1}" = "1" ] && [[ "$PYTEST" == *"docker run"* ]] \

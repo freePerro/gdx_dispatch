@@ -42,7 +42,7 @@ DELETE /api/hazards/{hazard_id}
 DELETE /api/holding-areas/{area_id}
 DELETE /api/integrations/zapier/unsubscribe
 DELETE /api/integrations/{integration_id}
-DELETE /api/integrations/{integration_type}
+DELETE /api/integrations/{integration_type}/connect
 DELETE /api/inventory/parts/{item_id}
 DELETE /api/invoices/{invoice_id}
 DELETE /api/invoices/{invoice_id}/lines/{line_id}
@@ -432,9 +432,6 @@ GET /api/payments
 GET /api/payroll/commission-rates
 GET /api/payroll/config
 GET /api/payroll/entries
-GET /api/payroll/export
-GET /api/payroll/summary
-GET /api/payroll/tech/{tech_id}
 GET /api/pdf-templates
 GET /api/pdf-templates/types/available
 GET /api/pdf-templates/{template_type}

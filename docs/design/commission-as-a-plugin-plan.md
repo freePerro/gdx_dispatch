@@ -117,6 +117,16 @@ The tables and detail modal are deliberately left in place: they are the shape
 the screen takes when runs exist, and the build-or-remove call has not been
 made.
 
+**2026-10-18 (GDXA-1560):** the three 503-ing consumers are gone.
+`GET /api/payroll/summary`, `/tech/{tech_id}` and `/export` had no UI caller,
+and Doug ruled them deleted: plugins read the shared database through
+`plugin_api`, not core REST routes, so a commission plugin would not have used
+them either. `_fetch_tech_revenue`, `RevenueBasisUnavailable`,
+`_build_summary_rows`, `_fetch_active_rate`, `_fetch_tech_names` and the
+overtime/commission/gross-pay math in `routers/payroll.py` went with them.
+Where §4 and §6 name `_fetch_tech_revenue`, read it as the record of what the
+plugin's input layer must not repeat; the function no longer exists.
+
 ## 5.5 Why this doc has to be found from the money audit
 
 On 2026-08-23 a later pass worked the money audit top-down, reached **M6**, and

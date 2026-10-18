@@ -146,9 +146,14 @@ def _transcribe(file_path: Path) -> str:
         model = whisper.load_model("base")
         result = model.transcribe(str(file_path))
         return result.get("text", "")
-    except ImportError:
-        log.exception("_transcribe_failed")
-        pass
+    except ImportError as exc:
+        # whisper is an optional dependency and absent from the image: an
+        # expected condition, so no traceback. A whisper that is installed but
+        # fails to import its own dependencies is a broken image and keeps one.
+        if exc.name == "whisper":
+            log.info("local_whisper_unavailable")
+        else:
+            log.exception("local_whisper_import_failed")
     except Exception:
         log.exception("local_whisper_failed")
 

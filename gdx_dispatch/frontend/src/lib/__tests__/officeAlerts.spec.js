@@ -37,7 +37,6 @@ import {
   syncOfficeAlerts,
 } from '../officeAlerts'
 import { getServerUrl } from '../serverConfig'
-import { _setAppMode } from '../appMode'
 
 const OWNER = '0b6c3f1e-2d4a-4b8e-9c1d-7e5f6a7b8c9d'
 const api = () => ({ post: vi.fn().mockResolvedValue({ token: 'tok-new', registration_id: 'r1', user_id: OWNER }) })
@@ -74,21 +73,10 @@ describe('officeAlerts', () => {
     const res = await enableOfficeAlerts(a)
     expect(a.post).toHaveBeenCalledWith('/api/notifications/device-alerts/token',
       expect.objectContaining({ device_label: expect.any(String) }))
-    expect(plugin.start).toHaveBeenCalledWith({ serverUrl: 'https://dispatch.example.com', token: 'tok-new', scope: 'office' })
+    // The installed package picks the feed, not the web layer (#1193).
+    expect(plugin.start).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'https://dispatch.example.com', token: 'tok-new' }))
     expect(res.enabled).toBe(true)
     expect(localStorage.getItem(OWNER_KEY)).toBe(OWNER)
-  })
-
-  it('GDX Planner asks the service for the planner feed, not the office one', async () => {
-    native()
-    _setAppMode('planner')
-    try {
-      plugin.start.mockResolvedValue({ enabled: true, running: true })
-      await enableOfficeAlerts(api())
-      expect(plugin.start).toHaveBeenCalledWith(expect.objectContaining({ scope: 'planner' }))
-    } finally {
-      _setAppMode('dispatch')
-    }
   })
 
   it('enable refuses without a server address and mints nothing', async () => {
@@ -139,7 +127,7 @@ describe('officeAlerts', () => {
     const a = api()
     await ensureOfficeAlerts(a, { now, userId: OWNER })
     expect(a.post).toHaveBeenCalledTimes(1)
-    expect(plugin.start).toHaveBeenCalledWith({ serverUrl: 'https://dispatch.example.com', token: 'tok-new', scope: 'office' })
+    expect(plugin.start).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: 'https://dispatch.example.com', token: 'tok-new' }))
   })
 
   // /audit 2026-10-14: with notifications blocked every launch minted a

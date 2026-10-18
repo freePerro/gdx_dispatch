@@ -4,7 +4,7 @@ Provides:
 - Authenticated browser context per test
 - API client for data setup/teardown
 - Chrome DevTools console error capture
-- Multi-tenant isolation via separate browser contexts
+- A separate browser context per test (the system is single-tenant)
 - Screenshot on failure
 
 Usage:

@@ -391,7 +391,10 @@ def decode_live_access_token(token: str, conn: HTTPConnection) -> dict:
     that carry the token somewhere other than the Authorization header: the
     dispatch board WebSocket takes it as a query parameter (GDXA-1188).
     ``conn`` is the Request or WebSocket; its app holds the denylist. Raises
-    HTTPException(503) when the denylist check itself fails.
+    HTTPException(503) only when an error escapes the denylist lookup. A
+    Redis outage is not such an error: ``Denylist.contains`` treats it as
+    "not revoked" (fail-open), so a revocation recorded only in Redis is not
+    seen while Redis is down.
     """
     import jwt as _jwt
 

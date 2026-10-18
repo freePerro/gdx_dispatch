@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,7 @@ from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.permissions import PLATFORM_LOCKED_ROLES, assert_can_assign_role
-from gdx_dispatch.core.roles import ASSIGNABLE_ROLES, normalize_role
+from gdx_dispatch.core.roles import ASSIGNABLE_ROLES, assignable_role_input_pattern, normalize_role
 from gdx_dispatch.core.upload_limits import assert_body_within_limit, assert_upload_within_limit
 from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, RolePermission, User
@@ -69,6 +69,17 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
+_ROLE_INPUT_PATTERN = assignable_role_input_pattern()
+
+
+def _canon_role_input(v: object) -> object:
+    # Normalized BEFORE the pattern runs (unlike routers/users.py, which matches
+    # first), so "Technician" is accepted as "technician". An un-normalized role
+    # here made a case variant of the current role count as a role change in
+    # patch_user: assignment dropped, sessions revoked (GDXA-1460).
+    return normalize_role(v) if isinstance(v, str) else v
+
+
 class UserCreate(BaseModel):
     # Bounded against DoS + DB column overflow. email is RFC-5321 max 254.
     # password min 8 enforces a minimum strength at the edge before it
@@ -76,12 +87,16 @@ class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=8, max_length=128)
-    role: str = Field(min_length=1, max_length=50)
+    role: str = Field(pattern=_ROLE_INPUT_PATTERN)
+
+    _canon_role = field_validator("role", mode="before")(_canon_role_input)
 
 
 class UserPatch(BaseModel):
-    role: str | None = Field(default=None, min_length=1, max_length=50)
+    role: str | None = Field(default=None, pattern=_ROLE_INPUT_PATTERN)
     active: bool | None = None
+
+    _canon_role = field_validator("role", mode="before")(_canon_role_input)
 
 
 # The shared assignable vocabulary (core/roles.ASSIGNABLE_ROLES) plus "user",
@@ -298,10 +313,14 @@ def patch_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     old_role = current.role or "user"
-    next_role = body.role if body.role is not None else old_role
     next_active = body.active if body.active is not None else bool(current.active)
+    # Compared normalized: "Technician", or "technician" on a legacy "tech" row,
+    # is the same role and leaves the assignment and sessions alone. The
+    # canonical spelling is still written: the resolver looks "tech" up in
+    # BUILTIN_ROLES as-is and finds nothing.
+    role_changed = body.role is not None and body.role != normalize_role(old_role)
+    next_role = body.role if body.role is not None else old_role
     assert_can_assign_role(_, next_role, current.role)
-    role_changed = next_role != old_role
     dropped: list[dict[str, str | None]] = []
     if role_changed:
         from gdx_dispatch.core.roles import is_role_admin_actor

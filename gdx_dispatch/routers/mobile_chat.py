@@ -27,13 +27,15 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import Uuid, bindparam, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import contained_read, get_db
+from gdx_dispatch.core.job_access import job_belongs_to_user
+from gdx_dispatch.core.link_sms import as_uuid
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.core.user_display import resolve_author_name
@@ -80,8 +82,18 @@ def _is_dispatcher(user: dict[str, Any]) -> bool:
     return role in {"dispatcher", "admin", "owner"}
 
 
-def _job_visible_to_user(db: Session, job_id: str, user: dict[str, Any]) -> bool:
-    """Tech sees only their own jobs; dispatchers see all jobs in tenant."""
+def _job_visible_to_user(db: Session, tenant_id: str, job_id: str, user: dict[str, Any]) -> bool:
+    """Tech sees only their own jobs; dispatchers see all jobs in tenant.
+
+    The tech half is the job page's ownership gate — the deactivation refusal
+    plus ``core.job_access.job_belongs_to_user`` — as in mobile_invoicing, not
+    a copy of it. The copy this replaced compared ``jobs.assigned_to`` to the
+    caller's USER id, but that column holds a TECHNICIAN id, so a tech who
+    could open the job got 404 posting chat on it until a job_assignments row
+    happened to exist (GDXA-1541, seen on demo). It also read job_assignments
+    without ``ja.deleted_at IS NULL``, so a tech removed from the job kept the
+    thread; the shared gate excludes them.
+    """
     if _is_dispatcher(user):
         row = db.execute(
             _text("SELECT 1 FROM jobs WHERE id = :jid AND deleted_at IS NULL LIMIT 1"),
@@ -91,30 +103,12 @@ def _job_visible_to_user(db: Session, job_id: str, user: dict[str, Any]) -> bool
     uid = _user_id(user)
     if not uid:
         return False
-    row = db.execute(
-        _text(
-            """
-            SELECT 1 FROM jobs
-            WHERE id = :jid AND deleted_at IS NULL AND assigned_to = :uid
-            LIMIT 1
-            """
-        ),
-        {"jid": job_id, "uid": uid},
-    ).scalar()
-    if row:
-        return True
-    row = db.execute(
-        _text(
-            """
-            SELECT 1 FROM job_assignments ja
-            JOIN technicians t ON t.id = ja.tech_id
-            WHERE ja.job_id = :jid AND CAST(t.user_id AS TEXT) = :uid AND t.active IS NOT FALSE
-            LIMIT 1
-            """
-        ),
-        {"jid": job_id, "uid": uid},
-    ).scalar()
-    return bool(row)
+    from gdx_dispatch.routers.mobile import _refuse_deactivated_technician
+
+    # The shared gate matches a deactivated technician row too; every mobile
+    # gate refuses that tech with a 403 the phone can show (GDXA-208).
+    _refuse_deactivated_technician(db, uid, user)
+    return job_belongs_to_user(db, tenant_id, job_id, uid)
 
 
 # Canonical quick-action set. Stored as `quick_action` slug + `body` is
@@ -172,7 +166,7 @@ def get_job_chat(
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     user = current_user or {}
-    if not _job_visible_to_user(db, job_id, user):
+    if not _job_visible_to_user(db, _tenant_id(request), job_id, user):
         return _jr({"detail": "job not found or not visible"}, 404)
 
     sql = """
@@ -236,7 +230,7 @@ def send_job_chat(
     tenant_id = _tenant_id(request)
     if not user_id:
         return _jr({"detail": "no user"}, 401)
-    if not _job_visible_to_user(db, job_id, user):
+    if not _job_visible_to_user(db, tenant_id, job_id, user):
         return _jr({"detail": "job not found or not visible"}, 404)
 
     # Resolve body.
@@ -296,7 +290,8 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
     """Notify the recipient(s).
 
     Tech sent → push every dispatcher-role user in the tenant.
-    Dispatcher sent → push the assigned tech (assigned_to + job_assignments).
+    Dispatcher sent → push the assigned techs' users (assigned_to, job_assignments
+    and appointments, each mapped through technicians.user_id).
     """
     try:
         from gdx_dispatch.core.push_subscriptions import send_push  # type: ignore[attr-defined]
@@ -342,7 +337,13 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
                 _text(
                     """
                     SELECT DISTINCT user_id FROM (
-                      SELECT assigned_to AS user_id FROM jobs WHERE id = :jid AND assigned_to IS NOT NULL
+                      -- jobs.assigned_to holds a TECHNICIAN id, so it is
+                      -- mapped to that tech's user exactly as the crew half
+                      -- below is. Selected raw, it handed send_push a
+                      -- technician id and the push never arrived (GDXA-1541).
+                      SELECT t.user_id FROM jobs j
+                      JOIN technicians t ON t.id = j.assigned_to
+                      WHERE j.id = :jid AND t.active IS NOT FALSE
                       UNION
                       SELECT t.user_id FROM job_assignments ja
                       JOIN technicians t ON t.id = ja.tech_id
@@ -350,10 +351,19 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
                       -- the job page refuses them, so the link would dead-end.
                       WHERE ja.job_id = :jid AND ja.deleted_at IS NULL
                         AND t.active IS NOT FALSE
+                      UNION
+                      -- An appointment admits a tech to the thread
+                      -- (job_belongs_to_user), so it must reach them too.
+                      -- appointments.job_id is a Uuid column: bound typed so
+                      -- SQLite's dashless hex matches as well as Postgres.
+                      SELECT t.user_id FROM appointments a
+                      JOIN technicians t ON t.id = a.tech_id
+                      WHERE a.job_id = :jid_uuid AND a.deleted_at IS NULL
+                        AND t.active IS NOT FALSE
                     ) s WHERE user_id IS NOT NULL
                     """
-                ),
-                {"jid": job_id},
+                ).bindparams(bindparam("jid_uuid", type_=Uuid(as_uuid=True))),
+                {"jid": job_id, "jid_uuid": as_uuid(job_id)},
             ).all()
         for r in rows:
             try:
@@ -394,6 +404,8 @@ def _push_other_party(db: Session, *, job_id: str, msg: JobChatMessage, user: di
                     SELECT DISTINCT user_id FROM user_role_assignments ura
                     JOIN tenant_roles r ON r.id = ura.role_id
                     WHERE r.name IN ('dispatcher','admin','owner')
+                      -- A deleted role grants nothing, so it notifies no one.
+                      AND r.deleted_at IS NULL
                     """
                 )
             ).all()

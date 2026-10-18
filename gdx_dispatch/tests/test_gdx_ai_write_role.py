@@ -3,7 +3,13 @@
 Same env-var contract as test_gdx_ai_readonly_role.py: skip on SQLite, skip
 without ``TEST_DATABASE_URL``. If ``GDX_AI_WRITE_PASSWORD`` is set, the test
 rebuilds the URL with user=gdx_ai_write; otherwise it expects the URL to
-already point at that role.
+already point at that role. The GRANTs under test are in
+gdx_dispatch/tools/gdx_ai_roles.sql; CI's ai-roles job applies them.
+
+The whitelisted column is ``notes_appended``. This file used to UPDATE
+``last_contacted_at`` and INSERT ``first_name``, neither of which the ORM's
+customers table has, so against a paved tenant those tests failed on the
+column, not the GRANT (GDXA-1564).
 """
 from __future__ import annotations
 
@@ -56,8 +62,8 @@ def test_update_whitelisted_column_succeeds():
     cid = _ensure_seed_customer(engine)
     with engine.begin() as conn:
         conn.execute(
-            text("UPDATE customers SET last_contacted_at = now() WHERE id = :cid"),
-            {"cid": cid},
+            text("UPDATE customers SET notes_appended = :v WHERE id = :cid"),
+            {"v": "rls-probe", "cid": cid},
         )
 
 
@@ -78,7 +84,7 @@ def test_insert_into_customers_denied():
     with engine.connect() as conn:
         with pytest.raises((DBAPIError, ProgrammingError)) as excinfo:
             conn.execute(text(
-                "INSERT INTO customers (id, first_name) "
+                "INSERT INTO customers (id, name) "
                 "VALUES (gen_random_uuid(), 'rls-probe')"
             ))
     assert "permission denied" in str(excinfo.value).lower()
@@ -94,3 +100,31 @@ def test_delete_from_customers_denied():
                 {"cid": cid},
             )
     assert "permission denied" in str(excinfo.value).lower()
+
+
+_TABLE_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
+_COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
+
+
+def test_customers_privileges_are_exactly_the_whitelist():
+    """The probes above try one column and one statement each, so a wider
+    SELECT or a second UPDATE column would pass them. This reads every
+    privilege the role holds on customers (GDXA-1564)."""
+    engine = _writer_engine()
+    with engine.connect() as conn:
+        table = {
+            p for p in _TABLE_PRIVILEGES
+            if conn.execute(text("SELECT has_table_privilege('customers', :p)"), {"p": p}).scalar()
+        }
+        columns = conn.execute(text(
+            "SELECT attname FROM pg_attribute WHERE attrelid = 'customers'::regclass "
+            "AND attnum > 0 AND NOT attisdropped"
+        )).scalars().all()
+        held = {
+            (c, p) for c in columns for p in _COLUMN_PRIVILEGES
+            if conn.execute(
+                text("SELECT has_column_privilege('customers', :c, :p)"), {"c": c, "p": p},
+            ).scalar()
+        }
+    assert table == set()
+    assert held == {("id", "SELECT"), ("notes_appended", "UPDATE")}

@@ -234,22 +234,10 @@ def test_uuid_binding_matches_an_orm_built_sqlite_schema():
         engine.dispose()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GDXA-292 deferred (maintainer ruled the fix narrow, two files): "
-        "routers/session_policy.py:79 upserts with a raw str(tid) bind, so on "
-        "SQLite its PATCH lands in a second, dashed row that read_settings_row "
-        "never reads, and the saved timeout is lost. Postgres is unaffected. When "
-        "session_policy binds through settings_sql()/tenant_id_value() this "
-        "XPASSes and the marker must go."
-    ),
-)
-def test_session_policy_patch_round_trips_on_an_orm_built_sqlite_schema():
-    """The lost-write half of the split: GET seeds through the helper, PATCH
-    writes through session_policy's own SQL, a second GET must see it."""
+def _orm_settings_client(router):
+    """An ORM-built SQLite schema (tenant_settings + audit_logs) behind
+    `router`, signed in as an admin. Returns (client, engine)."""
     from gdx_dispatch.core.tenant_settings import TenantSettings
-    from gdx_dispatch.routers.session_policy import router
 
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -277,13 +265,61 @@ def test_session_policy_patch_round_trips_on_an_orm_built_sqlite_schema():
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "user-42", "role": "admin", "tenant_id": TID,
     }
-    client = TestClient(app, raise_server_exceptions=True)
+    return TestClient(app, raise_server_exceptions=True), engine
+
+
+def _audit_rows(engine, action):
+    with engine.connect() as conn:
+        return conn.execute(
+            text("SELECT user_id, entity_type, details FROM audit_logs WHERE action = :a"),
+            {"a": action},
+        ).all()
+
+
+def test_session_policy_patch_round_trips_on_an_orm_built_sqlite_schema():
+    """The lost-write half of GDXA-292: GET seeds through the helper, PATCH
+    writes through the audited upsert, a second GET must see it — and the
+    write leaves an audit row naming the admin who made it (GDXA-1506)."""
+    from gdx_dispatch.routers.session_policy import router
+
+    client, engine = _orm_settings_client(router)
     try:
         assert client.get("/api/session-policy").status_code == 200
         r = client.patch("/api/session-policy", json={"idle_timeout_minutes": 5})
         assert r.status_code == 200, r.text
+        assert r.json() == {"idle_timeout_minutes": 5}
         assert _rows(engine) == 1, "the PATCH must update the seeded row, not add one"
         assert client.get("/api/session-policy").json()["idle_timeout_minutes"] == 5
+        rows = _audit_rows(engine, "session_policy_updated")
+        assert len(rows) == 1, rows
+        assert rows[0].user_id == "user-42"
+        assert rows[0].entity_type == "tenant_settings"
+        assert '"to": 5' in rows[0].details and '"from": 0' in rows[0].details
+    finally:
+        engine.dispose()
+
+
+def test_payroll_source_patch_is_audited_and_read_back():
+    """Same class as session_policy (GDXA-1506): the payroll source PATCH
+    upserted tenant_settings with no audit row and a dashed tenant bind."""
+    from gdx_dispatch.modules.payroll.router import router
+
+    client, engine = _orm_settings_client(router)
+    try:
+        assert client.get("/api/payroll/config").json()["payroll_source"] == "manual"
+        r = client.patch("/api/payroll/config", json={"payroll_source": "csv_import"})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"payroll_source": "csv_import"}
+        assert _rows(engine) == 1
+        assert client.get("/api/payroll/config").json()["payroll_source"] == "csv_import"
+        rows = _audit_rows(engine, "payroll_source_updated")
+        assert len(rows) == 1, rows
+        assert rows[0].user_id == "user-42"
+        assert '"to": "csv_import"' in rows[0].details
+        assert client.patch(
+            "/api/payroll/config", json={"payroll_source": "bogus"}
+        ).status_code == 422
+        assert len(_audit_rows(engine, "payroll_source_updated")) == 1
     finally:
         engine.dispose()
 
@@ -326,7 +362,7 @@ def test_job_workflow_gates_read_the_row_the_audited_write_updated(monkeypatch):
 
 
 def test_the_create_on_read_lives_in_one_place():
-    """Source assertion, absence only: none of the seven routers carries its
+    """Source assertion, absence only: none of these routers carries its
     own `INSERT INTO tenant_settings (tenant_id) VALUES` any more, and the
     helper carries exactly one."""
     seed = "INSERT INTO tenant_settings (tenant_id) VALUES"
@@ -338,6 +374,7 @@ def test_the_create_on_read_lives_in_one_place():
         "gdx_dispatch/modules/workflow/router.py",
         "gdx_dispatch/modules/numbering/router.py",
         "gdx_dispatch/routers/session_policy.py",
+        "gdx_dispatch/modules/payroll/router.py",
     ]
     for rel in routers:
         src = (REPO / rel).read_text(encoding="utf-8")

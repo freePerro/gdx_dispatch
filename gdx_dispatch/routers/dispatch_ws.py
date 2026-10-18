@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -21,6 +23,14 @@ router = APIRouter(tags=["dispatch-ws"], dependencies=[Depends(require_module("d
 # /api/dispatch/* read is jobs.read_all, and assigning a job is jobs.write.
 _READ_KEY = "jobs.read_all"
 _SEND_KEY = "jobs.write"
+
+# An open socket re-runs the handshake's gate on every frame, at least this
+# often, and at its token's exp (GDXA-1440): a revoked token or a deleted,
+# deactivated or demoted user loses the board within this many seconds, an
+# expired token at its exp. Without it a socket outlived both for as long as
+# the tab stayed open.
+_RECHECK_SECONDS = 30.0
+_MIN_WAKE_SECONDS = 0.05
 
 
 def _board_permissions(websocket: WebSocket, claims: dict[str, Any]) -> set[str]:
@@ -56,11 +66,48 @@ def _decode_token(websocket: WebSocket, token: str) -> dict[str, Any] | None:
 
     The same check as the bearer fallback in core/modules.py: signature and
     expiry, ``typ`` absent or ``"access"``, and the ``jti`` not on the
-    revocation denylist (GDXA-1188). Raises HTTPException(503) when the
-    denylist check itself fails. Checked at the handshake only: a socket
-    already open when its token is revoked is not re-checked.
+    revocation denylist (GDXA-1188). Raises HTTPException(503) only when an
+    error escapes the denylist lookup; a Redis outage reads as "not revoked"
+    (fail-open), so a revocation recorded only in Redis is not seen while
+    Redis is down. Run at the handshake, and by ``_recheck``.
     """
     return decode_live_access_token(token, websocket) or None
+
+
+def _recheck(websocket: WebSocket, token: str) -> set[str] | None:
+    """The handshake's whole gate again, for a socket already open
+    (GDXA-1440): the token, then the user behind it. Permissions when the
+    holder may still read the board, else None.
+
+    Both halves matter. Logout and /auth/admin/revoke put the access token on
+    the denylist; deleting, deactivating or demoting a user revokes only the
+    refresh tokens, so only ``_board_permissions`` sees those. Sync, for the
+    threadpool: the denylist may call Redis and the permissions read the DB.
+    Raises HTTPException(503) when an error escapes the denylist lookup, and
+    re-raises an HTTPException(5xx) from the permissions read; a Redis outage
+    does not raise (see ``_decode_token``), so it fails open on revocation. A
+    database outage does not raise either: ``_db_verify_user`` treats it as
+    no users row, so it reads as not admitted (1008), failing closed.
+    """
+    claims = _decode_token(websocket, token)
+    if not claims:
+        return None
+    try:
+        perms = _board_permissions(websocket, claims)
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            raise
+        return None
+    return perms if _holds(perms, _READ_KEY) else None
+
+
+def _next_wake(claims: dict[str, Any]) -> float:
+    """Seconds until the receive loop next re-checks the token: the recheck
+    interval, or sooner if the token expires first."""
+    exp = claims.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return _RECHECK_SECONDS
+    return max(_MIN_WAKE_SECONDS, min(_RECHECK_SECONDS, exp - time.time()))
 
 
 def _normalize_message(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -128,7 +175,28 @@ async def dispatch_board_ws(websocket: WebSocket, token: str = "") -> None:
 
     try:
         while True:
-            incoming = await websocket.receive_json()
+            try:
+                incoming = await asyncio.wait_for(websocket.receive_json(), timeout=_next_wake(payload))
+            except TimeoutError:
+                # No frame before the wake: re-check an idle socket anyway.
+                log.debug("dispatch_ws_idle_recheck sub=%s", user_id)
+                incoming = None
+            # Re-check before acting on the frame, so a revoked holder's last
+            # frame is not rebroadcast. After accept the close code reaches
+            # the client, unlike the handshake's.
+            try:
+                perms = await run_in_threadpool(_recheck, websocket, token)
+            except HTTPException:
+                log.warning("dispatch_ws_open_closed_1011: token or user check unavailable")
+                await websocket.close(code=1011)
+                await manager.disconnect(websocket, tenant_id)
+                return
+            if perms is None:
+                log.info("dispatch_ws_holder_no_longer_admitted sub=%s", user_id)
+                await websocket.close(code=1008, reason="token or account no longer admitted")
+                await manager.disconnect(websocket, tenant_id)
+                return
+            may_send = _holds(perms, _SEND_KEY)
             if not isinstance(incoming, dict) or not may_send:
                 continue
             outgoing = _normalize_message(incoming)

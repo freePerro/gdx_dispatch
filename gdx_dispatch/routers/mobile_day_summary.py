@@ -103,6 +103,7 @@ def day_summary(
                   SELECT 1 FROM job_assignments ja
                   JOIN technicians t ON t.id = ja.tech_id
                   WHERE CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT) AND CAST(t.user_id AS TEXT) = :uid
+                    AND ja.deleted_at IS NULL
                 )
               )
             ORDER BY j.completed_at ASC
@@ -194,7 +195,7 @@ def day_summary(
                     UNION
                     SELECT CAST(ja.job_id AS TEXT) FROM job_assignments ja
                     JOIN technicians t ON t.id = ja.tech_id
-                    WHERE CAST(t.user_id AS TEXT) = :uid
+                    WHERE CAST(t.user_id AS TEXT) = :uid AND ja.deleted_at IS NULL
                   )
                 """  # noqa: S608
             ),
@@ -240,6 +241,7 @@ def day_summary(
                   SELECT 1 FROM job_assignments ja
                   JOIN technicians t ON t.id = ja.tech_id
                   WHERE CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT) AND CAST(t.user_id AS TEXT) = :uid
+                    AND ja.deleted_at IS NULL
                 )
               )
             ORDER BY j.scheduled_at ASC

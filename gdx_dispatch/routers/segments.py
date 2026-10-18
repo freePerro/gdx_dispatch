@@ -18,6 +18,7 @@ from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.invoice_net_billed import invoice_net_billed_sql
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.models.tenant_models import Segment, Tag
 from gdx_dispatch.routers.tags import canonical_entity_id, customer_tags_by_id, live_tag_or_none
 
@@ -416,7 +417,9 @@ def _customer_stats(db: Session) -> list[dict[str, Any]]:
     has_metadata = "metadata" in customer_columns
 
     rows = db.execute(
-        text(_customer_stats_sql(has_customer_type, has_metadata))
+        text(  # noqa: RAWENC1  # c.address decrypted via decrypt_if_ciphertext below
+            _customer_stats_sql(has_customer_type, has_metadata)
+        )
     ).mappings().all()
     # Every customer's tags in one query, not a GROUP BY string_agg the two
     # engines spell differently (GDXA-1046).
@@ -424,6 +427,10 @@ def _customer_stats(db: Session) -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     for row in rows:
         item = {k: _normalize_value(v) for k, v in dict(row).items()}
+        # customers.address is EncryptedString; a raw read returns the stored
+        # ciphertext, so the list showed `gAAAA…` and an `address` rule could
+        # never match (GDXA-1528).
+        item["address"] = decrypt_if_ciphertext(item.get("address"))
         metadata = item.get("metadata")
         if isinstance(metadata, str):
             try:

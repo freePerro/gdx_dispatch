@@ -16,6 +16,7 @@
             v-model="config.payroll_source"
             :options="(config.candidates || ['manual'])"
             class="filter-select"
+            :disabled="savingSource"
             @change="saveSource"
           />
           <Button label="Refresh" icon="pi pi-refresh" severity="secondary" @click="fetchAll" />
@@ -107,6 +108,8 @@ const api = useApi();
 const { confirmDestructive } = useDestructiveConfirm();
 const items = ref([]);
 const config = reactive({ payroll_source: "manual", candidates: ["manual"] });
+let savedSource = config.payroll_source;
+const savingSource = ref(false);
 const error = ref("");
 const showForm = ref(false);
 const saving = ref(false);
@@ -137,6 +140,7 @@ async function fetchConfig() {
   try {
     const c = await api.get("/api/payroll/config");
     Object.assign(config, c);
+    savedSource = config.payroll_source;
   } catch (_e) { /* ignore */ }
 }
 async function fetchAll() { await Promise.allSettled([fetchEntries(), fetchConfig()]); }
@@ -174,10 +178,26 @@ async function del(id) {
   } catch (e) { error.value = e?.message || "Delete failed"; }
 }
 
+// v-model has already written the new value by the time @change fires, so a
+// rejected save puts back the last source this page loaded or saved; the
+// wrapper has already toasted the error. The Select is disabled while a save
+// is in flight: two overlapping saves could settle out of order and leave it
+// showing a source the server does not hold. A success rewrites the value
+// too, since a Refresh that landed mid-save may have overwritten it
+// (GDXA-1519).
 async function saveSource() {
+  const next = config.payroll_source;
+  savingSource.value = true;
   try {
-    await api.patch("/api/payroll/config", { payroll_source: config.payroll_source });
-  } catch (_e) { /* ignore */ }
+    await api.patch("/api/payroll/config", { payroll_source: next },
+      { successMessage: `Payroll source set to ${next}` });
+    config.payroll_source = next;
+    savedSource = next;
+  } catch (_e) {
+    config.payroll_source = savedSource;
+  } finally {
+    savingSource.value = false;
+  }
 }
 
 onMounted(fetchAll);

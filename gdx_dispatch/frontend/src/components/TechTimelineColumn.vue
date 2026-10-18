@@ -118,7 +118,9 @@
             class="job-block"
             :class="{
               'job-block--overflow': block.overflowPx > 0,
-              'job-block--overlap': block.overlapCount > 1,
+              'job-block--early': block.earlyHours > 0,
+              'job-block--overlap': block.conflict,
+              'job-block--short': block.short,
               'job-block--fixed': !canDrag(block.job),
             }"
             :style="{
@@ -139,6 +141,12 @@
             @keydown.enter="$emit('open-drawer', block.job)"
             @keydown.space.prevent="$emit('open-drawer', block.job)"
           >
+            <!-- A block too short for two lines (a 1h card at compact zoom,
+                 any card under 50min at default) folds to one: start time
+                 first, and the customer gives up its width before the time
+                 does. The early/over note rides only the red edge there; the
+                 hover title and aria label carry it in words. -->
+            <span v-if="block.short" class="block-start">{{ formatTime(block.startDate) }}</span>
             <div class="block-customer">
               <i v-if="block.job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
               {{ displayCustomer(block.job) }}
@@ -147,15 +155,16 @@
                  line would clip the start-time meta line, which is the
                  load-bearing datum on a timeline. The hover title + aria
                  label still carry the job title there. -->
-            <div v-if="displayTitle(block.job) && block.heightPx >= 56" class="block-title">{{ displayTitle(block.job) }}</div>
+            <div v-if="displayTitle(block.job) && block.heightPx >= TITLE_MIN_PX" class="block-title">{{ displayTitle(block.job) }}</div>
             <!-- A visit's day badge rides the meta line, after the time: a
                  line of its own would clip the start time on a short block. -->
-            <div class="block-meta">
+            <div v-if="!block.short" class="block-meta">
               {{ formatTime(block.startDate) }} · {{ formatDuration(block.durationHours) }}
               <span v-if="dayBadge(block.job)" class="day-badge" :data-testid="`day-badge-${block.id}`">{{ dayBadge(block.job) }}</span>
-            </div>
-            <div v-if="block.overflowPx > 0" class="block-overflow">
-              +{{ formatDuration(block.overflowHours) }} over
+              <!-- The lane-edge notes ride this line too: pinned to a corner
+                   they drew over the customer or this line. -->
+              <span v-if="block.earlyHours > 0" class="block-early">· +{{ formatDuration(block.earlyHours) }} early</span>
+              <span v-if="block.overflowPx > 0" class="block-overflow">· +{{ formatDuration(block.overflowHours) }} over</span>
             </div>
           </div>
         </div>
@@ -241,6 +250,13 @@ function isDateOnly(job) {
 const trayJobs = computed(() => (props.jobs || []).filter(isDateOnly));
 const timelineJobs = computed(() => (props.jobs || []).filter((j) => !isDateOnly(j)));
 
+// Block heights below which a line no longer fits: the customer line and
+// the meta line together need ~37px with the block's padding and border,
+// and the title line is a third.
+const MIN_BLOCK_PX = 20;
+const TWO_LINE_MIN_PX = 40;
+const TITLE_MIN_PX = 56;
+
 // Compute positioned blocks with overlap-aware side-by-side layout.
 const jobBlocks = computed(() => {
   const blocks = timelineJobs.value.map((job) => {
@@ -250,10 +266,16 @@ const jobBlocks = computed(() => {
                                    || Number(job.effective_duration_hours)
                                    || 1);
     const endFloat = startFloat + duration;
-    const topPx = (startFloat - shiftStartHours.value) * props.pxPerHour;
-    const wantedHeightPx = duration * props.pxPerHour;
+    // A block stays inside the lane on both sides. Before the shift starts
+    // it pins to the top, loses the hours above the lane and says how early
+    // it starts; after the shift ends it pins to the bottom and the overflow
+    // marker says how far past. Its drawn time stays the real start time.
+    const earlyHours = Math.max(0, shiftStartHours.value - startFloat);
+    const rawTopPx = (startFloat - shiftStartHours.value) * props.pxPerHour;
+    const topPx = Math.min(Math.max(0, rawTopPx), Math.max(0, bodyHeightPx.value - MIN_BLOCK_PX));
+    const wantedHeightPx = Math.max(0, duration - earlyHours) * props.pxPerHour;
     const maxHeightPx = bodyHeightPx.value - topPx;
-    const heightPx = Math.max(20, Math.min(wantedHeightPx, Math.max(20, maxHeightPx)));
+    const heightPx = Math.max(MIN_BLOCK_PX, Math.min(wantedHeightPx, maxHeightPx));
     const overflowHours = Math.max(0, endFloat - shiftEndHours.value);
     return {
       // A crew's cards for one day share the job id.
@@ -265,30 +287,41 @@ const jobBlocks = computed(() => {
       durationHours: duration,
       topPx,
       heightPx,
+      short: heightPx < TWO_LINE_MIN_PX,
+      earlyHours,
       overflowHours,
       overflowPx: overflowHours * props.pxPerHour,
-      _cluster: null,
       leftPct: 0,
       widthPct: 100,
-      overlapCount: 1,
+      conflict: false,
     };
   });
 
-  // Cluster overlapping blocks (sweep line). Sort by start, walk: if the
-  // current block's start < running cluster max-end, it joins the
-  // cluster; else flush + start a new one.
-  blocks.sort((a, b) => a.startFloat - b.startFloat || a.endFloat - b.endFloat);
+  // The red overlap outline marks a scheduling conflict: two jobs whose
+  // real times overlap.
+  for (const a of blocks) {
+    a.conflict = blocks.some((b) => b !== a
+      && a.startFloat < b.endFloat - 0.001 && b.startFloat < a.endFloat - 0.001);
+  }
+
+  // Side-by-side layout clusters on the DRAWN extent, not the times: the
+  // minimum height and the lane clamps can make blocks that do not overlap
+  // in time draw on top of each other (four jobs before shift start all pin
+  // to the top). Sweep line: sort by top, a block whose top is above the
+  // running cluster's bottom joins it; else flush and start a new one.
+  blocks.sort((a, b) => a.topPx - b.topPx || a.startFloat - b.startFloat || a.endFloat - b.endFloat);
   let cluster = [];
-  let clusterMaxEnd = -Infinity;
+  let clusterMaxBottom = -Infinity;
   const clusters = [];
   for (const b of blocks) {
-    if (b.startFloat < clusterMaxEnd - 0.001) {
+    const bottom = b.topPx + b.heightPx;
+    if (b.topPx < clusterMaxBottom - 0.001) {
       cluster.push(b);
-      clusterMaxEnd = Math.max(clusterMaxEnd, b.endFloat);
+      clusterMaxBottom = Math.max(clusterMaxBottom, bottom);
     } else {
       if (cluster.length) clusters.push(cluster);
       cluster = [b];
-      clusterMaxEnd = b.endFloat;
+      clusterMaxBottom = bottom;
     }
   }
   if (cluster.length) clusters.push(cluster);
@@ -298,7 +331,6 @@ const jobBlocks = computed(() => {
     c.forEach((b, i) => {
       b.leftPct = (i / n) * 100;
       b.widthPct = 100 / n;
-      b.overlapCount = n;
     });
   }
   return blocks;
@@ -348,7 +380,16 @@ function displayTitle(job) {
 function blockAriaLabel(block) {
   const title = displayTitle(block.job);
   const day = dayBadge(block.job);
-  return `Open job: ${displayCustomer(block.job)}${title ? `, ${title}` : ''}, ${formatTime(block.startDate)}, ${formatDuration(block.durationHours)}${day ? `, ${day}` : ''}`;
+  const edges = laneEdgeNotes(block);
+  return `Open job: ${displayCustomer(block.job)}${title ? `, ${title}` : ''}, ${formatTime(block.startDate)}, ${formatDuration(block.durationHours)}${day ? `, ${day}` : ''}${edges.map((n) => `, ${n}`).join('')}`;
+}
+// How far a block runs past the lane's ends; a short block shows only the
+// red edge, so these words must reach the hover title and the aria label.
+function laneEdgeNotes(block) {
+  const out = [];
+  if (block.earlyHours > 0) out.push(`+${formatDuration(block.earlyHours)} early`);
+  if (block.overflowHours > 0) out.push(`+${formatDuration(block.overflowHours)} over`);
+  return out;
 }
 function trayAriaLabel(job) {
   const title = displayTitle(job);
@@ -359,7 +400,8 @@ function trayAriaLabel(job) {
 function blockHoverTitle(block) {
   const title = displayTitle(block.job);
   const day = dayBadge(block.job);
-  return `${displayCustomer(block.job)}${title ? ` — ${title}` : ''} (${formatTime(block.startDate)} · ${formatDuration(block.durationHours)}${day ? ` · ${day}` : ''})`;
+  const edges = laneEdgeNotes(block);
+  return `${displayCustomer(block.job)}${title ? ` — ${title}` : ''} (${formatTime(block.startDate)} · ${formatDuration(block.durationHours)}${day ? ` · ${day}` : ''}${edges.map((n) => ` · ${n}`).join('')})`;
 }
 
 // Drop coordinate → snapped ISO timestamp on selectedDate.
@@ -615,14 +657,38 @@ defineExpose({ dropYToISO });
   border-bottom-color: var(--p-red-500, #ef4444);
   border-bottom-width: 2px;
 }
+.job-block--early {
+  border-top-color: var(--p-red-500, #ef4444);
+  border-top-width: 2px;
+}
+/* One line: start time, then the customer. Padding shrinks so the line fits
+   the 20px minimum block too. */
+.job-block--short {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1.2;
+}
+/* Basis 0 for the customer: it takes only the width the time leaves, so in
+   a quarter-width card the customer goes first and the time ellipsizes last. */
+.job-block--short .block-customer { flex: 1 1 0; min-width: 0; }
+.block-start {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--p-text-muted-color, #6b7280);
+}
 .block-customer { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-title { font-size: 0.65rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-meta { font-size: 0.65rem; color: var(--p-text-muted-color, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.block-early,
 .block-overflow {
-  position: absolute;
-  bottom: 2px;
-  right: 4px;
-  font-size: 0.65rem;
   color: var(--p-red-500, #ef4444);
   font-weight: 600;
 }

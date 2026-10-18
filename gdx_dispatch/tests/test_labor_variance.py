@@ -280,3 +280,29 @@ def test_no_rate_anywhere_marks_none(tenant_db):
     assert out["primary_rate_source"] == "none"
     assert out["actual_cost"] == 0.0
     assert out["estimated_cost"] == 0.0
+
+
+def test_per_tech_names_for_job_costing(tenant_db):
+    """Job Costing labels each row by name: technician name, else the user's, else None."""
+    job = _mk_job(tenant_db, completed_at=datetime(2026, 5, 1, 15, 0, tzinfo=timezone.utc))
+    named_user = _mk_user(tenant_db)
+    named = _mk_technician(tenant_db, user_id=str(named_user.id), hourly_rate=50.0)
+    named.name = "Pat Lead"
+    fallback_user = _mk_user(tenant_db)
+    fallback_user.full_name = "Sam Helper"
+    unnamed = _mk_technician(tenant_db, user_id=str(fallback_user.id), hourly_rate=50.0)
+    tenant_db.commit()
+    _assign(tenant_db, job, tech_id=named.id, user_id=str(named_user.id), is_lead=True, hours_worked=1.0)
+    _assign(tenant_db, job, tech_id=unnamed.id, user_id=str(fallback_user.id), hours_worked=1.0)
+    email_only_user = _mk_user(tenant_db)
+    _assign(tenant_db, job, user_id=str(email_only_user.id), hours_worked=1.0)
+    _assign(tenant_db, job, user_id="not-a-uuid", hours_worked=1.0)
+
+    out = labor_variance(
+        job_id=job.id,
+        request=_stub_request(),
+        user=_stub_user(),
+        db=tenant_db,
+    )
+    names = sorted((t["tech_name"] or "") for t in out["per_tech"])
+    assert names == sorted(["", "Pat Lead", "Sam Helper", email_only_user.email])

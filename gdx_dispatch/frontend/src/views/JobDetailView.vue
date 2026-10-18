@@ -1285,9 +1285,14 @@
           placeholder="Assign a tech"
           display="chip"
           filter
+          :disabled="!scheduleForm.crewFromRead"
           class="w-full"
           data-testid="job-schedule-techs"
         />
+        <small v-if="assignmentsLoading" class="muted" data-testid="job-schedule-crew-loading">Loading the crew…</small>
+        <small v-else-if="!scheduleForm.crewFromRead" class="muted" data-testid="job-schedule-crew-unread">
+          The crew on this job could not be read, so saving here leaves it as it is. Reload the page to change it.
+        </small>
         <!-- Two different outcomes, so two different warnings: with the tenant
              hard gate on the server returns 422 and refuses the save outright;
              without it the job saves and waits in the dispatch lane. -->
@@ -1319,6 +1324,7 @@
       <div class="dialog-actions">
         <Button label="Cancel" severity="secondary" text @click="scheduleDialog = false" />
         <Button label="Save" icon="pi pi-check" severity="success" :loading="savingSchedule"
+          :disabled="assignmentsLoading"
           @click="saveSchedule" data-testid="job-schedule-save" />
       </div>
       </div>
@@ -1730,7 +1736,7 @@ const addingPart = ref(false);
 const scheduleDialog = ref(false);
 const savingSchedule = ref(false);
 const scheduleError = ref("");
-const scheduleForm = ref({ scheduled_at: null, tech_ids: [], duration_hours: "" });
+const scheduleForm = ref({ scheduled_at: null, tech_ids: [], crewFromRead: false, duration_hours: "" });
 // Tenant dispatch policy — decides whether "scheduled with no tech" is a
 // warning or a hard 422. Defaults to the permissive shape so a failed read
 // never blocks the dialog.
@@ -2894,14 +2900,22 @@ async function loadDispatchSettings() {
   } catch { /* defaults stay permissive */ }
 }
 
+function readCrewIds() {
+  return assignments.value.length
+    ? assignments.value.map((a) => a.tech_id).filter(Boolean)
+    : (job.value.assigned_to ? [job.value.assigned_to] : []);
+}
+
 function openSchedule() {
   loadDispatchSettings();
   const existing = job.value.scheduled_at ? new Date(job.value.scheduled_at) : null;
   scheduleForm.value = {
     scheduled_at: existing && !Number.isNaN(existing.getTime()) ? existing : null,
-    tech_ids: assignments.value.length
-      ? assignments.value.map((a) => a.tech_id).filter(Boolean)
-      : (job.value.assigned_to ? [job.value.assigned_to] : []),
+    tech_ids: readCrewIds(),
+    // Whether tech_ids came from a finished crew read. Opened before the
+    // read lands, it holds the assigned_to guess, and the save must not
+    // send that as the whole crew (GDXA-1499); the watch below refills it.
+    crewFromRead: crewKnown.value && !assignmentsLoading.value,
     duration_hours:
       job.value.scheduled_duration_hours != null ? String(job.value.scheduled_duration_hours) : "",
   };
@@ -2909,11 +2923,17 @@ function openSchedule() {
   scheduleDialog.value = true;
 }
 
+watch([crewKnown, assignmentsLoading], ([known, loading]) => {
+  if (!scheduleDialog.value || scheduleForm.value.crewFromRead || !known || loading) return;
+  scheduleForm.value.tech_ids = readCrewIds();
+  scheduleForm.value.crewFromRead = true;
+});
+
 // Save = PATCH the job. `assigned_tech_ids` is the post-S109 crew shape the
 // jobs router resolves through _set_job_assignments, so the crew edited here
 // and the crew on the Details tab stay the same list.
 async function saveSchedule() {
-  if (!job.value.id) return;
+  if (!job.value.id || assignmentsLoading.value) return;
   const picked = scheduleForm.value.scheduled_at;
   if (picked && Number.isNaN(new Date(picked).getTime())) {
     scheduleError.value = "That date isn't valid.";
@@ -2926,6 +2946,9 @@ async function saveSchedule() {
       scheduled_at: picked ? new Date(picked).toISOString() : null,
       assigned_tech_ids: scheduleForm.value.tech_ids || [],
     };
+    // An unread crew is a guess (openSchedule's assigned_to fallback), and
+    // the server takes assigned_tech_ids as the whole crew (GDXA-1499).
+    if (!scheduleForm.value.crewFromRead) delete payload.assigned_tech_ids;
     // Scheduling a job means it is no longer waiting to be scheduled. Without
     // this it keeps the "Ready to Schedule" holding-area stamp create_job gave
     // it forever — stale data that puts a booked job back in the dispatch
@@ -3484,7 +3507,7 @@ onMounted(async () => {
 .activity-list { list-style: none; padding: 0; margin: 0; }
 .activity-row { display: flex; gap: 0.75rem; padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
 .activity-row:last-child { border-bottom: none; }
-.activity-symbol { width: 12px; height: 12px; background: var(--accent-b); border-radius: 50%; margin-top: 4px; }
+.activity-symbol { width: 12px; height: 12px; background: var(--p-primary-color); border-radius: 50%; margin-top: 4px; }
 .activity-text { font-size: 0.9rem; margin: 0; }
 .activity-meta { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--p-text-muted-color); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }

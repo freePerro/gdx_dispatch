@@ -808,3 +808,43 @@ async def test_negative_day_window_is_refused(tenant_db_session):
         )
     db.close()
     assert exc.value.status_code == 422
+
+
+async def test_encrypted_address_is_decrypted_and_matchable(tenant_db_session, monkeypatch):
+    """GDXA-1528: customers.address is EncryptedString, and the rollup reads it
+    with raw SQL, so process_result_value never ran. The segment customer list
+    served `gAAAA…` and an `address equals` rule could never match.
+
+    The ciphertext is written by EncryptedString's own bind path under a real
+    Fernet key, the way an ORM write stores it. A plaintext row (the legacy,
+    mixed-state majority) must pass through unchanged."""
+    from cryptography.fernet import Fernet
+
+    from gdx_dispatch.core import pii
+
+    monkeypatch.setattr(pii, "_FERNET", Fernet(Fernet.generate_key()))
+    stored = pii.EncryptedString().process_bind_param("12 Oak St", None)
+    assert stored.startswith("gAAAA")
+
+    enc = _seed_customer(tenant_db_session, name="Encrypted", created_days_ago=10)
+    _seed_customer(tenant_db_session, name="Legacy", created_days_ago=10)
+    db = tenant_db_session()
+    db.execute(
+        text("UPDATE customers SET address = :a WHERE id = :id"),  # noqa: RAWENC1  # test seeds ciphertext on purpose
+        {"a": stored, "id": enc},
+    )
+    db.commit()
+
+    by_name = {r["name"]: r["address"] for r in segments_router._customer_stats(db)}
+    assert by_name == {"Encrypted": "12 Oak St", "Legacy": "100 Main"}
+
+    seg = await create_segment(
+        payload=SegmentCreateIn(
+            name="On Oak",
+            rules={"field": "address", "operator": "equals", "value": "12 Oak St"},
+        ),
+        request=_mock_request(), user={}, db=db,
+    )
+    out = await list_segment_customers(segment_id=seg.id, _={}, db=db)
+    db.close()
+    assert [(c["name"], c["address"]) for c in out.items] == [("Encrypted", "12 Oak St")]

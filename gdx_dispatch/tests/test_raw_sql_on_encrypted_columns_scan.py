@@ -16,6 +16,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 # test_repo_scan_is_clean asserts encryption_status() reports the live
 # encrypted-column inventory — the declaring models must be imported, not
 # inherited from whichever test file ran earlier in the process.
@@ -173,6 +175,58 @@ def test_finds_aliased_text_call(tmp_path: Path, monkeypatch):
     findings = scan_mod.scan(encrypted=[("customers", "address")])
     assert len(findings) == 1
     assert findings[0][0] == f
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # GDXA-1528: segments.py built its rollup in a helper returning an
+        # f-string and passed the call straight to text().
+        """
+        def _stats_sql(flag):
+            extra = "c.metadata," if flag else "NULL,"
+            return f\"\"\"SELECT c.id, c.address, {extra} c.name FROM customers c\"\"\"
+
+        def stats(db):
+            return db.execute(text(_stats_sql(True))).all()
+        """,
+        """
+        def stats(db):
+            sql = "SELECT c.address FROM customers c"
+            return db.execute(text(sql)).all()
+        """,
+        """
+        def stats(db, where):
+            return db.execute(text(f"SELECT c.address FROM customers c WHERE {where}")).all()
+        """,
+        """
+        def stats(db, where):
+            return db.execute(text("SELECT c.address " + "FROM customers c")).all()
+        """,
+    ],
+    ids=["helper-call", "local-name", "f-string", "concat"],
+)
+def test_finds_sql_built_outside_the_literal(tmp_path: Path, monkeypatch, body):
+    f = tmp_path / "built.py"
+    f.write_text("from sqlalchemy import text\n" + textwrap.dedent(body))
+    monkeypatch.setattr(scan_mod, "SCAN_ROOTS", [tmp_path])
+    findings = scan_mod.scan(encrypted=[("customers", "address")])
+    assert [(p, t, c) for p, _ln, t, c, _ex in findings] == [(f, "customers", "address")]
+
+
+def test_resolved_sql_without_the_column_does_not_flag(tmp_path: Path, monkeypatch):
+    src = textwrap.dedent("""
+        from sqlalchemy import text
+
+        def _ids_sql():
+            return f"SELECT c.id FROM customers c"
+
+        def ids(db):
+            return db.execute(text(_ids_sql())).all()
+    """)
+    (tmp_path / "ids.py").write_text(src)
+    monkeypatch.setattr(scan_mod, "SCAN_ROOTS", [tmp_path])
+    assert scan_mod.scan(encrypted=[("customers", "address")]) == []
 
 
 def test_repo_scan_is_clean(monkeypatch):

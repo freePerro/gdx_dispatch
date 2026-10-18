@@ -27,6 +27,7 @@ from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_site, resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
+from gdx_dispatch.core.link_sms import as_uuid
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.part_pricing import (
     duplicate_capture_groups,
@@ -323,6 +324,29 @@ def _normalize_tech_id_list(
     return out
 
 
+def _norm_id(value: Any) -> str | None:
+    """An id in one comparable form: dashed lowercase for a uuid, the trimmed
+    string otherwise, None for blank. Crew and lane ids arrive dashed from the
+    SPA and may be stored either way."""
+    s = str(value).strip() if value is not None else ""
+    if not s:
+        return None
+    parsed = as_uuid(s)
+    return str(parsed) if parsed else s
+
+
+def _current_lead(db: Session, job: Job) -> str | None:
+    """The live lead assignment's tech, normalized, else None."""
+    row = db.execute(
+        select(JobAssignment.tech_id).where(
+            JobAssignment.job_id == str(job.id),
+            JobAssignment.deleted_at.is_(None),
+            JobAssignment.is_lead.is_(True),
+        ).limit(1)
+    ).scalar_one_or_none()
+    return _norm_id(row)
+
+
 def _set_job_assignments(
     db: Session,
     *,
@@ -330,20 +354,34 @@ def _set_job_assignments(
     tech_ids: list[str],
     lead_tech_id: str | None,
     user_id: str,
-) -> str | None:
+    prior_primary: str | None = None,
+) -> dict[str, Any]:
     # Diff-apply the desired (job, tech) edges. Soft-delete assignments
     # that fell out of the list, insert new ones, reconcile ``is_lead``,
     # and mirror ``Job.assigned_to`` to (lead | first | NULL) so legacy
-    # single-tech reads stay coherent. Returns the resolved primary tech id.
+    # single-tech reads stay coherent. Returns the crew change for the
+    # caller's audit row: a removed assignment carries only deleted_at, so
+    # that row is the only record of who took the tech off (GDXA-1455).
+    # ``prior_primary`` is the job's assigned_to before the caller touched
+    # it: a legacy job's tech lives there with no assignment row, and is the
+    # crew it starts from (visit_sync.job_crew reads it the same way).
     now = datetime.now(UTC)
     existing = db.execute(
         select(JobAssignment).where(
             JobAssignment.job_id == str(job_id),
             JobAssignment.deleted_at.is_(None),
-        )
+        ).order_by(JobAssignment.assigned_at, JobAssignment.id)
     ).scalars().all()
     by_tech = {row.tech_id: row for row in existing}
     desired = set(tech_ids)
+    if existing:
+        crew_from = list(by_tech)
+        # job_assignments' add/unassign leave no row flagged lead; the primary
+        # they mirror into assigned_to is the lead then (_recompute_primary).
+        lead_from = next((row.tech_id for row in existing if row.is_lead), None) or prior_primary
+    else:
+        crew_from = [prior_primary] if prior_primary else []
+        lead_from = prior_primary or None
 
     for tech, row in by_tech.items():
         if tech not in desired:
@@ -399,7 +437,14 @@ def _set_job_assignments(
         .values(assigned_to=resolved_lead)
     )
     db.expire_all()
-    return resolved_lead
+    return {
+        "crew_from": crew_from,
+        "crew_to": list(tech_ids),
+        "crew_added": [t for t in tech_ids if t not in crew_from],
+        "crew_removed": [t for t in crew_from if t not in desired],
+        "lead_from": lead_from,
+        "lead_to": resolved_lead,
+    }
 
 
 def _visit_refused(refusal: Any) -> JSONResponse:
@@ -751,7 +796,7 @@ def list_jobs(
             key = _canon_status(cr.get("st"))
             status_counts[key] = status_counts.get(key, 0) + int(cr.get("n") or 0)
         rows = db.execute(
-            _uuid_text(
+            _uuid_text(  # noqa: RAWENC1  # address here is cl.address (customer_locations, plaintext), never c.address
                 "SELECT j.id, j.job_number, j.title, j.description, j.status, j.lifecycle_stage, "  # noqa: S608 — WHERE is joined from literal fragments and order_sql is one of two literals; values are bound
                 "j.dispatch_status, j.scheduled_at, j.completed_at, "
                 "j.priority, j.job_type, j.customer_id, j.assigned_to, j.holding_area_id, "
@@ -1254,6 +1299,7 @@ def update_job(
         # /cancel, which records the reason and cleans up after the job.
         requested_stage = updates.get("lifecycle_stage")
         prior_stage, prior_status = job.lifecycle_stage, job.status
+        prior_primary = str(job.assigned_to) if job.assigned_to else None
         stored_stage = (job.lifecycle_stage or "").lower()
         if requested_stage is not None:
             if requested_stage == stored_stage:
@@ -1265,6 +1311,53 @@ def update_job(
                 updates["started_at"] = now
             if len(updates) == 1:  # only updated_at left — nothing to change
                 return jsonable_response(_job_patch_result(job))
+
+        # Crew and lane guard (GDXA-1499). The stage guard above only runs
+        # when a stage is requested, so a finished job's crew and lane, and an
+        # under-way job's whole crew, could be rewritten here by any client
+        # holding a stale or unread crew. A resend of what is stored is
+        # dropped rather than refused: the Jobs list edit dialog resends the
+        # crew on every save.
+        if apply_assignments or "holding_area_id" in updates:
+            from gdx_dispatch.services.visit_sync import FINISHED_STAGES, job_crew
+
+            crew_now = [_norm_id(t) for t in job_crew(db, job)]
+            crew_changed = False
+            if apply_assignments:
+                # A crew with no lead row reads its first tech as lead, as
+                # _set_job_assignments resolves it.
+                lead_now = _current_lead(db, job) or (crew_now[0] if crew_now else None)
+                crew_changed = (
+                    set(crew_now) != {_norm_id(t) for t in desired_tech_ids}
+                    or (bool(desired_lead) and _norm_id(desired_lead) != lead_now)
+                )
+            lane_changed = (
+                "holding_area_id" in updates
+                and _norm_id(updates["holding_area_id"]) != _norm_id(job.holding_area_id)
+            )
+            if stored_stage in FINISHED_STAGES:
+                if crew_changed or lane_changed:
+                    return jsonable_response({
+                        "detail": f"This job is {stored_stage}. Its crew and lane "
+                                  "stay as they were; re-open it on the job page "
+                                  "to change them.",
+                        "use": "reopen",
+                    }, 409)
+                if apply_assignments:
+                    apply_assignments = False
+                    updates.pop("assigned_to", None)
+                updates.pop("holding_area_id", None)
+                if len(updates) == 1:  # only updated_at left — nothing to change
+                    return jsonable_response(_job_patch_result(job))
+            elif (
+                apply_assignments and crew_now and not desired_tech_ids
+                and (updates.get("lifecycle_stage") or stored_stage) == "in_progress"
+            ):
+                return jsonable_response({
+                    "detail": "This job is under way, so it keeps a crew. Change "
+                              "who is on it on the job page.",
+                    "use": "crew",
+                }, 409)
 
         # Sprint customer-multi-location: validate against the resolved
         # customer_id (whichever the patch ends with, not just the payload).
@@ -1356,13 +1449,15 @@ def update_job(
             )
 
         db.flush()
+        crew_change: dict[str, Any] = {}
         if apply_assignments:
-            _set_job_assignments(
+            crew_change = _set_job_assignments(
                 db,
                 job_id=str(job.id),
                 tech_ids=desired_tech_ids,
                 lead_tech_id=desired_lead,
                 user_id=_user_id(current_user),
+                prior_primary=prior_primary,
             )
             job = db.get(Job, job_uuid)
         # One transaction: the job, its visits and their audit rows commit
@@ -1376,6 +1471,7 @@ def update_job(
             db, tenant_id=tenant_id, actor={"user_id": _user_id(current_user)},
             action="job_updated", entity_type="job", entity_id=str(job.id),
             details={
+                **crew_change,
                 "fields": list({**updates, **({"lifecycle_stage": ls_value} if ls_value else {})}.keys()),
                 "from_stage": prior_stage, "to_stage": ls_value or prior_stage,
                 "from_status": prior_status, "to_status": job.status,
@@ -5348,22 +5444,27 @@ def _plan_reopen(db: Session, job: Job, payload: StateOverridePayload, now: date
     )
 
 
-def _apply_reopen(db: Session, job: Job, plan: Any, payload: StateOverridePayload, user: Any) -> Job:
+def _apply_reopen(
+    db: Session, job: Job, plan: Any, payload: StateOverridePayload, user: Any,
+) -> tuple[Job, dict[str, Any]]:
     """The re-open's writes after its status flip: the job's date and crew,
-    its visits (R0 and E4), and recompute."""
+    its visits (R0 and E4), and recompute. Returns the job and the crew
+    change for the caller's audit row ({} when the crew was not touched)."""
     from gdx_dispatch.services.visit_sync import UNSET
 
     if plan.scheduled_at is not UNSET:
         job.scheduled_at = plan.scheduled_at
     db.flush()
+    crew_change: dict[str, Any] = {}
     if payload.assigned_to:
-        _set_job_assignments(
+        crew_change = _set_job_assignments(
             db, job_id=str(job.id), tech_ids=[payload.assigned_to],
             lead_tech_id=payload.assigned_to, user_id=_user_id(user),
+            prior_primary=str(job.assigned_to) if job.assigned_to else None,
         )
         job = db.get(Job, job.id)
     _apply_visits(db, job, plan, user, "job_reopened")
-    return job
+    return job, crew_change
 
 
 def _validate_reason(reason: str | None) -> str | None:
@@ -5420,11 +5521,12 @@ def uncomplete_job(
         job.status = "In Progress"
         job.completed_at = None
         job.updated_at = now
-        job = _apply_reopen(db, job, plan, payload, current_user)
+        job, crew_change = _apply_reopen(db, job, plan, payload, current_user)
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_uncompleted", entity_type="job", entity_id=str(job.id),
             details={
+                **crew_change,
                 "reason": cleaned,
                 **_stage_move(*prior, job),
                 "prior_completed_at": prior_completed_at.isoformat() if prior_completed_at else None,
@@ -5486,7 +5588,7 @@ def reactivate_job(
             job.dispatch_status = "assigned"
         job.updated_at = now
         prior_scheduled_at = job.scheduled_at
-        job = _apply_reopen(db, job, plan, payload, current_user)
+        job, crew_change = _apply_reopen(db, job, plan, payload, current_user)
         # Reactivate to "scheduled" only if the job has a date — read AFTER
         # recompute. Cancelling retired its visits, so a re-activate sent with
         # no date and no Current visit left has only the stale date: clear it
@@ -5532,6 +5634,7 @@ def reactivate_job(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_reactivated", entity_type="job", entity_id=str(job.id),
             details={
+                **crew_change,
                 "reason": cleaned,
                 **_stage_move(*prior, job),
                 "new_scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,

@@ -250,6 +250,101 @@
             </div>
           </div>
 
+          <!-- Estimate vs on-site labor, from GET /api/jobs/{id}/labor-variance.
+               "Actual" there is each assignment's arrival-to-completion clock
+               time, not attested hours and not the TimeEntry labor that Your
+               Cost sums, so it is labelled on-site time throughout. -->
+          <section class="job-detail-section" data-testid="jc-labor-variance">
+            <div class="section-head">
+              <h4>Labor: estimate vs on-site time</h4>
+              <span v-if="laborVariance?.primary_rate_source" class="section-note">
+                Rate: {{ rateSourceLabel(laborVariance.primary_rate_source) }}
+              </span>
+            </div>
+            <div v-if="laborVarianceLoading" class="spinner-wrap small" data-testid="jc-labor-loading">
+              <ProgressSpinner style="width:2rem; height:2rem" />
+            </div>
+            <div v-else-if="laborVarianceError" class="section-error" role="alert" data-testid="jc-labor-error">
+              <span>Couldn't load labor variance: {{ laborVarianceError }}</span>
+              <Button label="Retry" icon="pi pi-refresh" text size="small" @click="loadLaborVariance(currentJobId)" />
+            </div>
+            <p v-else-if="laborVarianceEmpty" class="section-note" data-testid="jc-labor-empty">
+              No estimated labor hours and no on-site time recorded for this job yet.
+            </p>
+            <template v-else-if="laborVariance">
+              <div class="job-detail-summary">
+                <div class="summary-card" data-testid="jc-labor-hours">
+                  <span class="summary-label">Hours</span>
+                  <strong class="summary-value">{{ formatHours(laborVariance.actual_hours) }}</strong>
+                  <small>
+                    on site vs {{ formatHours(laborVariance.estimated_hours) }} estimated
+                    <span v-if="!laborVariance.estimate_id">(no estimate)</span>
+                  </small>
+                </div>
+                <div class="summary-card" data-testid="jc-labor-variance-hours">
+                  <span class="summary-label">Hours variance</span>
+                  <template v-if="laborHasEstimate">
+                    <strong class="summary-value" :class="varianceClass(laborVariance.variance_hours)">
+                      {{ formatSignedHours(laborVariance.variance_hours) }}
+                    </strong>
+                    <small>{{ varianceWord(laborVariance.variance_hours) }}</small>
+                  </template>
+                  <template v-else>
+                    <strong class="summary-value">—</strong>
+                    <small>No estimated hours to compare</small>
+                  </template>
+                </div>
+                <div class="summary-card" data-testid="jc-labor-variance-cost">
+                  <span class="summary-label">Labor cost variance</span>
+                  <strong v-if="laborHasEstimate" class="summary-value" :class="varianceClass(laborVariance.variance_cost)">
+                    {{ formatSignedCurrency(laborVariance.variance_cost) }}
+                  </strong>
+                  <strong v-else class="summary-value">—</strong>
+                  <small>
+                    {{ formatCurrency(laborVariance.actual_cost) }} vs
+                    {{ formatCurrency(laborVariance.estimated_cost) }} estimated
+                  </small>
+                </div>
+              </div>
+              <DataTable
+                v-if="laborVariance.per_tech?.length"
+                responsiveLayout="scroll"
+                :value="laborVariance.per_tech"
+                dataKey="assignment_id"
+                striped-rows
+                data-testid="jc-labor-per-tech"
+                class="job-detail-table"
+              >
+                <Column header="Technician" style="min-width:180px">
+                  <template #body="{ data: t }">
+                    {{ t.tech_name || 'Unnamed technician' }}
+                    <Badge v-if="t.is_lead" value="Lead" severity="info" />
+                  </template>
+                </Column>
+                <Column header="On-site hours" style="width:130px">
+                  <template #body="{ data: t }">
+                    {{ t.arrived_at && t.completed_at ? formatHours(t.actual_hours) : 'Not finished' }}
+                  </template>
+                </Column>
+                <Column header="Rate" style="width:160px">
+                  <template #body="{ data: t }">
+                    <span v-if="t.hourly_rate !== null && t.hourly_rate !== undefined">
+                      {{ formatCurrency(t.hourly_rate) }}/hr
+                    </span>
+                    <small class="muted"> {{ rateSourceLabel(t.rate_source) }}</small>
+                  </template>
+                </Column>
+                <Column header="Cost" style="width:120px">
+                  <template #body="{ data: t }">{{ formatCurrency(t.actual_cost) }}</template>
+                </Column>
+              </DataTable>
+              <p class="section-note">
+                On-site time runs from each tech's arrival to completion. It is not the
+                hours billed on the closeout, nor the time-entry labor inside Your Cost.
+              </p>
+            </template>
+          </section>
+
           <!-- READ-ONLY, deliberately. Every write control that used to live in
                this dialog was wired to an endpoint that does not exist: GET and
                POST /api/jobs/{id}/parts 404, DELETE 405, PATCH 501, and
@@ -452,7 +547,59 @@ const jobDetail = ref(null);
 // arithmetic over rows that never loaded.
 const jobLineItems = ref([]);
 const lineItemsLoading = ref(false);
+const laborVariance = ref(null);
+const laborVarianceLoading = ref(false);
+const laborVarianceError = ref('');
 const router = useRouter();
+
+const laborVarianceEmpty = computed(() => {
+  const v = laborVariance.value;
+  if (!v) return false;
+  return !toNumber(v.estimated_hours) && !(v.per_tech || []).length;
+});
+
+// With no estimated hours a variance is just the actual with a sign on it, so
+// the cards say there is nothing to compare rather than "Over estimate".
+const laborHasEstimate = computed(() => toNumber(laborVariance.value?.estimated_hours) > 0);
+
+const RATE_SOURCE_LABELS = {
+  payroll: 'from payroll',
+  technician: 'technician rate',
+  user: 'user rate',
+  none: 'no rate on file',
+};
+
+function rateSourceLabel(source) {
+  return RATE_SOURCE_LABELS[source] || source || '';
+}
+
+function formatHours(value) {
+  return `${toNumber(value).toFixed(2)} h`;
+}
+
+function formatSignedHours(value) {
+  const n = toNumber(value);
+  return `${n > 0 ? '+' : ''}${n.toFixed(2)} h`;
+}
+
+function formatSignedCurrency(value) {
+  const n = toNumber(value);
+  return `${n > 0 ? '+' : ''}${formatCurrency(n)}`;
+}
+
+function varianceWord(value) {
+  const n = toNumber(value);
+  if (n > 0) return 'Over estimate';
+  if (n < 0) return 'Under estimate';
+  return 'On estimate';
+}
+
+function varianceClass(value) {
+  const n = toNumber(value);
+  if (n > 0) return 'variance-over';
+  if (n < 0) return 'variance-under';
+  return '';
+}
 
 const currentJobId = computed(() => jobDetail.value?.job_id || jobDetail.value?.id || null);
 
@@ -525,24 +672,39 @@ function marginSeverity(value) {
   return 'danger';
 }
 
+// Every loader below writes only if its request is still the newest one of its
+// kind. Comparing the target (job id, date range) is not enough: open A, B,
+// then A again, and both A requests match, so whichever lands last wins, even
+// a failure arriving after the newer success (GDXA-1572).
+let profitabilitySeq = 0;
+let markupSeq = 0;
+let jobDetailSeq = 0;
+let laborVarianceSeq = 0;
+let lineItemsSeq = 0;
+let calculatorSeq = 0;
+
 async function loadProfitability() {
+  const seq = ++profitabilitySeq;
   profitabilityLoading.value = true;
   try {
     const days = rangeDays.value;
     const data = await api.get(`/api/costing/profitability?days=${days}`);
+    if (seq !== profitabilitySeq) return;
     profitabilityRows.value = Array.isArray(data) ? data : data?.items || data?.rows || [];
   } finally {
-    profitabilityLoading.value = false;
+    if (seq === profitabilitySeq) profitabilityLoading.value = false;
   }
 }
 
 async function loadMarkupRules() {
+  const seq = ++markupSeq;
   markupLoading.value = true;
   try {
     const data = await api.get('/api/costing/markup-rules');
+    if (seq !== markupSeq) return;
     markupRules.value = Array.isArray(data) ? data : data?.items || [];
   } finally {
-    markupLoading.value = false;
+    if (seq === markupSeq) markupLoading.value = false;
   }
 }
 
@@ -592,26 +754,38 @@ async function deleteRule(rule) {
 async function openJobDetail(row) {
   const id = row.job_id || row.id;
   if (!id) return;
+  const seq = ++jobDetailSeq;
   showJobDetail.value = true;
   jobLoading.value = true;
   jobDetail.value = null;
   try {
-    jobDetail.value = await api.get(`/api/costing/jobs/${id}`);
+    const data = await api.get(`/api/costing/jobs/${id}`);
+    if (seq === jobDetailSeq) jobDetail.value = data;
   } finally {
-    jobLoading.value = false;
+    if (seq === jobDetailSeq) jobLoading.value = false;
   }
 }
 
 function closeJobDetail() {
+  jobDetailSeq++;
   showJobDetail.value = false;
+  jobLoading.value = false;
   jobDetail.value = null;
 }
 
 watch(currentJobId, (jobId) => {
   if (!jobId) {
+    // Retire whatever is in flight for the job just left.
+    laborVarianceSeq++;
+    lineItemsSeq++;
     jobLineItems.value = [];
+    lineItemsLoading.value = false;
+    laborVariance.value = null;
+    laborVarianceError.value = '';
+    laborVarianceLoading.value = false;
     return;
   }
+  loadLaborVariance(jobId);
   // No parts fetch: the Parts table renders from `jobDetail`, which the dialog
   // already loaded. The old second request went to /api/jobs/{id}/parts, which
   // no router serves — and its `|| []` fallback made a 404 look identical to
@@ -620,17 +794,43 @@ watch(currentJobId, (jobId) => {
 });
 
 
+// The error is shown in the section itself, so the toast is suppressed: one
+// failure, one message, in the place the number would have been.
+async function loadLaborVariance(jobId) {
+  if (!jobId) return;
+  const seq = ++laborVarianceSeq;
+  laborVarianceLoading.value = true;
+  laborVarianceError.value = '';
+  laborVariance.value = null;
+  // Only the newest request may write: job A's late reply never renders under
+  // job B, nor does a failed first visit to A overwrite a later visit's data.
+  const stale = () => seq !== laborVarianceSeq;
+  try {
+    const data = await api.get(`/api/jobs/${jobId}/labor-variance`, {
+      suppressErrorToast: true,
+    });
+    if (!stale()) laborVariance.value = data;
+  } catch (e) {
+    if (!stale()) laborVarianceError.value = e?.message || 'request failed';
+  } finally {
+    if (!stale()) laborVarianceLoading.value = false;
+  }
+}
+
 async function loadJobLineItems(jobId) {
+  const seq = ++lineItemsSeq;
   if (!jobId) {
     jobLineItems.value = [];
     return;
   }
   lineItemsLoading.value = true;
+  jobLineItems.value = [];
   try {
     const data = await api.get(`/api/jobs/${jobId}/line-items`);
+    if (seq !== lineItemsSeq) return;
     jobLineItems.value = Array.isArray(data) ? data : data?.items || [];
   } finally {
-    lineItemsLoading.value = false;
+    if (seq === lineItemsSeq) lineItemsLoading.value = false;
   }
 }
 
@@ -643,14 +843,16 @@ async function loadJobLineItems(jobId) {
 
 async function calculatePrice() {
   if (!calculatorCategory.value || calculatorCost.value === null || calculatorCost.value === undefined) return;
+  const seq = ++calculatorSeq;
   calculatorLoading.value = true;
   try {
-    calculatorResult.value = await api.post('/api/costing/calculate-price', {
+    const result = await api.post('/api/costing/calculate-price', {
       category: calculatorCategory.value,
       cost: calculatorCost.value,
     });
+    if (seq === calculatorSeq) calculatorResult.value = result;
   } finally {
-    calculatorLoading.value = false;
+    if (seq === calculatorSeq) calculatorLoading.value = false;
   }
 }
 
@@ -727,6 +929,16 @@ onMounted(() => {
   line-height: 1.45;
   color: var(--p-text-muted-color, #6b7280);
 }
+
+.section-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-danger-500);
+  font-size: 0.9rem;
+}
+.variance-over { color: var(--color-danger-500); }
+.variance-under { color: var(--color-success-500); }
 
 .job-detail-section {
   border-top: 1px solid var(--p-content-border-color);

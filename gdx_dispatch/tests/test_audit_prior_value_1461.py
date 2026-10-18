@@ -28,6 +28,7 @@ from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
+from gdx_dispatch.core.permissions import WILDCARD
 from gdx_dispatch.models import tenant_models  # noqa: F401  (register models on TenantBase.metadata)
 from gdx_dispatch.models.tenant_models import RolePermission, TenantRole, User, UserRoleAssignment
 
@@ -38,6 +39,9 @@ OWNER = {"sub": "owner-1461", "user_id": "owner-1461", "role": "owner", "tenant_
 def _request() -> Request:
     req = Request({"type": "http", "method": "POST", "path": "/x", "headers": [], "query_string": b"", "client": ("127.0.0.1", 0)})
     req.state.tenant = {"id": TENANT}
+    # What require_permission caches for OWNER; the handlers are called
+    # directly, and assign_role's delegation cap reads it (GDXA-1469).
+    req.state.user_permissions = {WILDCARD}
     return req
 
 
