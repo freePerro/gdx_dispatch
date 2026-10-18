@@ -166,7 +166,7 @@
   "gdx_dispatch/routers/payroll.py:T6:TechCommissionRate.company_id:222",
   "gdx_dispatch/routers/performance.py:T6:User.company_id:450",
   "gdx_dispatch/routers/performance.py:T6:User.company_id:510",
-  "gdx_dispatch/routers/photos.py:T6:JobPhoto.company_id:218",
+  "gdx_dispatch/routers/photos.py:T6:JobPhoto.company_id:212",
   "gdx_dispatch/routers/role_permissions.py:T5:AuditLog.tenant_id:390",
   "gdx_dispatch/routers/role_permissions.py:T6:Role.company_id:165",
   "gdx_dispatch/routers/role_permissions.py:T6:Role.company_id:179",
