@@ -16,8 +16,8 @@ import { join, relative } from 'node:path';
 
 const SRC_DIR = join(__dirname, '..');
 
-// file (relative to src/) → token. Owned by another domain; remove on fix.
-const KNOWN = new Set(['views/JobDetailView.vue --accent-b']);
+// file (relative to src/) → token. Empty since GDXA-1482 fixed JobDetailView.
+const KNOWN = new Set();
 
 function walk(dir) {
   const out = [];
