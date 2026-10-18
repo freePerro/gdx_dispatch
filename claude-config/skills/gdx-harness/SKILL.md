@@ -95,6 +95,12 @@ Moved here from `CLAUDE.md` on 2026-10-11 so it loads when a session needs it, n
   writes nothing to stdout (refusal on stderr, exit 1), so a piped `grep -c`
   prints 0 for a command that never ran (GDXA-1416, gh 2.102.0). A zero from
   grep counts only after `| wc -c` shows the log is non-empty.
+  pytest's own stdout is not in that job log, but the Postgres service log
+  (server version, test-issued SQL `ERROR:` lines) and the `--durations=15`
+  block are, so together they prove a PG test executed. Counts and skips are
+  not recoverable from it (GDXA-1423, run 36348298309, 2026-10-18). That
+  service log also showed CI's `image: postgres:16` floats: it served 16.15,
+  while prod was reported on 16.13; pinning is the maintainer's call.
 - **A foreground `sleep` is blocked and a background Bash dies at 600s.** Long
   runs go through `nohup`, watched by ONE `Monitor` or a single until-loop —
   never a poll loop.
