@@ -265,130 +265,26 @@ def test_pg_break_minutes_started_on_cannot_cost_the_callers_work(pg_test_engine
 
 
 # ---------------------------------------------------------------------------
-# routers/payroll.py — the payroll summary
+# routers/payroll.py — the time_entries hours reader
 # ---------------------------------------------------------------------------
 
 
-def test_pg_a_failed_hours_read_does_not_zero_every_techs_commission_rate(pg_test_engine):
-    """The hours read, then a rate read, on one session — and what that is worth.
+def test_pg_a_failed_hours_read_cannot_cost_the_caller_its_work(pg_test_engine):
+    """``_fetch_tech_hours``' own containment. Break the read and, without the
+    savepoint, the caller's staged work dies with the aborted transaction.
 
-    Break the hours read and, without containment, every rate lookup that
-    follows fails too, while the log says only that one table was unreadable.
-
-    Be careful about the money framing, because an earlier draft of this
-    docstring asserted as live fact the very thing
-    ``routers/payroll.py::_fetch_active_rate`` retracts: that the payroll
-    summary would report "$0.00 commission for the whole crew". **It would
-    not.** ``_build_summary_rows`` calls ``_fetch_tech_revenue`` between these
-    two reads, and that raises ``RevenueBasisUnavailable`` unconditionally
-    (``j.assigned_tech_id`` is on no database), so the real production outcome
-    is a 503 and ``_fetch_active_rate`` never runs at all.
-
-    This test therefore composes the two helpers directly rather than calling
-    ``_build_summary_rows``, and it is a guard on the CONTAINMENT, not evidence
-    of a live money defect. It is worth keeping for the day M27's revenue basis
-    is fixed and this ordering goes live. The assertion is that the rate still
-    resolves to a REAL row after the hours read failed.
+    This was paired with a commission-rate read until GDXA-1560 deleted the
+    payroll summary, ``_fetch_active_rate`` and ``_fetch_tech_names``; the
+    hours reader survives because the labor-trail guards assert through it.
     """
-    from gdx_dispatch.routers.payroll import _fetch_active_rate, _fetch_tech_hours
+    from gdx_dispatch.routers.payroll import _fetch_tech_hours
 
-    tech = str(uuid.uuid4())
-    _seed_user(pg_test_engine, tech, "rate-holder")
-    with pg_test_engine.begin() as c:
-        c.execute(
-            text(
-                "INSERT INTO tech_commission_rates "
-                "(id, company_id, tech_id, rate_type, rate_value, active, "
-                " effective_from, created_at, updated_at) "
-                "VALUES (:id, :tid, :tech, 'percent_revenue', 10, true, :eff, :now, :now)"
-            ),
-            {
-                "id": str(uuid.uuid4()),
-                "tid": TENANT,
-                "tech": tech,
-                "eff": date.today(),
-                "now": datetime.now(UTC),
-            },
-        )
-
-    captured = {}
-
-    def _call(db):
-        captured["hours"] = _fetch_tech_hours(
-            db, tenant_id=TENANT, start=date.today(), end=date.today()
-        )
-        rate = _fetch_active_rate(db, tenant_id=TENANT, tech_id=tech)
-        # Read the value here, while the row is still attached — the caller's
-        # commit inside `_caller_survives` expires it.
-        captured["rate_value"] = None if rate is None else float(rate.rate_value)
-        return captured
-
-    _caller_survives(pg_test_engine, ["time_entries"], _call)
-
-    assert captured["hours"] == {}  # the documented degrade
-    assert captured["rate_value"] == 10.0, (
-        "the commission rate read after the failed hours read came back empty — "
-        "an aborted transaction silently zeroed a rate the caller did query. "
-        "(Not a live payroll number today: see this test's docstring — the real "
-        "summary 503s before reaching here.)"
-    )
-
-
-def test_pg_a_failed_rate_read_cannot_cost_the_caller_its_work(pg_test_engine):
-    """``_fetch_active_rate``'s own containment, which the test above cannot
-    reach — there the rate read succeeds, which is the whole point of it."""
-    from gdx_dispatch.routers.payroll import _fetch_active_rate
-
-    rate = _caller_survives(
+    hours = _caller_survives(
         pg_test_engine,
-        ["tech_commission_rates"],
-        lambda db: _fetch_active_rate(db, tenant_id=TENANT, tech_id=str(uuid.uuid4())),
+        ["time_entries"],
+        lambda db: _fetch_tech_hours(db, tenant_id=TENANT, start=date.today(), end=date.today()),
     )
-    assert rate is None  # the documented degrade
-
-
-def test_pg_fetch_tech_names_loop_failure_cannot_cost_the_caller(pg_test_engine):
-    """The per-id loop. Without containment the first unreadable id aborts the
-    transaction, every remaining id comes back unnamed, and `_build_summary_rows`
-    goes on to read rates on a dead session."""
-    from gdx_dispatch.routers.payroll import _fetch_tech_names
-
-    names = _caller_survives(
-        pg_test_engine,
-        ["users"],
-        lambda db: _fetch_tech_names(db, tenant_id=TENANT, tech_ids=[str(uuid.uuid4())]),
-    )
-    assert names == {}
-
-
-def test_pg_the_dead_in_ids_probe_is_a_false_positive_not_a_missing_savepoint(
-    pg_test_engine,
-):
-    """NOT a containment guard — it pins the verdict that there is nothing here
-    to contain, so the next sweep does not "fix" it.
-
-    ``_fetch_tech_names`` opens with a `SELECT ... WHERE id IN :ids` whose `:ids`
-    is never bound. SQLAlchemy raises ``StatementError`` while processing
-    parameters, client-side: measured on PG 16, the statement never reaches the
-    server and the transaction is NOT aborted. So the swallow below it is
-    harmless to the caller's transaction, unlike every other site in this file.
-
-    This test passes with the savepoints removed — deliberately, and it is the
-    only one here that does. What it asserts is that the per-id loop underneath
-    still returns a real name despite that raise, which is the observable
-    consequence of the failure being client-side.
-    """
-    from gdx_dispatch.routers.payroll import _fetch_tech_names
-
-    good = str(uuid.uuid4())
-    _seed_user(pg_test_engine, good, "named-tech")
-
-    names = _caller_survives(
-        pg_test_engine,
-        [],
-        lambda db: _fetch_tech_names(db, tenant_id=TENANT, tech_ids=[good]),
-    )
-    assert names.get(good) == "named-tech"
+    assert hours == {}  # the documented degrade
 
 
 # ---------------------------------------------------------------------------

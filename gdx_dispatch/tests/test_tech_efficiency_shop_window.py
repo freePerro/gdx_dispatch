@@ -79,26 +79,6 @@ def test_weekly_window_ends_at_shop_midnight_across_a_dst_change(db, monkeypatch
     assert weekly == (_utc(2026, 10, 26, 5), _utc(2026, 11, 2, 6))
 
 
-def test_payroll_default_range_is_the_shop_month_to_date(db, monkeypatch):
-    """GDXA-510 sibling: /api/payroll/summary with no dates is month to date.
-    At 22:00 CDT on Oct 31 the UTC clock already read Nov 1, and the default
-    range was the single day 2026-11-01."""
-    from gdx_dispatch.routers import payroll as pr
-
-    seen = {}
-
-    def _record(_db, *, tenant_id, start, end):
-        seen["range"] = (start, end)
-        return []
-
-    monkeypatch.setattr(pr, "_build_summary_rows", _record)
-    req = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
-    req.state.tenant = {"id": "tenant-a"}
-    with freeze_time("2026-11-01 03:00:00"):
-        pr.payroll_summary(request=req, _={}, db=db, start=None, end=None)
-    assert [d.isoformat() for d in seen["range"]] == ["2026-10-01", "2026-10-31"]
-
-
 def test_payroll_hours_land_on_the_shop_day_they_were_worked(db):
     """GDXA-510 sibling: `_fetch_tech_hours` grouped by `DATE(clock_in)`, the
     UTC day. A 10pm CDT shift on Oct 30 is stamped Oct 31 UTC, so a range

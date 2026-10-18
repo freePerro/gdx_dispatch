@@ -255,8 +255,8 @@ def _refuse_if_locked(row: TimeEntry) -> None:
     costing from the invoice, and the next re-closeout rewrites the row in
     place anyway. The column DEFAULTS to "manual" (tenant_models), so the type
     alone fails open for a writer that omits it, or an old row whose type was
-    rewritten: a row carrying a user_id is a tech's own time (payroll's summary
-    and jobs.py's user-less-row rule both key on it), and this router never
+    rewritten: a row carrying a user_id is a tech's own time (payroll's
+    `_fetch_tech_hours` and jobs.py's user-less-row rule both key on it), and this router never
     sets one, so that row is refused whatever its type. Day close and the
     invoice claim stamp only non-manual rows, so the billed and day-closed
     checks are a backstop and no check-then-commit race remains to lock
