@@ -135,8 +135,22 @@ def test_template_catalog_equals_a_fresh_create_all(pg_test_engine):
         future=True,
     )
     try:
-        TenantBase.metadata.create_all(
-            fresh, tables=[TenantBase.metadata.tables[n] for n in _app_table_names()],
+        # In a fresh interpreter, like _app_table_names and the refresh script.
+        # In-process, create_all(tables=...) is not enough: the metadata-level
+        # before_create still creates every enum on the metadata, so the enums
+        # of models only the tests import (customer_plan_status, inv_po_status,
+        # module_co_status) landed in the fresh database without their tables.
+        subprocess.run(
+            [sys.executable, "-c",
+             "import sys\n"
+             "from sqlalchemy import create_engine\n"
+             "import gdx_dispatch.models\n"
+             "from gdx_dispatch.core.audit import TenantBase\n"
+             "engine = create_engine(sys.argv[1])\n"
+             "TenantBase.metadata.create_all(engine)\n"
+             "engine.dispose()",
+             fresh.url.render_as_string(hide_password=False)],
+            check=True,
         )
         want, got = _catalog(fresh), _catalog(pg_test_engine)
     finally:
