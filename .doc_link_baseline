@@ -10,7 +10,6 @@ CLEANUP_BACKLOG.md|event_emit.py
 CLEANUP_BACKLOG.md|invoice_query.py
 CLEANUP_BACKLOG.md|job_create.py
 CLEANUP_BACKLOG.md|test_28_notifications.py
-UNFINISHED_WORK.md|refresh_test_schema.sh
 VERIFICATION_MANIFEST.md|.vscode/extensions.json
 VERIFICATION_MANIFEST.md|gdx_dispatch/tests/test_pii_literal_scan.py
 VERIFICATION_MANIFEST.md|gdx_dispatch/tools/pii_literal_scan.py
@@ -33,7 +32,6 @@ docs/design/ci-test-suite-assessment-2026-08-03.md|ai-code-review.yml
 docs/design/ci-test-suite-assessment-2026-08-03.md|api.d.ts
 docs/design/ci-test-suite-assessment-2026-08-03.md|app_factory.py
 docs/design/ci-test-suite-assessment-2026-08-03.md|core/public_api.py
-docs/design/ci-test-suite-assessment-2026-08-03.md|refresh_test_schema.sh
 docs/design/ci-test-suite-assessment-2026-08-03.md|routers/communications.py
 docs/design/ci-test-suite-assessment-2026-08-03.md|run_pg_integration_tests.sh
 docs/design/ci-test-suite-assessment-2026-08-03.md|test_01_gdx_scaffold_hang_capture.py

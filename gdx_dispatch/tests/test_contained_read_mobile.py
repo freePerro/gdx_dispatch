@@ -150,19 +150,13 @@ def test_pg_contained_not_billable_check_keeps_the_techs_row(pg_test_engine):
     """`_job_not_billable` degrades the OTHER way — False, Bill stays available —
     and that direction is just as dependent on the transaction surviving.
 
-    No DDL here: `fixtures/structure.sql` has no `jobs.not_billable_at` at all,
-    so the ORM read raises `UndefinedColumn` (42703) unaided. That is the same
-    drift class the fix is insurance against — a column the code selects and the
-    live schema does not have — so it is used as-is rather than papered over.
+    Dropping `jobs.not_billable_at` makes the ORM read raise `UndefinedColumn`
+    (42703): the drift class the fix is insurance against, a column the code
+    selects and the live schema does not have.
     """
     Session = _sessions(pg_test_engine)
-    with pg_test_engine.connect() as c:
-        assert c.execute(
-            text(
-                "SELECT count(*) FROM information_schema.columns WHERE"
-                " table_name = 'jobs' AND column_name = 'not_billable_at'"
-            )
-        ).scalar() == 0, "structure.sql grew the column — force the failure with DDL instead"
+    with pg_test_engine.begin() as c:
+        c.execute(text("ALTER TABLE jobs DROP COLUMN not_billable_at"))
 
     with Session() as db:
         db.add(_Row(id=1, v="the caller's next statement"))
@@ -184,8 +178,12 @@ def test_pg_the_deposit_summarys_second_read_is_inside_the_savepoint(
     then `payments` is dropped so only the inner read can fail.
     """
     Session = _sessions(pg_test_engine)
-    job_id = uuid.uuid4()
+    job_id, cust_id = uuid.uuid4(), uuid.uuid4()
     with pg_test_engine.begin() as c:
+        c.execute(
+            text("INSERT INTO customers (id, name, company_id) VALUES (:c, 'GDXA-156', :t)"),
+            {"c": cust_id, "t": TENANT},
+        )
         c.execute(
             text(
                 "INSERT INTO jobs (id, title, dispatch_status, company_id)"
@@ -195,13 +193,13 @@ def test_pg_the_deposit_summarys_second_read_is_inside_the_savepoint(
         )
         c.execute(
             text(
-                "INSERT INTO invoices (id, job_id, invoice_number, billing_type,"
+                "INSERT INTO invoices (id, job_id, customer_id, invoice_number, billing_type,"
                 " sequence_number, subtotal, tax_amount, total, balance_due,"
                 " status, locked, public_token, company_id, created_at)"
-                " VALUES (gen_random_uuid(), :j, 'INV-GDXA156', 'deposit', 1,"
+                " VALUES (gen_random_uuid(), :j, :c, 'INV-GDXA156', 'deposit', 1,"
                 " 6000, 0, 6000, 3000, 'sent', false, 'tok-gdxa156', :t, now())"
             ),
-            {"j": job_id, "t": TENANT},
+            {"j": job_id, "c": cust_id, "t": TENANT},
         )
         c.execute(text("DROP TABLE payments CASCADE"))
 
@@ -339,9 +337,9 @@ def test_pg_a_failed_push_lookup_does_not_break_the_chat_reply(
     `_push_other_party` guards it with `db.begin_nested()` — the ORM mutations it
     stages have to be un-staged by the rollback (contained_read rule 2).
 
-    `push_subscriptions` is absent from `fixtures/structure.sql`, so the read
-    fails as 42P01 with no DDL needed — the same missing-table shape production
-    sees during a migration window. Uncontained, that abort rode out of
+    `push_subscriptions` is renamed away, so the read fails as 42P01 — the same
+    missing-table shape production sees during a migration window. (Until
+    GDXA-1558 the stale fixture simply lacked the table.) Uncontained, that abort rode out of
     `_push_other_party` into `send_job_chat`'s `except Exception: log` and left
     the session dead for whatever the caller did next — which is what `_Row`
     stands in for here.
@@ -357,6 +355,7 @@ def test_pg_a_failed_push_lookup_does_not_break_the_chat_reply(
     Session = _sessions(pg_test_engine)
     role_id = uuid.uuid4()
     with pg_test_engine.begin() as c:
+        c.execute(text("ALTER TABLE push_subscriptions RENAME TO push_subscriptions_gone"))
         c.execute(
             text(
                 "INSERT INTO tenant_roles (id, company_id, name, permissions,"
@@ -376,8 +375,7 @@ def test_pg_a_failed_push_lookup_does_not_break_the_chat_reply(
 
     class _Msg:
         """Only the attributes `_push_other_party` reads. A real JobChatMessage
-        would need a table `structure.sql` does not have, and would not make the
-        assertion any stronger."""
+        would not make the assertion any stronger."""
 
         sender_role = "tech"
         body = "door is off track, need a 2in roller"
@@ -418,65 +416,18 @@ def test_pg_a_failed_jobsite_seed_does_not_lose_the_techs_quote(pg_test_engine):
     the sweep was scoped to; it is included because the consequence is the
     tech's work, which is the thing this whole class is about.
 
-    No DDL: `fixtures/structure.sql` has no `jobs.location_id`, so the seed's
-    `SELECT location_id, customer_id FROM jobs` raises `UndefinedColumn` (42703)
-    unaided while the access gate above it — which selects a literal `1` — still
-    passes. Exactly one statement in the handler can fail, which is what makes
-    the assertion at the end unambiguous.
+    Dropping `jobs.location_id` makes the seed's `SELECT location_id,
+    customer_id FROM jobs` raise `UndefinedColumn` (42703) while the access
+    gate above it — which selects a literal `1` — still passes. Exactly one
+    statement in the handler can fail, which is what makes the assertion at the
+    end unambiguous.
     """
-    from gdx_dispatch.models.labor_pricing import LaborPriceItem
-    from gdx_dispatch.models.tenant_models import AppSettings
-    from gdx_dispatch.modules.proposals.models import (
-        Estimate,
-        EstimateLine,
-        ProposalTier,
-    )
     from gdx_dispatch.routers.mobile_quoting import BuildQuoteIn, QuoteLineIn, QuoteTierIn
-
-    # `structure.sql` has drifted from the ORM on both tables this handler
-    # touches OUTSIDE the savepoint under test — `app_settings` predates
-    # `google_maps_api_key` and `estimates` predates `jobsite_address` — so
-    # either one raises UndefinedColumn and masks the real assertion. Rebuilt
-    # from the ORM, which is truth, on a throwaway per-test clone. The same drift
-    # and the same remedy are documented in test_timeclock_audit_refusal.py's PG
-    # test. CASCADE because `invoices.estimate_id` references `estimates`; this
-    # test does not use invoices.
-    AppSettings.__table__.drop(bind=pg_test_engine, checkfirst=True)
-    AppSettings.__table__.create(bind=pg_test_engine)
-    with pg_test_engine.begin() as c:
-        c.execute(
-            text("DROP TABLE IF EXISTS estimate_lines, proposal_tiers, estimates CASCADE")
-        )
-    # create_all, not three .create() calls: estimates.accepted_tier_id and
-    # proposal_tiers.estimate_id are a FK cycle, which only the sorted path knows
-    # to break with a post-hoc ADD CONSTRAINT.
-    # create_all over an explicit table list, not three .create() calls:
-    # estimates.accepted_tier_id and proposal_tiers.estimate_id are a FK cycle
-    # that only the sorted path breaks with a post-hoc ADD CONSTRAINT. The list
-    # is explicit rather than the whole metadata because an unfiltered create_all
-    # trips on drift in tables this test never touches (`users.id`'s type differs
-    # from the ORM's, so user_tour_progress's FK cannot be built) — the same
-    # "create_all tables diverge from the ORM" hazard, from the other side.
-    Estimate.metadata.create_all(
-        bind=pg_test_engine,
-        tables=[
-            LaborPriceItem.__table__,  # estimate_lines.labor_price_item_id
-            Estimate.__table__,
-            EstimateLine.__table__,
-            ProposalTier.__table__,
-        ],
-        checkfirst=True,
-    )
 
     Session = _sessions(pg_test_engine)
     job_id = uuid.uuid4()
     with pg_test_engine.begin() as c:
-        assert c.execute(
-            text(
-                "SELECT count(*) FROM information_schema.columns WHERE"
-                " table_name = 'jobs' AND column_name = 'location_id'"
-            )
-        ).scalar() == 0, "structure.sql grew the column — force the failure with DDL instead"
+        c.execute(text("ALTER TABLE jobs DROP COLUMN location_id"))
         c.execute(
             text(
                 "INSERT INTO jobs (id, title, dispatch_status, company_id, assigned_to)"

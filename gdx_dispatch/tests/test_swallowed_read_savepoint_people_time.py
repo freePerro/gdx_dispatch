@@ -32,16 +32,10 @@ Failures are injected by renaming a real table out from under one statement —
 never by monkeypatching the session. A mock proves which arguments were passed,
 never that the transaction survived.
 
-``payroll_entries`` needs no rename because it is missing from this fixture
-already — but be honest about WHY, because the first draft of this file got it
-wrong. It is NOT "absent from the ``TenantBase``-scoped dump": ``PayrollEntry``
-is declared on ``TenantBase``. It is missing because ``tests/fixtures/
-structure.sql`` is 93 tables behind the ORM, and prod has the table (checked
-2026-09-27, PG 16.13). So that injected failure is a FIXTURE ARTIFACT, not the
-production failure mode the handler's own comment implies — the same trap
-``contained_read``'s docstring had to correct once for ``tenant_settings``. It
-still exercises the containment exactly as a real UndefinedTable would, which is
-all these tests need it for.
+Until GDXA-1558 ``payroll_entries`` needed no rename, because a stale
+``tests/fixtures/structure.sql`` (93 tables behind the ORM) lacked it, and these
+tests leaned on that absence. The dump is the ORM now, so the table is renamed
+like every other.
 """
 from __future__ import annotations
 
@@ -126,8 +120,7 @@ def test_pg_labor_cost_falls_back_to_the_estimated_rate_after_the_true_read_fail
 
     ``effective_labor_cost`` reads ``payroll_entries`` for the true rate, and on
     failure falls back to ``technicians.hourly_rate``. ``payroll_entries`` is
-    absent from the PG fixture (a stale-fixture artifact — see the module
-    docstring; prod has the table), so read 1 raises a real ``UndefinedTable``.
+    renamed away, so read 1 raises a real ``UndefinedTable``.
 
     Without the savepoint, that abort makes read 2 fail too: source collapses to
     ``"none"`` and the entry is costed at 0.00. With it, read 2 answers and the
@@ -149,7 +142,7 @@ def test_pg_labor_cost_falls_back_to_the_estimated_rate_after_the_true_read_fail
 
     lc = _caller_survives(
         pg_test_engine,
-        [],  # payroll_entries is already absent — a genuine UndefinedTable
+        ["payroll_entries"],
         lambda db: effective_labor_cost(db, tech_user_id=tech, hours=2, when=datetime.now(UTC)),
     )
 
@@ -169,7 +162,7 @@ def test_pg_labor_cost_with_both_rate_reads_broken_still_lets_the_caller_commit(
 
     lc = _caller_survives(
         pg_test_engine,
-        ["technicians"],  # payroll_entries is absent too
+        ["payroll_entries", "technicians"],
         lambda db: effective_labor_cost(db, tech_user_id=str(uuid.uuid4()), hours=2),
     )
     assert lc.source == "none"

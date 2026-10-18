@@ -1012,22 +1012,29 @@ PG_COMPANY = "11111111-1111-1111-1111-111111111111"
 
 
 def _pg_seed_job(session) -> str:
-    """invoices.job_id is NOT NULL with an FK to jobs, so a revenue row needs a
-    real job behind it."""
-    job_id = str(uuid.uuid4())
+    """A revenue row needs a real job and a real customer behind it:
+    invoices.customer_id is NOT NULL with an FK to customers, so the invoice
+    seeds read the customer off this job."""
+    job_id, customer_id = str(uuid.uuid4()), str(uuid.uuid4())
+    session.execute(
+        text(
+            "INSERT INTO customers (id, name, company_id) VALUES (:id, 'M8 customer', :company)"
+        ),
+        {"id": customer_id, "company": PG_COMPANY},
+    )
     session.execute(
         text(
             """
-            INSERT INTO jobs (id, title, lifecycle_stage, dispatch_status,
+            INSERT INTO jobs (id, customer_id, title, lifecycle_stage, dispatch_status,
                               billing_status, is_return_visit, company_id, created_at)
-            VALUES (:id, 'M8 revenue fixture',
+            VALUES (:id, :customer_id, 'M8 revenue fixture',
                     CAST('completed' AS job_lifecycle_stage),
                     CAST('unassigned' AS job_dispatch_status),
                     CAST('unbilled' AS job_billing_status),
                     false, :company, now())
             """
         ),
-        {"id": job_id, "company": PG_COMPANY},
+        {"id": job_id, "customer_id": customer_id, "company": PG_COMPANY},
     )
     return job_id
 
@@ -1036,11 +1043,11 @@ def _pg_seed_invoice(session, job_id, *, total, status, billing_type, created_at
     session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
-            VALUES (:id, :job_id, :num,
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num,
                     CAST(:status AS invoice_status),
                     CAST(:btype AS invoice_billing_type),
                     1, 0, 0, :total,
@@ -1107,11 +1114,11 @@ def test_m8_revenue_periods_use_the_billed_date_not_the_import_date(pg_test_sess
     pg_test_session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
-            VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num, CAST('paid' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, 0, 0, 4200, 0, false, :tok, :company,
                     now(), CAST(:billed AS DATE))
@@ -1281,11 +1288,11 @@ def test_m18_tax_is_collected_only_when_cash_arrived(pg_test_session):
     pg_test_session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date, paid_at)
-            VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num, CAST('paid' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, 1000, 100, 1100, 0, false, :tok, :company,
                     now(), CAST(:when AS DATE), now())

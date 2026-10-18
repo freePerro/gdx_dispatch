@@ -87,15 +87,12 @@ def _insert_invoice(engine, *, status: str, total: str, sent_days_ago: int | Non
     """Seed one invoice with raw SQL, deliberately NOT through the ORM.
 
     ``db.add(Invoice(...)) + commit()`` fires the ledger's GL-posting listener,
-    which reads ``gl_settings`` — another TenantBase table missing from
-    ``fixtures/structure.sql``, so it raises UndefinedTable and the seeding
-    fails for a reason that has nothing to do with what is under test. Raw SQL
-    bypasses the ORM event entirely. The READS under test are still ORM reads,
-    which is the half that matters.
+    which has nothing to do with what is under test. Raw SQL bypasses the ORM
+    event entirely. The READS under test are still ORM reads, which is the
+    half that matters.
 
-    ``customer_id`` is left NULL: the column is nullable in the database (the
-    ORM marks it required) and there is an FK to ``customers``, so a NULL is
-    the cheapest way to avoid seeding a customer that no assertion here reads.
+    ``invoices.customer_id`` is NOT NULL with an FK to ``customers``, so each
+    invoice gets a customer of its own that no assertion here reads.
     """
     # ``sent_at`` is BOUND, not interpolated. An f-string here is what ruff's
     # S608 flags, and the rule is right even in a test: the statement is a
@@ -105,19 +102,24 @@ def _insert_invoice(engine, *, status: str, total: str, sent_days_ago: int | Non
         if sent_days_ago is not None
         else None
     )
+    cust_id = str(uuid.uuid4())
     with engine.begin() as c:
+        c.execute(
+            text("INSERT INTO customers (id, name, company_id) VALUES (:id, 'AI MCP seed', :tenant)"),
+            {"id": cust_id, "tenant": TENANT},
+        )
         c.execute(text("""
             INSERT INTO invoices (
-                id, invoice_number, billing_type, sequence_number,
+                id, customer_id, invoice_number, billing_type, sequence_number,
                 subtotal, tax_amount, total, balance_due, status, locked,
                 public_token, company_id, created_at, sent_at
             ) VALUES (
-                gen_random_uuid(), :num, 'standard', 1,
+                gen_random_uuid(), :cust, :num, 'standard', 1,
                 :sub, 0, :total, 0, :status, false,
                 :token, :tenant, now(), :sent_at
             )
         """), {
-            "num": f"INV-{uuid.uuid4().hex[:8]}", "sub": total, "total": total,
+            "cust": cust_id, "num": f"INV-{uuid.uuid4().hex[:8]}", "sub": total, "total": total,
             "status": status, "token": uuid.uuid4().hex, "tenant": TENANT,
             "sent_at": sent_at,
         })
@@ -253,22 +255,17 @@ def test_pg_pricing_helpers_still_answer_when_the_read_succeeds(pg_test_engine):
 
 
 def _outlook_tables(engine):
-    """Create the outlook tables from the ORM.
+    """The outlook models these tests seed and read.
 
-    They are on ``TenantBase`` but absent from ``fixtures/structure.sql``, which
-    predates the module — so the PG template has no ``outlook_*`` at all. Built
-    from the ORM rather than hand-written DDL on purpose: hand-written DDL in
-    this repo once hid a feature that could not be inserted at all.
+    Until GDXA-1558 this created the tables, which a stale
+    ``fixtures/structure.sql`` lacked; the template carries them now.
     """
     from gdx_dispatch.modules.outlook.models import (
         OutlookAccount,
         OutlookAttachment,
         OutlookMessage,
-        OutlookSettings,
     )
 
-    for model in (OutlookAccount, OutlookMessage, OutlookAttachment, OutlookSettings):
-        model.__table__.create(engine, checkfirst=True)
     return OutlookAccount, OutlookMessage, OutlookAttachment
 
 
@@ -531,13 +528,10 @@ def test_pg_get_auto_actions_rules_do_not_kill_each_other(pg_test_engine):
     ``contained_read`` in rule 1 and this test fails on an empty list — it is
     the load-bearing one for this file.
 
-    The ``DROP TABLE`` is belt-and-braces, and this change's audit was right to
-    say so: ``fixtures/structure.sql`` is already stale against the ``Job`` ORM
-    model (no ``jobs.job_number``), so both jobs rules 42703 in this fixture
-    whether or not the table is there — visible as ``UndefinedColumn`` in the
-    captured warnings of the two ``get_queue`` tests below, which drop nothing.
-    Kept because the drop pins the mechanism the docstring claims (42P01)
-    rather than relying on a fixture defect that someone will eventually fix.
+    The ``DROP TABLE`` is the injected failure. Until GDXA-1558 it was
+    belt-and-braces: the stale ``fixtures/structure.sql`` had no
+    ``jobs.job_number``, so both jobs rules raised 42703 with or without it.
+    The dump is the ORM now, so the drop is load-bearing.
     """
     from gdx_dispatch.core.next_action import NextActionQueue
 

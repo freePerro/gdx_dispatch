@@ -17,11 +17,9 @@ With no reachable Postgres these SKIP green on a laptop and FAIL under CI (#440)
 The caller's pending work is a scratch table (``_Row``), following
 ``tests/test_plugin_consent_contained_read.py``. A real ``Estimate`` row would say
 "the customer's accepted estimate did not save" more directly and was tried first,
-but it CANNOT be inserted on this fixture: ``tests/fixtures/structure.sql`` is
-stale against the ORM — no ``estimates.jobsite_address`` column — so every ORM
-insert of one dies on the template rather than on the defect. Refreshing that dump
-(``tools/refresh_test_schema.sh``) is somebody's separate change; a scratch table
-makes these tests independent of it either way, which is the better property.
+but it could not be inserted on the fixture of the day: ``tests/fixtures/structure.sql``
+was stale against the ORM until GDXA-1558 regenerated it. A scratch table keeps
+these tests independent of any schema, which is the better property anyway.
 Each read is made to fail the way production can — ``DROP TABLE`` /
 ``ALTER TABLE ... DROP COLUMN`` on ``pg_test_engine``, or a raw table that
 genuinely does not exist — never by monkeypatching the session, which would
@@ -183,46 +181,13 @@ def _break(engine, *statements: str) -> None:
             c.execute(text(s))
 
 
-def _reconcile(engine, *tables) -> None:
-    """Add any ORM column the PG template's copy of ``table`` is missing.
-
-    ``tests/fixtures/structure.sql`` has drifted from the ORM (no
-    ``estimates.jobsite_address``, no ``estimate_lines.category``), so a helper
-    that reads one of these tables dies on the fixture rather than on the defect
-    under test. Every added column is nullable and untyped-strictly — these tests
-    only need the SELECT to parse, never the data to be right. Refreshing the dump
-    with ``tools/refresh_test_schema.sh`` is the real fix and is somebody else's
-    change; this keeps these guards independent of when it happens.
-    """
-    from sqlalchemy import inspect as _inspect
-
-    insp = _inspect(engine)
-    for table in tables:
-        if not insp.has_table(table.name):
-            # Absent entirely (proposal_tier_lines, the pricing_engine set) — the
-            # ORM is truth, so build it from the ORM.
-            table.create(engine, checkfirst=True)
-            continue
-        have = {c["name"] for c in insp.get_columns(table.name)}
-        missing = [c for c in table.columns if c.name not in have]
-        if not missing:
-            continue
-        with engine.begin() as conn:
-            for col in missing:
-                conn.execute(text(
-                    f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" '
-                    f"{col.type.compile(engine.dialect)} NULL"
-                ))
-
-
 def _prove_read_works(engine, fn) -> None:
     """Run ``fn(db)`` on a throwaway session and close it.
 
     Without this the DROPs below prove nothing: a read of a table that was never
     there fails identically to a read of one that broke, so the test would pass
-    against a fixture artifact. ``structure.sql`` genuinely lacks ``tax_config``
-    (the tax module's models are not imported when it is generated), which makes
-    that the live risk here rather than a theoretical one.
+    against a fixture artifact. Until GDXA-1558 ``structure.sql`` lacked
+    ``tax_config``, so that risk was live, not theoretical.
     """
     db = _sessions(engine)()
     try:
@@ -233,18 +198,12 @@ def _prove_read_works(engine, fn) -> None:
 
 
 def _make_tax_config(engine, *, rate="0.07375", tax_labor=False) -> None:
-    """Create and seed ``tax_config`` from the ORM.
+    """Seed ``tax_config``.
 
-    It is absent from ``tests/fixtures/structure.sql`` (the tax module's models
-    are not imported when that dump is generated), so a test that merely read it
-    would pass for the wrong reason — a fixture artifact rather than the failure
-    under test. Creating it, proving the read WORKS, and only then dropping it is
-    what makes the drop mean something.
+    Seeding it, proving the read WORKS, and only then dropping it is what makes
+    the drop mean something: a read of an empty or missing table would pass for
+    the wrong reason.
     """
-    from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
-
-    TaxConfig.__table__.create(engine, checkfirst=True)
-    TaxExemption.__table__.create(engine, checkfirst=True)
     with engine.begin() as c:
         c.execute(
             text(
@@ -257,24 +216,17 @@ def _make_tax_config(engine, *, rate="0.07375", tax_labor=False) -> None:
 
 
 def _make_pricing_config(engine) -> None:
-    """Create and seed the margin-tier tables so ``hydrate_settings_from_db`` works.
+    """Seed the margin-tier tables so ``hydrate_settings_from_db`` works.
 
-    None of ``models/pricing_engine.py``'s tables are in ``structure.sql``, so
-    without this the hydrate RAISES and ``_cached_settings`` never populates — which
+    Without a tier set the hydrate cannot populate ``_cached_settings`` — which
     matters for the cost guard below: an uncached failure legitimately retries per
     row, so it cannot measure the warm path it exists to protect.
     """
     from gdx_dispatch.models.pricing_engine import (
-        CustomerVolumeDiscountTier,
         MarginTier,
-        PricingClassSettings,
         PricingSettings,
         PricingTierSet,
     )
-
-    for t in (PricingSettings, PricingTierSet, MarginTier, PricingClassSettings,
-              CustomerVolumeDiscountTier):
-        t.__table__.create(engine, checkfirst=True)
 
     # Seeded through the ORM, not raw INSERTs: these tables carry NOT NULL columns
     # with Python-side defaults, so hand-written SQL just guesses at the schema
@@ -390,7 +342,6 @@ def test_pg_a_failed_rate_read_no_longer_takes_the_totals_block_with_it(pg_test_
     """
     from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
-    _reconcile(pg_test_engine, Estimate.__table__, EstimateLine.__table__)
     _make_tax_config(pg_test_engine)
     Session = _sessions(pg_test_engine)
     db = Session()
@@ -519,18 +470,8 @@ def test_pg_public_proposal_company_read_failure_keeps_the_accept_committable(pg
     staged work, which no current route does — that is the point of the insurance.
     Delete the containment and it still reddens, which is what keeps it a guard.
     """
-    from gdx_dispatch.models.tenant_models import Document
-    from gdx_dispatch.modules.proposals.models import EstimateLine, ProposalTier
     from gdx_dispatch.modules.proposals.router import _serialize_public_estimate
 
-    # The serializer reads these two unconditionally and `structure.sql` is stale
-    # for both, so reconcile them against the ORM first — otherwise this test
-    # fails on the fixture instead of on the AppSettings read it is about.
-    # ADD COLUMN rather than drop-and-recreate on purpose: recreating pulls in
-    # the FK chain (`labor_price_items`, also absent from the dump) and would
-    # trade one fixture problem for another.
-    _reconcile(pg_test_engine, EstimateLine.__table__, ProposalTier.__table__,
-               Document.__table__)
 
     Session = _sessions(pg_test_engine)
     db = Session()
@@ -708,7 +649,6 @@ def test_pg_change_order_tax_stamp_failure_keeps_the_new_co(pg_test_engine):
     failed rate read would abort the transaction holding the new CO."""
     from gdx_dispatch.routers.change_orders import ChangeOrder, _stamp_tax_rate
 
-    _reconcile(pg_test_engine, ChangeOrder.__table__)
     _make_tax_config(pg_test_engine)
     Session = _sessions(pg_test_engine)
     db = Session()
@@ -747,16 +687,15 @@ def test_pg_part_price_resolve_failure_keeps_the_caller_committable(pg_test_engi
     about to commit a priced ``job_parts_needed`` row — "the office prices it" is
     a fine answer, losing the row is not.
 
-    ``job_parts_needed`` exists in the template and ``pricing_tier_sets`` does
-    not, so the first lane's read is dropped to force lane 1 to fail rather than
-    fall through.
+    The first lane's table is dropped to force lane 1 to fail rather than fall
+    through. ``CASCADE`` takes only the foreign keys other tables hold on it.
     """
     from gdx_dispatch.core.part_pricing import resolve_sell_price_with_source
 
     Session = _sessions(pg_test_engine)
     db = Session()
     _pending(db)
-    _break(pg_test_engine, "DROP TABLE job_parts_needed")
+    _break(pg_test_engine, "DROP TABLE job_parts_needed CASCADE")
 
     assert resolve_sell_price_with_source(
         db, job_id=str(uuid.uuid4()), sku="GDXA157-SKU"
@@ -847,10 +786,8 @@ def test_pg_the_deposit_block_can_be_wrapped_because_totals_is_fully_contained(p
     """
     from gdx_dispatch.core.database import contained_read
     from gdx_dispatch.modules.deposits.service import deposit_ask_for
-    from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine, ProposalTier
+    from gdx_dispatch.modules.proposals.models import Estimate
 
-    _reconcile(pg_test_engine, Estimate.__table__, EstimateLine.__table__,
-               ProposalTier.__table__)
     Session = _sessions(pg_test_engine)
     db = Session()
 
@@ -909,10 +846,8 @@ def test_pg_totals_opens_no_savepoint_for_an_eager_loaded_estimate(pg_test_engin
     from sqlalchemy import event
     from sqlalchemy.orm import selectinload
 
-    from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine, ProposalTier
+    from gdx_dispatch.modules.proposals.models import Estimate
 
-    _reconcile(pg_test_engine, Estimate.__table__, EstimateLine.__table__,
-               ProposalTier.__table__)
     _make_tax_config(pg_test_engine)
     Session = _sessions(pg_test_engine)
     db = Session()
@@ -1063,7 +998,6 @@ def test_pg_contained_read_contains_an_expired_attribute_refresh(pg_test_engine)
     from gdx_dispatch.core.database import contained_read
     from gdx_dispatch.modules.proposals.models import Estimate
 
-    _reconcile(pg_test_engine, Estimate.__table__)
     Session = _sessions(pg_test_engine)
     db = Session()
     est = Estimate(
@@ -1096,17 +1030,13 @@ def test_pg_contained_read_contains_an_expired_attribute_refresh(pg_test_engine)
 
 def test_pg_site_coverage_public_proposal_photos(pg_test_engine):
     """`_estimate_public_photos`' Document read, on the customer-facing page."""
-    from gdx_dispatch.models.tenant_models import Document
-    from gdx_dispatch.modules.proposals.models import EstimateLine, ProposalTier
     from gdx_dispatch.modules.proposals.router import _serialize_public_estimate
 
-    _reconcile(pg_test_engine, EstimateLine.__table__, ProposalTier.__table__,
-               Document.__table__)
     Session = _sessions(pg_test_engine)
     db = Session()
     est = _public_estimate_row(db)
 
-    _break(pg_test_engine, "DROP TABLE documents")
+    _break(pg_test_engine, "DROP TABLE documents CASCADE")  # CASCADE: FKs onto it only
 
     _pending(db)
     body = _serialize_public_estimate(est, db, None)
