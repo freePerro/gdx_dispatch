@@ -2048,11 +2048,6 @@ function openReassignDialog(job) {
   assignDialogVisible.value = true;
 }
 
-async function unassignJob(job) {
-  if (!job?.id) return;
-  await assignJob(job.id, null);
-}
-
 function toggleMap() {
   showMap.value = !showMap.value;
   if (showMap.value) {
