@@ -1344,7 +1344,10 @@ class JobPhoto(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     # -- columns from production schema not yet in ORM --
     content_type: Mapped[str] = mapped_column(String(150), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # uploaded_at is the timestamp every photo reader orders on; created_at is
+    # the Flask-era column, filled here so an ad-hoc query on it does not read
+    # "no photos" (GDXA-1575: all 62 prod rows were NULL, backfilled by 129).
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
     file_size: Mapped[int] = mapped_column(Integer, nullable=True)
 
 

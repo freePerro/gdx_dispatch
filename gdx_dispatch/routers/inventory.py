@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -49,6 +49,10 @@ class StockAdjustmentIn(BaseModel):
     reason: str = Field(default="manual", max_length=64)
     notes: str | None = Field(default=None, max_length=2000)
     job_id: str | None = Field(default=None, max_length=64)
+
+
+def _audit_value(value: Any) -> Any:
+    return float(value) if isinstance(value, Decimal) else value
 
 
 def _serialize(item: InventoryItem) -> dict[str, Any]:
@@ -98,6 +102,7 @@ def list_parts(
 @router.post("/api/inventory/parts", response_model=None, status_code=201)
 def create_part(
     payload: InventoryItemIn,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -118,6 +123,14 @@ def create_part(
         location=payload.location,
         manufacturer_part_number=payload.manufacturer_part_number,
     )
+    created = {
+        "part_name": item.part_name,
+        "sku": item.sku,
+        "quantity": item.quantity,
+        "reorder_level": item.reorder_level,
+        "unit_cost": _audit_value(item.unit_cost),
+        "unit_price": _audit_value(item.unit_price),
+    }
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -136,8 +149,8 @@ def create_part(
                 user_id=_audit_user,
                 action="create_part",
                 entity_type="part",
-                entity_id="",
-                details={},
+                entity_id=str(item.id),
+                details=created,
                 request=_audit_req,
             )
             _audit_db.commit()
@@ -161,6 +174,7 @@ def get_part(
 @router.patch("/api/inventory/parts/{item_id}", response_model=None)
 def update_part(
     item_id: UUID,
+    request: Request,
     payload: InventoryItemIn,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -169,17 +183,31 @@ def update_part(
     if not item or item.deleted_at:
         raise HTTPException(status_code=404, detail="Part not found")
 
+    # Only fields the client sent. The model's defaults (quantity 0, reorder 5,
+    # cost and price 0) are for create; reading them here zeroed unit_price on
+    # every edit from InventoryView, which has no price field (GDXA-1578).
+    sent = payload.model_fields_set
+    changes: dict[str, Any] = {}
+
+    def _apply(field: str, value: Any) -> None:
+        old = getattr(item, field)
+        if old != value:
+            changes[field] = {"old": _audit_value(old), "new": _audit_value(value)}
+            setattr(item, field, value)
+
     for field in ("sku", "description", "quantity", "reorder_level", "supplier",
                    "vendor_id", "category", "location", "manufacturer_part_number"):
-        val = getattr(payload, field, None)
-        if val is not None:
-            setattr(item, field, val)
-    if payload.part_name or payload.name:
-        item.part_name = payload.part_name or payload.name
-    if payload.unit_cost is not None:
-        item.unit_cost = Decimal(str(payload.unit_cost))
-    if payload.unit_price is not None:
-        item.unit_price = Decimal(str(payload.unit_price))
+        val = getattr(payload, field)
+        if field in sent and val is not None:
+            _apply(field, val)
+    name = (payload.part_name if "part_name" in sent else None) or (
+        payload.name if "name" in sent else None)
+    if name:
+        _apply("part_name", name)
+    for field in ("unit_cost", "unit_price"):
+        val = getattr(payload, field)
+        if field in sent and val is not None:
+            _apply(field, Decimal(str(val)))
 
     db.commit()
     db.refresh(item)
@@ -199,7 +227,7 @@ def update_part(
                 action="update_part",
                 entity_type="part",
                 entity_id=str(item_id),
-                details={},
+                details={"changes": changes},
                 request=_audit_req,
             )
             _audit_db.commit()
@@ -211,6 +239,7 @@ def update_part(
 @router.delete("/api/inventory/parts/{item_id}", response_model=None, status_code=204)
 def delete_part(
     item_id: UUID,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -235,7 +264,7 @@ def delete_part(
                 action="delete_part",
                 entity_type="part",
                 entity_id=str(item_id),
-                details={},
+                details={"part_name": item.part_name, "sku": item.sku},
                 request=_audit_req,
             )
             _audit_db.commit()
@@ -259,6 +288,7 @@ def list_items_alias(
 def adjust_stock(
     item_id: UUID,
     payload: StockAdjustmentIn,
+    request: Request,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -277,6 +307,12 @@ def adjust_stock(
         job_id=UUID(payload.job_id) if payload.job_id else None,
         clamp_nonneg=True,
     )
+    adjusted = {
+        "quantity_delta": payload.quantity_delta,
+        "reason": payload.reason,
+        "job_id": payload.job_id,
+        "new_quantity": item.quantity,
+    }
     db.commit()
     db.refresh(item)
     _audit_db = locals().get('db')
@@ -295,7 +331,7 @@ def adjust_stock(
                 action="adjust_stock",
                 entity_type="inventory_item",
                 entity_id=str(item_id),
-                details={},
+                details=adjusted,
                 request=_audit_req,
             )
             _audit_db.commit()

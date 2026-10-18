@@ -204,6 +204,94 @@ describe('GDXA-1561 — labor variance on Job Costing', () => {
     expect(w.find('[data-testid="jc-labor-loading"]').exists()).toBe(false);
   });
 
+  // GDXA-1572: a job-id compare lets both A requests through on A→B→A.
+  function deferredApi() {
+    const pending = { detail: [], variance: [], lines: [] };
+    const defer = (bucket, id) => new Promise((resolve, reject) => { pending[bucket].push({ id, resolve, reject }); });
+    apiGet.mockImplementation(async (url) => {
+      if (url.startsWith('/api/costing/jobs/')) {
+        const id = url.split('/').pop();
+        return defer('detail', id);
+      }
+      if (url.endsWith('/labor-variance')) return defer('variance', url.split('/')[3]);
+      if (url.includes('/line-items')) return defer('lines', url.split('/')[3]);
+      if (url.startsWith('/api/costing/profitability')) {
+        return [
+          { job_id: 'job-a', invoice_total: 2, cost_estimate: 1, profit: 1, margin_percent: 50 },
+          { job_id: 'job-b', invoice_total: 2, cost_estimate: 1, profit: 1, margin_percent: 50 },
+        ];
+      }
+      return [];
+    });
+    return pending;
+  }
+  const detailFor = (id) => ({ job_id: id, total_cost: 1, invoiced_amount: 2, margin_percent: 50 });
+
+  async function mountView() {
+    const { default: View } = await import('../JobCostingView.vue');
+    const w = mount(View, mountOpts);
+    await flushPromises();
+    const details = () => w.findAll('button').filter((b) => b.text().includes('Details'));
+    return { w, details };
+  }
+
+  it('keeps the newer visit\'s labor when the first visit to the same job fails late (A→B→A)', async () => {
+    const pending = deferredApi();
+    const { w, details } = await mountView();
+    for (const i of [0, 1, 0]) {
+      await details()[i].trigger('click');
+      await flushPromises();
+      pending.detail.at(-1).resolve(detailFor(i === 0 ? 'job-a' : 'job-b'));
+      await flushPromises();
+    }
+    expect(pending.variance.map((p) => p.id)).toEqual(['job-a', 'job-b', 'job-a']);
+    pending.variance[2].resolve({ ...VARIANCE, job_id: 'job-a', estimated_hours: 2, actual_hours: 3 });
+    await flushPromises();
+    pending.variance[1].resolve({ ...VARIANCE, job_id: 'job-b', estimated_hours: 7, actual_hours: 8 });
+    pending.variance[0].reject(new Error('Server error (500)'));
+    await flushPromises();
+    expect(w.find('.job-detail-header h3').text()).toContain('job-a');
+    expect(w.find('[data-testid="jc-labor-error"]').exists()).toBe(false);
+    const hours = w.find('[data-testid="jc-labor-hours"]').text();
+    expect(hours).toContain('3.00 h');
+    expect(hours).toContain('2.00 h estimated');
+    expect(w.find('[data-testid="jc-labor-loading"]').exists()).toBe(false);
+  });
+
+  it("never opens the dialog on an earlier job's late detail reply", async () => {
+    const pending = deferredApi();
+    const { w, details } = await mountView();
+    await details()[0].trigger('click');
+    await flushPromises();
+    await details()[1].trigger('click');
+    await flushPromises();
+    pending.detail[1].resolve(detailFor('job-b'));
+    await flushPromises();
+    pending.detail[0].resolve(detailFor('job-a'));
+    await flushPromises();
+    expect(w.find('.job-detail-header h3').text()).toContain('job-b');
+    expect(pending.variance.map((p) => p.id)).toEqual(['job-b']);
+  });
+
+  it("never shows one job's invoice lines under another job", async () => {
+    const pending = deferredApi();
+    const { w, details } = await mountView();
+    for (const i of [0, 1]) {
+      await details()[i].trigger('click');
+      await flushPromises();
+      pending.detail.at(-1).resolve(detailFor(i === 0 ? 'job-a' : 'job-b'));
+      await flushPromises();
+    }
+    expect(pending.lines.map((p) => p.id)).toEqual(['job-a', 'job-b']);
+    pending.lines[1].resolve({ items: [{ id: 'l-b', description: 'Line for B', quantity: 1, unit_price: 1, total: 1 }] });
+    await flushPromises();
+    pending.lines[0].resolve({ items: [{ id: 'l-a', description: 'Line for A', quantity: 1, unit_price: 1, total: 1 }] });
+    await flushPromises();
+    const text = w.text();
+    expect(text).toContain('Line for B');
+    expect(text).not.toContain('Line for A');
+  });
+
   it('shows a loading state while the request is in flight', async () => {
     let release;
     routeApi(() => new Promise((resolve) => { release = () => resolve(VARIANCE); }));

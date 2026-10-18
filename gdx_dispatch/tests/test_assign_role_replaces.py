@@ -20,14 +20,16 @@ from starlette.requests import Request
 from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.modules import _load_user_permissions
 from gdx_dispatch.models.tenant_models import TenantRole, User, UserRoleAssignment
-from gdx_dispatch.tests.test_role_permissions import _make_client
+from gdx_dispatch.tests.test_role_permissions import _act_as_admin, _make_client
 
 TENANT = "tenant-test"
 
 
 @pytest.fixture()
 def client():
-    tc = _make_client(tenant_id=TENANT)
+    # An owner acts: several cases grant or touch the admin/owner tier, which
+    # assert_can_assign_role reserves to an owner (GDXA-1469).
+    tc = _make_client(tenant_id=TENANT, actor_role="owner", actor_id="owner-1")
     with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions", return_value=0):
         yield tc
     tc.app.dependency_overrides.clear()
@@ -194,3 +196,31 @@ def test_demoting_one_of_two_owners_is_allowed(client):
     assert _assign(client, user_id, _role_id(client, "admin")).status_code == 201
     assert _assigned_names(client, user_id) == ["admin"]
     assert _users_role(client, user_id) == "admin"
+
+
+def test_admin_replaces_a_role_on_a_non_admin_user(client):
+    """The everyday path: an admin, not an owner, swaps a technician's role."""
+    _act_as_admin(client)
+    user_id = _seed_user(client, "technician")
+    assert _assign(client, user_id, _role_id(client, "technician")).status_code == 201
+
+    r = _assign(client, user_id, _role_id(client, "dispatcher"))
+
+    assert r.status_code == 201, r.text
+    assert _assigned_names(client, user_id) == ["dispatcher"]
+
+
+def test_admin_cannot_strip_an_admin_row_by_replacing_it(client):
+    """users.role and the rows can disagree; the replace deletes the admin row,
+    which unassign_role refuses an admin, so assign_role must refuse it too."""
+    user_id = _seed_user(client, "dispatcher")
+    db = _session(client)
+    db.add(UserRoleAssignment(company_id=TENANT, user_id=user_id, role_id=UUID(_role_id(client, "admin"))))
+    db.commit()
+    db.close()
+    _act_as_admin(client)
+
+    r = _assign(client, user_id, _role_id(client, "dispatcher"))
+
+    assert r.status_code == 403, r.text
+    assert _assigned_names(client, user_id) == ["admin"]
