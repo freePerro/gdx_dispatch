@@ -264,6 +264,27 @@ def test_patch_admin_user_demotion_rewrites_role_assignment(db: Session):
     assert details["sessions_revoked"] == 2
 
 
+def test_patch_admin_user_role_change_audits_the_custom_role_it_drops(db: Session):
+    # GDXA-1461: the role change deletes the custom assignment; the audit row
+    # is then the only record the user ever held it.
+    user_id = _seed_user(db, username="leadtech", email="leadtech@example.com", role="technician", company_id=company_id())
+    _tenant_role(db, "technician", ["jobs.read_own"])
+    dispatcher = _tenant_role(db, "dispatcher", ["jobs.read_all"])
+    lead = TenantRole(id=uuid.uuid4(), company_id=company_id(), name="Lead Tech",
+                      permissions=json.dumps(["jobs.read_own", "invoices.write"]), is_system=False)
+    db.add(lead)
+    db.flush()
+    _assign(db, user_id, lead)
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions", return_value=0):
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(role="dispatcher"), _owner_user(), db)
+
+    assert _assigned(db, user_id) == [dispatcher.id]
+    audit = db.execute(select(AuditLog).where(AuditLog.action == "user_updated")).scalars().one()
+    details = audit.details if isinstance(audit.details, dict) else json.loads(audit.details)
+    assert details["dropped_assignments"] == [{"role_id": str(lead.id), "role_name": "Lead Tech"}]
+
+
 def test_patch_admin_user_same_role_keeps_a_custom_assignment(db: Session):
     # A custom role leaves users.role alone by design (role_permissions.assign_role),
     # so re-sending the unchanged role must not strip it.

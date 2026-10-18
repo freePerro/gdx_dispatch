@@ -579,6 +579,10 @@ def update_role(
         details={
             "fields": list(payload.model_dump(exclude_unset=True).keys()),
             "name": row.name,
+            # A rename or new description overwrites the only copy (GDXA-1461).
+            "before_name": before["name"],
+            "before_description": before["description"],
+            "after_description": row.description,
             "before_permissions": before["permissions"],
             "after_permissions": row.permissions,
         },

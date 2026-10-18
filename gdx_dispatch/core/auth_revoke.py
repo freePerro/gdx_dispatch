@@ -13,9 +13,7 @@ access ``jti`` to put on the denylist. What still accepts it, until its
 - ``get_current_user`` and the composite dispatcher refuse it on the next
   request whenever the user row is deleted or inactive, and apply a demotion
   from the row (``finalize_login_jwt``'s DB verify). A password reset with
-  the user still active does not stop it there. ``/ws/dispatch`` runs the
-  same verify at the handshake (GDXA-1210) and again on an open socket, on
-  every frame and at least every 30 seconds (GDXA-1440).
+  the user still active does not stop it there.
 - The bearer fallback behind ``require_role``/``require_permission``
   (``core/modules.py::decode_live_access_token``) checks signature, expiry,
   ``typ`` and the denylist only, so it accepts it for any of these events.

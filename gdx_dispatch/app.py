@@ -336,8 +336,6 @@ gdpr_access_router = _load_router("gdx_dispatch.core.data_access_logger", "route
 from gdx_dispatch.core.audit_middleware import AuditMiddleware  # noqa: E402
 from gdx_dispatch.core.rate_limiter import TenantRateLimitMiddleware as _TenantRateLimitMiddleware  # noqa: E402
 
-dispatch_ws_router = _load_router("gdx_dispatch.routers.dispatch_ws", "router")
-
 parts_pricing_router = _load_router("gdx_dispatch.core.parts_pricing", "router")
 
 van_inventory_router = _load_router("gdx_dispatch.routers", "van_inventory")
@@ -1278,7 +1276,6 @@ def create_app() -> FastAPI:
     app.include_router(support_router.router if hasattr(support_router, "router") else support_router)
     app.include_router(instant_estimate_router.router if hasattr(instant_estimate_router, "router") else instant_estimate_router)
     app.include_router(pdf_templates_router.router if hasattr(pdf_templates_router, "router") else pdf_templates_router)
-    app.include_router(dispatch_ws_router)
     # ai_quote_router is already included above — don't register twice
     # (was causing Duplicate Operation ID warnings for api_quote_history/feedback)
     app.include_router(parts_pricing_router)

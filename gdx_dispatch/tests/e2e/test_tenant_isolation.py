@@ -5,14 +5,12 @@ Covers:
 - API calls with wrong tenant ID return empty data (not other tenant's data)
 - Search results scoped to tenant
 - File uploads scoped to tenant directory
-- WebSocket messages only sent to correct tenant
 - Audit log entries tagged with correct tenant_id
 
 Uses two contexts: the primary e2e tenant and a bogus/secondary tenant ID.
 """
 from __future__ import annotations
 
-import json
 import uuid
 
 import httpx
@@ -318,42 +316,3 @@ class TestTenantHeaderSpoofing:
                     f"Unexpected status with spoofed tenant header: {resp.status_code}"
                 )
 
-
-class TestWebSocketIsolation:
-    """TENANT-07: WebSocket dispatch messages scoped to tenant."""
-
-    def test_tenant07_websocket_requires_auth(self, auth_token):
-        """TENANT-07: WebSocket connection without proper tenant auth is rejected."""
-        import asyncio
-
-        import websockets
-
-        async def _try_ws():
-            ws_url = BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
-            ws_url = f"{ws_url}/ws/dispatch"
-            try:
-                async with websockets.connect(
-                    ws_url,
-                    additional_headers={"x-tenant-id": BOGUS_TENANT_ID},
-                    close_timeout=5,
-                    open_timeout=5,
-                ) as ws:
-                    # If connection succeeded with bogus tenant, that may be okay
-                    # if server validates on first message. Send a ping.
-                    await ws.send(json.dumps({"type": "ping", "tenant_id": BOGUS_TENANT_ID}))
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=3)
-                        data = json.loads(msg) if isinstance(msg, str) else {}
-                        # Should not receive dispatch data from real tenant
-                        assert data.get("type") != "dispatch_update", (
-                            "Bogus tenant received dispatch data!"
-                        )
-                    except asyncio.TimeoutError:
-                        pass  # No response is acceptable
-            except (websockets.exceptions.InvalidStatusCode, ConnectionRefusedError, OSError):
-                pass  # Connection rejected is good
-
-        try:
-            asyncio.get_event_loop().run_until_complete(_try_ws())
-        except (ImportError, RuntimeError):
-            pytest.skip("websockets library not available")

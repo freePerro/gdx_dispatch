@@ -179,7 +179,7 @@ class TestChangeRoleRevokes:
         db = MagicMock()
         db.execute.return_value.scalar_one_or_none.return_value = u
 
-        with patch("gdx_dispatch.routers.users._sync_user_role_assignment"), \
+        with patch("gdx_dispatch.routers.users._sync_user_role_assignment", return_value=([], False)), \
              patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions", return_value=1) as revoke_mock:
             change_role(
                 _U2_ID,
@@ -198,7 +198,7 @@ class TestChangeRoleRevokes:
         db = MagicMock()
         db.execute.return_value.scalar_one_or_none.return_value = u
 
-        with patch("gdx_dispatch.routers.users._sync_user_role_assignment"), \
+        with patch("gdx_dispatch.routers.users._sync_user_role_assignment", return_value=([], False)), \
              patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions") as revoke_mock:
             change_role(
                 _U2_ID,

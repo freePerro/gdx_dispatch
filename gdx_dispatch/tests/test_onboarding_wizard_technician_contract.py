@@ -40,7 +40,7 @@ from starlette.requests import Request
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models import tenant_models  # noqa: F401  (register models on TenantBase.metadata)
-from gdx_dispatch.models.tenant_models import Technician
+from gdx_dispatch.models.tenant_models import Technician, User
 from gdx_dispatch.routers.technicians import TechnicianCreate, create_technician
 from gdx_dispatch.routers.users import UserCreateIn
 
@@ -103,6 +103,9 @@ def test_wizard_technician_payload_is_accepted(db):
     req = Request({"type": "http", "headers": []})
     req.state.tenant = {"id": "tenant-a"}
     user_id = str(uuid.uuid4())  # what POST /api/users returns as `id`
+    # GDXA-1583: create_technician refuses a user_id with no user behind it.
+    db.add(User(id=uuid.UUID(user_id), company_id="tenant-a", email="pat@example.com"))
+    db.commit()
     sample = {"user_id": user_id, "name": "Pat Tech", "email": "pat@example.com", "phone": "555-0100"}
     payload = {k: sample[k] for k in _posted_keys("/api/technicians")}
 

@@ -25,6 +25,7 @@ from gdx_dispatch.models.tenant_models import (
     Lead,
     ServiceAgreement,
     Technician,
+    User,
 )
 
 TENANT = "tenant-test"
@@ -79,9 +80,15 @@ def test_technician_contact_fields_persist():
     app, SessionLocal, engine = _make_app([technicians_router.router])
     try:
         client = TestClient(app)
+        # GDXA-1583: a technician links to a real login, never a free-text id.
+        db = SessionLocal()
+        amber = uuid4()
+        db.add(User(id=amber, company_id=TENANT, email="amber@x.com", name="Amber Rosa"))
+        db.commit()
+        db.close()
         created = client.post(
             "/api/technicians",
-            json={"user_id": "amber.r", "name": "Amber Rosa", "email": "amber@x.com", "phone": "555-0101", "skills": ["springs"]},
+            json={"user_id": str(amber), "name": "Amber Rosa", "email": "amber@x.com", "phone": "555-0101", "skills": ["springs"]},
         )
         assert created.status_code in (200, 201), created.text
         tech_id = created.json().get("id")

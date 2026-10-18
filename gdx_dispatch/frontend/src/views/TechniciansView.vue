@@ -65,6 +65,31 @@
       <Dialog v-model:visible="showDialog" :header="editing ? 'Edit Technician' : 'New Technician'"
         modal :style="{width: '550px'}">
         <div class="form-grid">
+          <!-- GDXA-1583: a technician is a login's row. Every per-tech join
+               (assignments, locations, day close) matches users.id, so the
+               login is picked here, never derived from the email or name. -->
+          <div class="form-field full-width">
+            <label for="tech-user">Login *</label>
+            <Select
+              v-model="form.user_id"
+              inputId="tech-user"
+              :options="userOptions"
+              optionLabel="label"
+              optionValue="value"
+              filter
+              :loading="usersLoading"
+              placeholder="Pick the user this technician signs in as"
+              class="w-full"
+              data-testid="tech-user-select"
+              @change="fillFromUser"
+            />
+            <small v-if="unlinked" class="field-warn" data-testid="tech-unlinked-note">
+              This technician is not linked to a login, so jobs, locations and day close cannot find it. Pick its login.
+            </small>
+            <small v-else-if="!editing" class="muted">
+              No login yet? Add the person on the Users page first.
+            </small>
+          </div>
           <div class="form-field">
             <label>Name *</label>
             <InputText v-model="form.name" placeholder="Full name" class="w-full" />
@@ -101,7 +126,8 @@
         </div>
         <template #footer>
           <Button label="Cancel" severity="secondary" @click="showDialog = false" />
-          <Button :label="editing ? 'Save' : 'Create'" icon="pi pi-check" @click="saveTech" :loading="saving" />
+          <Button :label="editing ? 'Save' : 'Create'" icon="pi pi-check" @click="saveTech" :loading="saving"
+            :disabled="!canSave" data-testid="tech-save-btn" />
         </template>
       </Dialog>
     </section>
@@ -120,6 +146,7 @@ import Dialog from "primevue/dialog";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
+import Select from "primevue/select";
 import Tag from "primevue/tag";
 import Toolbar from "primevue/toolbar";
 import PhoneInput from "../components/PhoneInput.vue";
@@ -144,8 +171,38 @@ const emptyForm = () => ({
   hourly_rate: 0, skills: [], active: true,
 });
 const form = ref(emptyForm());
+const users = ref([]);
+const usersLoading = ref(false);
 
 const filtered = computed(() => techs.value);
+
+// Ids compare without dashes or case: an older row may hold a users.id
+// stored undashed.
+const idKey = (v) => String(v || "").toLowerCase().replace(/-/g, "");
+
+// A login that already has a row in the list is not offered, so the form does
+// not invite a second row splitting that person's jobs and hours. The server
+// does not refuse one.
+const userOptions = computed(() => {
+  const taken = new Set(
+    techs.value.filter((t) => t.id !== editing.value?.id).map((t) => idKey(t.user_id)),
+  );
+  return users.value
+    .filter((u) => !taken.has(idKey(u.id)))
+    .map((u) => ({ value: String(u.id), label: u.email ? `${u.name || u.email} (${u.email})` : u.name || String(u.id) }));
+});
+const knownUserIds = computed(() => new Set(users.value.map((u) => idKey(u.id))));
+const linkChanged = computed(() => !editing.value || form.value.user_id !== editing.value.user_id);
+// An older row may hold an email or name slug, or a login since deleted.
+const unlinked = computed(
+  () => !!editing.value && !usersLoading.value && users.value.length > 0
+    && !knownUserIds.value.has(idKey(form.value.user_id)),
+);
+// An edit that keeps the stored link saves as it is (deactivating a departed
+// tech must work); a new or changed link must be a listed login.
+const canSave = computed(
+  () => !!form.value.name?.trim() && (!linkChanged.value || knownUserIds.value.has(idKey(form.value.user_id))),
+);
 
 function initials(name) {
   if (!name) return "?";
@@ -173,10 +230,32 @@ async function loadTechs() {
   }
 }
 
+async function loadUsers() {
+  usersLoading.value = true;
+  try {
+    const data = await api.get("/api/users?limit=500");
+    users.value = Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.error('load_users_failed', err?.message || err);
+    users.value = [];
+  } finally {
+    usersLoading.value = false;
+  }
+}
+
+function fillFromUser() {
+  const u = users.value.find((x) => String(x.id) === String(form.value.user_id));
+  if (!u) return;
+  if (!form.value.name?.trim()) form.value.name = u.name || "";
+  if (!form.value.email?.trim()) form.value.email = u.email || "";
+  if (!form.value.phone?.trim()) form.value.phone = u.phone || "";
+}
+
 function openCreate() {
   editing.value = null;
   form.value = emptyForm();
   showDialog.value = true;
+  loadUsers();
 }
 
 function openEdit(tech) {
@@ -187,14 +266,15 @@ function openEdit(tech) {
     skills: Array.isArray(tech.skills) ? tech.skills : [],
   };
   showDialog.value = true;
+  loadUsers();
 }
 
 async function saveTech() {
-  if (!form.value.name?.trim()) return;
+  if (!canSave.value) return;
   saving.value = true;
   try {
     const payload = {
-      user_id: form.value.user_id || form.value.email || form.value.name.toLowerCase().replace(/\s+/g, "."),
+      ...(linkChanged.value ? { user_id: form.value.user_id } : {}),
       name: form.value.name,
       email: form.value.email,
       phone: form.value.phone,
@@ -234,6 +314,7 @@ onMounted(loadTechs);
 .w-full { width: 100%; }
 .checkbox-row { display: flex; align-items: center; gap: 0.5rem; }
 .muted { color: var(--p-text-muted-color); font-size: 0.78rem; }
+.field-warn { color: var(--p-orange-600, #c2410c); font-size: 0.78rem; }
 
 .tech-name-cell { display: flex; align-items: center; gap: 0.75rem; }
 .tech-avatar {

@@ -257,20 +257,8 @@ def update_me(payload: SelfPatchIn, request: Request, user: dict = Depends(get_c
     tid = _tenant_id(request)
     uid = _user_id(user)
     u = _get_user_or_404(db, tid, uid)
-    data = payload.model_dump(exclude_unset=True)
-    if not data:
-        raise HTTPException(status_code=422, detail="No fields to update")
-    if "name" in data:
-        u.full_name = humanize_name(data["name"])
-    if "phone" in data:
-        u.phone = data["phone"]
-    if "route_start_address" in data:
-        u.route_start_address = data["route_start_address"]
-    u.updated_at = utcnow()
-    db.commit()
-    _audit(db, request=request, user=user, action="user_self_updated", entity_id=uid, details={"changed_fields": list(data.keys())})
-    db.refresh(u)
-    return _serialize(u)
+    updates = _requested_updates(payload.model_dump(exclude_unset=True), ("phone", "route_start_address"))
+    return _save_field_changes(db, request, user, u, updates, action="user_self_updated")
 
 
 @router.post("/me/change-password", response_model=None)
@@ -384,39 +372,70 @@ def get_user(user_id: str, request: Request, _: dict = Depends(get_current_user)
 def update_user(user_id: str, payload: UserPatchIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
-    user_id = str(u.id)
     data = payload.model_dump(exclude_unset=True)
+    updates = _requested_updates(
+        data, ("phone", "route_start_address", "shift_start", "shift_end", "workdays", "vacation_allowance_hours")
+    )
+    if "email" in data and data["email"]:
+        updates["email"] = ("email", data["email"].lower().strip())
+    if "certifications" in data:
+        updates["certifications"] = ("certifications", (data["certifications"] or "").strip() or None)
+    return _save_field_changes(db, request, user, u, updates, action="user_updated")
+
+
+def _requested_updates(data: dict[str, Any], plain: tuple[str, ...]) -> dict[str, tuple[str, Any]]:
+    """`field -> (column, new value)` for a PATCH body: `name` humanized into
+    full_name, each `plain` field stored as sent. 422 on an empty body."""
     if not data:
         raise HTTPException(status_code=422, detail="No fields to update")
+    updates: dict[str, tuple[str, Any]] = {}
     if "name" in data:
-        u.full_name = humanize_name(data["name"])
-    if "phone" in data:
-        u.phone = data["phone"]
-    if "email" in data and data["email"]:
-        u.email = data["email"].lower().strip()
-    if "route_start_address" in data:
-        u.route_start_address = data["route_start_address"]
-    if "shift_start" in data:
-        u.shift_start = data["shift_start"]
-    if "shift_end" in data:
-        u.shift_end = data["shift_end"]
-    if "workdays" in data:
-        u.workdays = data["workdays"]
-    if "certifications" in data:
-        u.certifications = (data["certifications"] or "").strip() or None
-    details: dict[str, Any] = {"changed_fields": list(data.keys())}
-    if "vacation_allowance_hours" in data:
-        # An allowance decides what someone is owed, so the trail carries
-        # both values, not just the field name. The dialog sends it on every
-        # save; an unchanged value is not a change and leaves no entry.
-        before = allowance_hours_out(u.vacation_allowance_hours)
-        after = allowance_hours_out(data["vacation_allowance_hours"])
-        if before != after:
-            details["vacation_allowance_hours"] = {"from": before, "to": after}
-        u.vacation_allowance_hours = data["vacation_allowance_hours"]
+        updates["name"] = ("full_name", humanize_name(data["name"]))
+    for field in plain:
+        if field in data:
+            updates[field] = (field, data[field])
+    return updates
+
+
+def _audit_value(value: Any) -> Any:
+    """A column value in the JSON shape the audit trail stores."""
+    if isinstance(value, Decimal):
+        return allowance_hours_out(value)
+    if isinstance(value, time):
+        return value.isoformat()
+    return value
+
+
+def _apply_field_changes(u: User, updates: dict[str, tuple[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Set each `field -> (column, new value)` that differs from the row.
+
+    Returns `{field: {"from": prior, "to": new}}` for the fields it changed;
+    an unchanged field is neither written nor reported.
+    """
+    changes: dict[str, dict[str, Any]] = {}
+    for field, (column, new) in updates.items():
+        before, after = _audit_value(getattr(u, column)), _audit_value(new)
+        if before == after:
+            continue
+        setattr(u, column, new)
+        changes[field] = {"from": before, "to": after}
+    return changes
+
+
+def _save_field_changes(db: Session, request: Request, user: Any, u: User, updates: dict[str, tuple[str, Any]], *, action: str) -> dict[str, Any]:
+    """Apply `updates`, commit and audit the fields that moved, with prior values.
+
+    The Users dialog sends every field on every save, so the trail names only
+    the fields whose value changed; a save that changes nothing writes nothing
+    (GDXA-1461).
+    """
+    changes = _apply_field_changes(u, updates)
+    if not changes:
+        return _serialize(u)
     u.updated_at = utcnow()
     db.commit()
-    _audit(db, request=request, user=user, action="user_updated", entity_id=user_id, details=details)
+    _audit(db, request=request, user=user, action=action, entity_id=str(u.id),
+           details={"changed_fields": list(changes), **changes})
     db.refresh(u)
     return _serialize(u)
 
@@ -429,14 +448,25 @@ _LEGACY_ROLE_MAP = {
 }
 
 
-def _sync_user_role_assignment(db: Session, tenant_id: str, user_id: str, legacy_role: str) -> None:
+def _sync_user_role_assignment(
+    db: Session, tenant_id: str, user_id: str, legacy_role: str, *, keep_custom: bool = False
+) -> tuple[list[dict[str, str | None]], bool]:
     """Mirror a legacy role change into user_role_assignments.
 
     Without this, the new RBAC layer (which reads from user_role_assignments
     first) ignores legacy-role updates: an admin demoted via /users/{id}/role
     still resolves to their pre-demotion permissions until their assignment
-    row is rewritten. This wipes the user's current assignments and inserts
-    a single assignment pointing at the matching builtin TenantRole.
+    row is rewritten. This drops the user's other assignments and leaves a
+    single assignment pointing at the matching builtin TenantRole.
+
+    `keep_custom` keeps assignments to custom (non-system) roles and drops
+    only stale builtin ones: a re-post of the role the user already holds
+    repairs a drifted builtin row without wiping a custom role held beside it.
+
+    Returns `(dropped, added)`: the removed assignments as `{"role_id",
+    "role_name"}` dicts for the caller's audit row (the delete is otherwise the
+    only record a role was held, GDXA-1461), and whether the target row was
+    inserted. `([], False)` means nothing changed.
     """
     from sqlalchemy import select as _select
 
@@ -450,14 +480,34 @@ def _sync_user_role_assignment(db: Session, tenant_id: str, user_id: str, legacy
             TenantRole.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
-    # Drop the user's existing assignments regardless. If the role doesn't
-    # exist (e.g. legacy tenant pre-backfill), the user gets no assignment
-    # and the legacy User.role fallback in _load_user_permissions takes over.
-    db.query(UserRoleAssignment).filter(
+    held = db.query(UserRoleAssignment).filter(
         UserRoleAssignment.company_id == tenant_id,
         UserRoleAssignment.user_id == user_id,
-    ).delete(synchronize_session=False)
-    if role_row is not None:
+    ).all()
+    roles = {
+        r.id: r for r in db.execute(_select(TenantRole).where(TenantRole.id.in_([a.role_id for a in held]))).scalars()
+    } if held else {}
+    kept_id = role_row.id if role_row is not None else None
+
+    def _keeps(a: UserRoleAssignment) -> bool:
+        if a.role_id == kept_id:
+            return True
+        role = roles.get(a.role_id)
+        return keep_custom and role is not None and not role.is_system
+
+    # If the role doesn't exist (e.g. legacy tenant pre-backfill), the user
+    # gets no assignment and the legacy User.role fallback in
+    # _load_user_permissions takes over. Rows are deleted one by one, so what
+    # is reported is exactly what is deleted.
+    dropped: list[dict[str, str | None]] = []
+    for a in held:
+        if _keeps(a):
+            continue
+        role = roles.get(a.role_id)
+        dropped.append({"role_id": str(a.role_id), "role_name": role.name if role is not None else None})
+        db.delete(a)
+    added = role_row is not None and all(a.role_id != kept_id for a in held)
+    if added:
         db.add(
             UserRoleAssignment(
                 company_id=tenant_id,
@@ -465,6 +515,7 @@ def _sync_user_role_assignment(db: Session, tenant_id: str, user_id: str, legacy
                 role_id=role_row.id,
             )
         )
+    return dropped, added
 
 
 def _assert_not_last_owner(db: Session, tenant_id: str, target: User, *, action: str) -> None:
@@ -508,14 +559,22 @@ def change_role(user_id: str, payload: RoleChangeIn, request: Request, user: dic
         raise HTTPException(status_code=400, detail="Cannot change your own role")
     old_role = u.role or "user"
     assert_can_assign_role(user, payload.role, old_role)
-    # Last-owner guard: a demotion off the owner tier must leave at least one
-    # other owner standing (owner→admin drops out of the owner tier
-    # and is exempt).
-    if is_role_admin_actor(old_role) and not is_role_admin_actor(payload.role):
-        _assert_not_last_owner(db, tid, u, action="demote")
-    u.role = payload.role
-    u.updated_at = utcnow()
-    _sync_user_role_assignment(db, tid, user_id, payload.role)
+    # Re-posting the role the user already has must not wipe a custom-role
+    # assignment held beside it, but still repairs a stale builtin one, which
+    # the resolver trusts over users.role (GDXA-1461). A re-post that finds
+    # nothing to repair writes nothing.
+    same_role = normalize_role(old_role) == payload.role
+    if not same_role:
+        # Last-owner guard: a demotion off the owner tier must leave at least
+        # one other owner standing (owner→admin drops out of the owner tier
+        # and is exempt).
+        if is_role_admin_actor(old_role) and not is_role_admin_actor(payload.role):
+            _assert_not_last_owner(db, tid, u, action="demote")
+        u.role = payload.role
+        u.updated_at = utcnow()
+    dropped, added = _sync_user_role_assignment(db, tid, user_id, payload.role, keep_custom=same_role)
+    if same_role and not dropped and not added:
+        return _serialize(u)
     db.commit()
     # Sprint Auth & Identity Hardening — Slice 3.
     # Role changed → revoke open refresh tokens. The currently-active
@@ -524,17 +583,21 @@ def change_role(user_id: str, payload: RoleChangeIn, request: Request, user: dic
     # the access token replays during the brief window the new role is
     # the one that gets minted on the next refresh attempt.
     revoked = 0
-    if old_role != payload.role:
-        try:
-            from gdx_dispatch.core.auth_revoke import revoke_user_sessions
+    try:
+        from gdx_dispatch.core.auth_revoke import revoke_user_sessions
 
-            revoked = revoke_user_sessions(str(user_id), reason="role_changed")
-        except Exception:
-            log.exception("change_role_revoke_failed user_id=%s", user_id)
+        revoked = revoke_user_sessions(str(user_id), reason="role_changed")
+    except Exception:
+        log.exception("change_role_revoke_failed user_id=%s", user_id)
     _audit(
         db, request=request, user=user, action="user_role_changed",
         entity_id=user_id,
-        details={"old_role": old_role, "new_role": payload.role, "sessions_revoked": revoked},
+        details={
+            "old_role": old_role,
+            "new_role": payload.role,
+            "dropped_assignments": dropped,
+            "sessions_revoked": revoked,
+        },
     )
     db.refresh(u)
     return _serialize(u)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -43,9 +44,20 @@ def _body(resp) -> dict | list:
     return json.loads(resp.body.decode())
 
 
+def _user(db: Session, label: str = "tech", **fields) -> str:
+    """A real login to link a technician to (GDXA-1583: user_id must be one)."""
+    from gdx_dispatch.models.tenant_models import User
+
+    uid = uuid.uuid4()
+    db.add(User(id=uid, company_id="tenant-a", email=f"{label}@example.com", name=label, **fields))
+    db.commit()
+    return str(uid)
+
+
 def _create_tech(db: Session, tenant_id: str = "tenant-a", **overrides) -> dict:
-    payload = {"user_id": "user-100", "skills": ["spring", "cables"], "hourly_rate": 80.0}
+    payload = {"skills": ["spring", "cables"], "hourly_rate": 80.0}
     payload.update(overrides)
+    payload.setdefault("user_id", _user(db))
     resp = create_technician(TechnicianCreate(**payload), _request(tenant_id), _USER, db)
     assert resp.status_code == 201
     return _body(resp)
@@ -67,9 +79,10 @@ def db():
 
 
 def test_create_technician_success(db):
-    data = _create_tech(db)
+    uid = _user(db, "user-100")
+    data = _create_tech(db, user_id=uid)
     assert data["id"]
-    assert data["user_id"] == "user-100"
+    assert data["user_id"] == uid
     assert data["skills"] == ["spring", "cables"]
     assert Decimal(str(data["hourly_rate"])) == Decimal("80.0")
     assert data["deleted_at"] is None
@@ -92,8 +105,8 @@ def test_create_technician_requires_user_id(db):
 
 
 def test_list_technicians(db):
-    a = _create_tech(db, user_id="user-a")
-    b = _create_tech(db, user_id="user-b")
+    a = _create_tech(db, user_id=_user(db, "user-a"))
+    b = _create_tech(db, user_id=_user(db, "user-b"))
     resp = list_technicians(_request(), False, _USER, db)
     assert resp.status_code == 200
     rows = _body(resp)
@@ -107,8 +120,8 @@ def test_list_technicians_is_tenant_scoped(db):
     # not an app-level company_id filter. This unit test uses a single shared SQLite
     # session, so both tenants' rows are visible — that's expected in-test; in prod
     # each tenant has a separate per-tenant database. We still assert both rows exist.
-    ta = _create_tech(db, "tenant-a", user_id="tenant-a-user")
-    tb = _create_tech(db, "tenant-b", user_id="tenant-b-user")
+    ta = _create_tech(db, "tenant-a", user_id=_user(db, "tenant-a-user"))
+    tb = _create_tech(db, "tenant-b", user_id=_user(db, "tenant-b-user"))
     rows_a = _body(list_technicians(_request("tenant-a"), False, _USER, db))
     ids_a = [r["id"] for r in rows_a]
     assert ta["id"] in ids_a
@@ -116,12 +129,13 @@ def test_list_technicians_is_tenant_scoped(db):
 
 
 def test_get_technician(db):
-    created = _create_tech(db, user_id="user-detail")
+    uid = _user(db, "user-detail")
+    created = _create_tech(db, user_id=uid)
     resp = get_technician(created["id"], _request(), _USER, db)
     assert resp.status_code == 200
     data = _body(resp)
     assert data["id"] == created["id"]
-    assert data["user_id"] == "user-detail"
+    assert data["user_id"] == uid
 
 
 def test_get_technician_not_found(db):
@@ -131,7 +145,7 @@ def test_get_technician_not_found(db):
 
 
 def test_patch_technician(db):
-    created = _create_tech(db, user_id="user-patch", skills=["opener"], hourly_rate=55.0)
+    created = _create_tech(db, user_id=_user(db, "user-patch"), skills=["opener"], hourly_rate=55.0)
     resp = patch_technician(
         created["id"],
         TechnicianPatch(skills=["opener", "springs"], hourly_rate=70.5, active=False),
@@ -154,7 +168,7 @@ def test_patch_technician_not_found(db):
 
 
 def test_delete_technician_soft_delete_and_hidden_from_list(db):
-    created = _create_tech(db, user_id="user-delete")
+    created = _create_tech(db, user_id=_user(db, "user-delete"))
     resp = delete_technician(created["id"], _request(), _USER, db)
     assert resp.status_code == 200
     assert _body(resp) == {"deleted": True}
@@ -196,7 +210,7 @@ def test_add_skill_requires_skill_value(db):
 
 
 def test_get_availability_returns_unavailability_windows(db):
-    created = _create_tech(db, user_id="user-avail")
+    created = _create_tech(db, user_id=_user(db, "user-avail"))
     start = datetime.now(UTC)
     end = start + timedelta(hours=4)
     create_resp = add_technician_unavailability(
@@ -216,7 +230,7 @@ def test_get_availability_returns_unavailability_windows(db):
 
 
 def test_post_unavailability_validates_range(db):
-    created = _create_tech(db, user_id="user-bad-range")
+    created = _create_tech(db, user_id=_user(db, "user-bad-range"))
     start = datetime.now(UTC)
     end = start - timedelta(minutes=1)
     resp = add_technician_unavailability(
@@ -253,7 +267,90 @@ def test_a_write_without_a_user_id_is_refused_before_it_writes(db):
     from gdx_dispatch.models.tenant_models import Technician
 
     with pytest.raises(HTTPException) as exc:
-        create_technician(TechnicianCreate(user_id="user-anon"), _request(), {}, db)
+        create_technician(TechnicianCreate(user_id=_user(db, "anon")), _request(), {}, db)
     assert exc.value.status_code == 401
     assert db.query(Technician).count() == 0
     assert db.query(AuditLog).count() == 0
+
+
+# ── GDXA-1583: a technician row links to a real login ──────────────────────
+
+
+@pytest.mark.parametrize("raw", ["walk683.inactive.tech", "amber@x.com", str(uuid.uuid4())])
+def test_create_refuses_a_user_id_that_is_not_a_user(db, raw):
+    """The New Technician form fell back to the email or a name slug, which no
+    per-tech join (assignments, locations, day close) can ever match. A slug,
+    an email and a well-formed UUID with no user behind it are all refused,
+    and nothing is written."""
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import Technician
+
+    resp = create_technician(TechnicianCreate(user_id=raw, name="Ghost"), _request(), _USER, db)
+    assert resp.status_code == 400
+    assert _body(resp)["detail"] == "user_id must be the id of an existing user"
+    assert db.query(Technician).count() == 0
+    assert db.query(AuditLog).count() == 0
+
+
+def test_create_refuses_a_soft_deleted_user(db):
+    uid = _user(db, "gone", deleted_at=datetime.now(UTC))
+    resp = create_technician(TechnicianCreate(user_id=uid, name="Gone"), _request(), _USER, db)
+    assert resp.status_code == 400
+
+
+def test_create_stores_the_dashed_id_the_joins_compare_against(db):
+    """Per-tech joins compare Technician.user_id to str(users.id), the dashed
+    form; an undashed or upper-case id is stored canonical, so it still joins."""
+    uid = _user(db, "pat")
+    data = _create_tech(db, user_id=uid.replace("-", "").upper())
+    assert data["user_id"] == uid
+
+
+def test_patch_refuses_relinking_to_a_user_that_does_not_exist(db):
+    from gdx_dispatch.models.tenant_models import Technician
+
+    uid = _user(db, "linked")
+    created = _create_tech(db, user_id=uid)
+    resp = patch_technician(created["id"], TechnicianPatch(user_id="pat.tech"), _request(), _USER, db)
+    assert resp.status_code == 400
+    assert _body(resp)["detail"] == "user_id must be the id of an existing user"
+    db.expire_all()
+    assert db.get(Technician, created["id"]).user_id == uid
+
+
+def test_patch_relinks_an_old_slug_row_to_a_real_user(db):
+    """A row stored before the fix holds a slug; picking its login repairs it
+    and the audit row records the id that was stored."""
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.models.tenant_models import Technician
+
+    now = datetime.now(UTC)
+    db.add(Technician(id=str(uuid.uuid4()), company_id="tenant-a", user_id="walk683.inactive.tech",
+                      name="Walk", created_at=now, updated_at=now))
+    db.commit()
+    tech = db.query(Technician).one()
+    uid = _user(db, "walk")
+    resp = patch_technician(tech.id, TechnicianPatch(user_id=uid), _request(), _USER, db)
+    assert resp.status_code == 200
+    assert _body(resp)["user_id"] == uid
+    audit = db.query(AuditLog).filter(AuditLog.action == "technician_updated").one()
+    details = audit.details if isinstance(audit.details, dict) else json.loads(audit.details)
+    assert details["user_id"] == uid
+
+
+def test_an_edit_keeping_the_link_works_after_the_login_was_deleted(db):
+    """Deleting a user soft-deletes the login and leaves its technician row.
+    Re-sending the stored user_id is no change, so the office can still
+    deactivate the departed tech; a new link is still checked."""
+    from gdx_dispatch.models.tenant_models import User
+
+    uid = _user(db, "departed")
+    created = _create_tech(db, user_id=uid)
+    db.get(User, uuid.UUID(uid)).deleted_at = datetime.now(UTC)
+    db.commit()
+    resp = patch_technician(created["id"], TechnicianPatch(user_id=uid, active=False), _request(), _USER, db)
+    assert resp.status_code == 200, resp.body
+    assert _body(resp)["active"] is False
+    other = str(uuid.uuid4())
+    resp = patch_technician(created["id"], TechnicianPatch(user_id=other), _request(), _USER, db)
+    assert resp.status_code == 400

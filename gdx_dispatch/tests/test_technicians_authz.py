@@ -137,7 +137,8 @@ def test_a_write_by_a_technician_is_403_and_changes_nothing(env, index):
 
 def test_an_admin_can_write_and_every_audit_row_names_the_admin(env):
     client, hdr = env["client"], env["admin"]
-    created = client.post("/api/technicians", json={"user_id": "u1", "name": "New Tech"}, headers=hdr)
+    # GDXA-1583: the new row links to a real login; the admin's own is one.
+    created = client.post("/api/technicians", json={"user_id": env["admin_id"], "name": "New Tech"}, headers=hdr)
     assert created.status_code == 201, created.text
     tech_id = created.json()["id"]
     expected = [201, 200, 200, 201, 200]

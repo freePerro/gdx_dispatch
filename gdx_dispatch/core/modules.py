@@ -388,8 +388,8 @@ def decode_live_access_token(token: str, conn: HTTPConnection) -> dict:
     """Claims of ``token`` if it is a live access token, else {}.
 
     The token checks behind ``_decode_bearer_claims`` (see there), for callers
-    that carry the token somewhere other than the Authorization header: the
-    dispatch board WebSocket takes it as a query parameter (GDXA-1188).
+    that carry the token somewhere other than the Authorization header
+    (GDXA-1188).
     ``conn`` is the Request or WebSocket; its app holds the denylist. Raises
     HTTPException(503) only when an error escapes the denylist lookup. A
     Redis outage is not such an error: ``Denylist.contains`` treats it as

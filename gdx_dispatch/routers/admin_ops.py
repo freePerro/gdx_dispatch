@@ -321,6 +321,7 @@ def patch_user(
     role_changed = body.role is not None and body.role != normalize_role(old_role)
     next_role = body.role if body.role is not None else old_role
     assert_can_assign_role(_, next_role, current.role)
+    dropped: list[dict[str, str | None]] = []
     if role_changed:
         from gdx_dispatch.core.roles import is_role_admin_actor
         from gdx_dispatch.core.tenant import company_id
@@ -335,7 +336,8 @@ def patch_user(
         # role write that leaves the old row behind keeps the old permissions
         # (GDXA-1453). Rewritten in the same commit. Not on an unchanged role:
         # a custom-role assignment beside an unchanged users.role is intended.
-        _sync_user_role_assignment(db, tenant_id, str(current.id), next_role)
+        # The delete is the only record a custom role was held (GDXA-1461).
+        dropped, _added = _sync_user_role_assignment(db, tenant_id, str(current.id), next_role)
     current.role = next_role
     current.active = next_active
     current.updated_at = datetime.now(UTC)
@@ -356,7 +358,10 @@ def patch_user(
         action=action,
         entity_type="user",
         entity_id=id,
-        details={"role": next_role, "old_role": old_role, "active": bool(next_active), "sessions_revoked": revoked},
+        details={
+            "role": next_role, "old_role": old_role, "active": bool(next_active),
+            "dropped_assignments": dropped, "sessions_revoked": revoked,
+        },
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )
@@ -385,6 +390,7 @@ def deactivate_user(
     if u is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    was_active = bool(u.active)
     u.active = False
     u.updated_at = datetime.now(UTC)
     db.commit()
@@ -395,7 +401,7 @@ def deactivate_user(
         action="user_deactivated",
         entity_type="user",
         entity_id=id,
-        details={"active": False},
+        details={"active": False, "old_active": was_active},
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )
@@ -691,7 +697,15 @@ def update_role_permissions(
 
     now_dt = datetime.now(UTC)
     existing = db.execute(select(RolePermission).where(RolePermission.role == body.role)).scalar_one_or_none()
+    # The overwrite below is the only copy of the prior set; the audit row
+    # keeps it (GDXA-1461).
+    old_permissions = None
     if existing:
+        try:
+            old_permissions = json.loads(existing.permissions or "null")
+        except (TypeError, ValueError) as exc:
+            log.warning("role %s: stored permissions are not JSON (%s); auditing them raw", body.role, exc)
+            old_permissions = existing.permissions
         existing.permissions = serialized
         existing.updated_at = now_dt
     else:
@@ -704,7 +718,7 @@ def update_role_permissions(
         action="permissions_changed",
         entity_type="role_permissions",
         entity_id=body.role,
-        details={"permissions": body.permissions},
+        details={"permissions": body.permissions, "old_permissions": old_permissions},
         ip_address=(request.client.host if request and request.client else None),
         request=request,
     )
