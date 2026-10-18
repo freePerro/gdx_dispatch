@@ -21,6 +21,18 @@ Moved here from `CLAUDE.md` on 2026-10-11 so it loads when a session needs it, n
   while the `pull_request` trigger has none, so a docs-only PR runs the full
   suite and a docs-only push to main does not. Verified against
   `.github/workflows/ci.yml` 2026-09-01.
+- **A push is a Bash call of its own:** exactly `git push -u origin HEAD`
+  (or `git push origin HEAD`, optionally `2>&1 | tail -N`), run from the
+  worktree that is your session cwd. Do not put a `cd … &&` in front of it or
+  chain anything to it with `;` or `&&`; run the merge, any diff or stat, and
+  `gh pr` as separate calls. The Manifest gate hands only that lone form to
+  the pre-push check of each outgoing commit's Manifest, and refuses every
+  other shape. It also refuses a command whose text merely mentions git push
+  or commit, such as a curl comment body, so write long comment and PR bodies
+  to a file and pass `-d @file` / `--body-file`. If a lone push is refused,
+  report the gate's output; do not reshape the command to get past it.
+  Measured 2026-10-18: about 80 refusals in 37 runs, and two PRs left stuck
+  with their merges never pushed.
 - **The merge path is the ruleset plus auto-merge, not a hand merge.** Ruleset
   18005412 ("Branch Safety", active) requires 12 status checks on `main`, and
   `.github/workflows/auto-merge.yml` turns on squash auto-merge for every
