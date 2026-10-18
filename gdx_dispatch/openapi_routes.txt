@@ -42,7 +42,7 @@ DELETE /api/hazards/{hazard_id}
 DELETE /api/holding-areas/{area_id}
 DELETE /api/integrations/zapier/unsubscribe
 DELETE /api/integrations/{integration_id}
-DELETE /api/integrations/{integration_type}
+DELETE /api/integrations/{integration_type}/connect
 DELETE /api/inventory/parts/{item_id}
 DELETE /api/invoices/{invoice_id}
 DELETE /api/invoices/{invoice_id}/lines/{line_id}

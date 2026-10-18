@@ -313,3 +313,49 @@ def test_a_failed_audit_write_stores_no_credential(SessionLocal, monkeypatch):
         client.post("/api/integrations/stripe/connect", json={"credentials": {"api_key": "sk_test_701"}})
     with SessionLocal() as db:
         assert db.execute(select(integrations_mod.IntegrationConfig)).scalars().all() == []
+
+
+# ── integrations: both deletes reachable (GDXA-1523) ─────────────────────────
+# `DELETE /{integration_id}` used to shadow `DELETE /{integration_type}` on the
+# same router: a type name reached the id handler and 500'd in uuid.UUID().
+
+
+def test_disconnect_by_type_reaches_its_handler_and_leaves_a_row(SessionLocal):
+    client = _client(SessionLocal, integrations_mod.router, OFFICE)
+    assert client.post("/api/integrations/stripe/connect", json={"credentials": {"api_key": "sk_1523"}}).status_code == 201
+    r = client.delete("/api/integrations/stripe/connect")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "disconnected", "count": 1}
+    rows = _audit_rows(SessionLocal, entity_type="integration_config", entity_id="stripe")
+    assert [row.action for row in rows] == ["integration.disconnected"]
+    assert rows[0].user_id == OFFICE["user_id"]
+    assert client.get("/api/integrations/stripe/status").json()["status"] == "disconnected"
+    assert client.delete("/api/integrations/not-a-type/connect").status_code == 400
+
+
+def test_delete_by_id_still_deletes_and_leaves_a_row(SessionLocal):
+    client = _client(SessionLocal, integrations_mod.router, OFFICE)
+    created = client.post("/api/integrations", json={
+        "integration_type": "custom_webhook", "name": "Hook", "webhook_url": "https://example.test/h",
+        "secret": "s3cr3t-1523", "events": ["job.created"],
+    })
+    assert created.status_code == 201, created.text
+    config_id = created.json()["id"]
+    assert client.delete(f"/api/integrations/{config_id}").status_code == 204
+    with SessionLocal() as db:
+        assert db.execute(select(integrations_mod.IntegrationConfig)).scalars().all() == []
+    rows = _audit_rows(SessionLocal, entity_type="integration_config", entity_id=config_id)
+    assert [row.action for row in rows] == ["integration.created", "integration.deleted"]
+
+
+@pytest.mark.parametrize(("method", "path"), [
+    ("DELETE", "/api/integrations/stripe"),
+    ("PUT", "/api/integrations/stripe"),
+    ("POST", "/api/integrations/stripe/test"),
+    ("GET", "/api/integrations/stripe/deliveries"),
+])
+def test_a_non_uuid_id_is_refused_not_a_500(SessionLocal, method, path):
+    client = _client(SessionLocal, integrations_mod.router, OFFICE)
+    r = client.request(method, path, json={} if method == "PUT" else None)
+    assert r.status_code == 422, r.text
+    assert _audit_rows(SessionLocal, entity_type="integration_config") == []

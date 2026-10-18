@@ -16,7 +16,9 @@ To re-baseline after intentionally resolving shadows:
 """
 from __future__ import annotations
 
-from gdx_dispatch.tools.route_shadow_scan import collect_shadows, load_baseline
+from fastapi import APIRouter, FastAPI
+
+from gdx_dispatch.tools.route_shadow_scan import collect_shadows, load_baseline, path_shape
 
 RESOLVED_SAFE_SHADOWS = {
     ("GET", "/api/technicians/skills"),
@@ -71,7 +73,43 @@ def test_no_net_new_route_shadows() -> None:
 def test_resolved_safe_shadows_are_absent() -> None:
     """These paths have exactly one canonical handler, not a baseline exemption."""
     shadows = set(collect_shadows())
-    assert not (shadows & RESOLVED_SAFE_SHADOWS)
+    assert not (shadows & {(m, path_shape(p)) for m, p in RESOLVED_SAFE_SHADOWS})
+
+
+def test_same_shape_with_different_parameter_names_is_a_shadow() -> None:
+    """GDXA-1523: the literal-string comparison could not see this pair.
+
+    `DELETE /{integration_id}` was registered first and took every request, so
+    `DELETE /{integration_type}` never ran. The scan must call it a shadow, and
+    must not call a different convertor or a different method one.
+    """
+    router = APIRouter(prefix="/api/x")
+
+    @router.delete("/{item_id}")
+    def by_id(item_id: str): ...
+
+    @router.delete("/{item_type}")
+    def by_type(item_type: str): ...
+
+    @router.get("/{item_type}")
+    def get_by_type(item_type: str): ...
+
+    @router.delete("/{rest:path}")
+    def by_path(rest: str): ...
+
+    app = FastAPI()
+    app.include_router(router)
+    shadows = collect_shadows(app)
+    assert set(shadows) == {("DELETE", "/api/x/{}")}
+    assert sorted(h.split()[-1] for h in shadows[("DELETE", "/api/x/{}")]) == [
+        "/api/x/{item_id}", "/api/x/{item_type}",
+    ]
+
+
+def test_path_shape_keeps_literals_and_convertors() -> None:
+    assert path_shape("/api/jobs/{job_id}/line-items/{li}") == "/api/jobs/{}/line-items/{}"
+    assert path_shape("/files/{p:path}") == "/files/{:path}"
+    assert path_shape("/api/integrations/zapier/unsubscribe") == "/api/integrations/zapier/unsubscribe"
 
 
 def test_settings_modules_returns_rich_shape() -> None:
