@@ -1,9 +1,10 @@
 """Sprint 1.x-S1 — verify the gdx_ai_readonly role on a paved Postgres tenant.
 
-Skips on SQLite. Requires TEST_DATABASE_URL to point at a paved tenant DB with
-the role already created and granted. Nothing in this tree creates it:
-pave_tenant_db.py carries an existing role's GRANTs across a pave, and refuses
-to run with TENANT_AI_READONLY_PASSWORD set (GDXA-531).
+Skips on SQLite and without TEST_DATABASE_URL. Requires TEST_DATABASE_URL to
+point at a paved tenant DB with the role created and granted by
+gdx_dispatch/tools/gdx_ai_roles.sql (GDXA-1564). CI's ai-roles job builds that
+database and runs this file against it; the shard matrix and the local runner
+do not set TEST_DATABASE_URL, so there it skips.
 
 Two ways to use:
   - Set TEST_DATABASE_URL to a URL whose user is gdx_ai_readonly. The test
@@ -59,7 +60,35 @@ def test_insert_raises_permission_denied():
     with engine.connect() as conn:
         with pytest.raises((DBAPIError, ProgrammingError)) as excinfo:
             conn.execute(text(
-                "INSERT INTO customers (id, first_name) "
+                "INSERT INTO customers (id, name) "
                 "VALUES (gen_random_uuid(), 'rls-probe')"
             ))
         assert "permission denied" in str(excinfo.value).lower()
+
+
+_TABLE_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
+_COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
+
+
+def test_customers_privileges_are_select_only():
+    """The INSERT probe cannot see an UPDATE, DELETE or TRUNCATE grant, or a
+    column-level one. This reads what the role holds on customers, so any
+    widening of gdx_dispatch/tools/gdx_ai_roles.sql fails here (GDXA-1564)."""
+    engine = _readonly_engine()
+    with engine.connect() as conn:
+        table = {
+            p for p in _TABLE_PRIVILEGES
+            if conn.execute(text("SELECT has_table_privilege('customers', :p)"), {"p": p}).scalar()
+        }
+        columns = conn.execute(text(
+            "SELECT attname FROM pg_attribute WHERE attrelid = 'customers'::regclass "
+            "AND attnum > 0 AND NOT attisdropped"
+        )).scalars().all()
+        writable = {
+            (c, p) for c in columns for p in _COLUMN_PRIVILEGES if p != "SELECT"
+            if conn.execute(
+                text("SELECT has_column_privilege('customers', :c, :p)"), {"c": c, "p": p},
+            ).scalar()
+        }
+    assert table == {"SELECT"}
+    assert writable == set()
