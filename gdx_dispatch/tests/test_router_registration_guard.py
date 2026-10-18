@@ -41,8 +41,9 @@ handlers in 7 router objects are never mounted; 10 share a (method, path) with a
 live route", citing `core/gdpr.py` `DELETE /api/customers/{customer_id}` as its
 example. Two of those 7 — `modules/equipment/router.py` and
 `modules/fleet/router.py` — were deleted on 2026-09-14 by `625467f9` (#735,
-"Customer Equipment and Fleet, never used, are gone"), which leaves exactly the 5
-allow-listed below. That a decorator-scanning probe and this identity-based route
+"Customer Equipment and Fleet, never used, are gone"), and `core/gdpr.py`, the
+worked example itself, was deleted by GDXA-1586 (its functions, too, were
+called only by a test), which leaves exactly the 4 allow-listed below. That a decorator-scanning probe and this identity-based route
 walk independently land on the same set is the best evidence available that the
 discovery is complete; it also means the probe's finding sat open for two weeks
 with nothing to keep it from growing. That is what a guard buys over a probe.
@@ -51,7 +52,7 @@ with nothing to keep it from growing. That is what a guard buys over a probe.
 passes identically when the detector is broken. Three things here can only be
 green for the right reason: `test_allow_list_entries_are_all_still_unmounted`
 re-derives every allow-listed entry from the live app, so if the AST step, the
-import step or the identity step goes blind, all five entries fail at once and
+import step or the identity step goes blind, all four entries fail at once and
 name themselves; `test_discovery_is_not_vacuous` floors the router count and the
 leaf-route count, so an empty scan cannot pass; and
 `test_import_failures_are_loud` refuses to silently drop a router file that
@@ -96,7 +97,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Not application wiring: the frontend, the suite itself, Alembic revisions,
 # generated/vendored trees. Everything else in the package is in scope — the
 # defect shape is not confined to `modules/`, and restricting the scan to
-# `modules/**/*router*.py` would have missed 2 of the 5 entries below.
+# `modules/**/*router*.py` would have missed 1 of the 4 entries below.
 #
 # `plugin_host` and `plugin_api` are excluded for a different reason, and it is
 # not cosmetic: they belong to a SECOND FastAPI application (plugin_host/app.py:95)
@@ -117,9 +118,9 @@ SKIP_DIRS = frozenset({
 # carry no reason is just a suppression.
 #
 # Adding an entry here is a *record*, not a fix. Only the QuickBooks one has a
-# ruling; the other four are the 2026-09-13 probe's open finding, re-derived by
-# execution here on 2026-09-27, and the disposition of each is Doug's. Two of them
-# must stay unmounted and say why.
+# ruling; the other three are the 2026-09-13 probe's open finding, re-derived by
+# execution here on 2026-09-27, and the disposition of each is Doug's. The QuickBooks
+# one must stay unmounted and says why.
 #
 # Ledger references below give a date and a quote, not a line number: the ledger
 # (`FOUND_NOT_FILED.md`) is untracked and maintainer-local by design, so it does
@@ -138,23 +139,6 @@ UNMOUNTED_BY_DESIGN: dict[str, str] = {
         "`if verifier_token:`, so with neither QB_WEBHOOK_VERIFIER_TOKEN nor "
         "QB_WEBHOOK_SECRET set it processes unsigned bodies — mounting it ships an "
         "unauthenticated write endpoint. GDXA-36 / GDXA-92."
-    ),
-    "core/gdpr.py::gdpr_router": (
-        "MUST STAY UNMOUNTED. It declares DELETE /api/customers/{customer_id} — "
-        "the same (method, path) as the live SOFT delete at "
-        "routers/customers.py:706 (`customer.deleted_at = now`) — but "
-        "hard-anonymises PII in place (name -> sentinel, email/phone/hashes "
-        "nulled) and carries no require_role dependency. Mounting it would put a "
-        "second, ungated, irreversible handler on a path the app already serves, "
-        "against ARCHITECTURAL_INVARIANTS.md invariant #2 (soft-delete on tables "
-        "carrying deleted_at). The gated GDPR surface already exists and is "
-        "mounted: POST /api/gdpr/delete-customer/{customer_id} and "
-        "GET /api/gdpr/export-customer/{customer_id} on routers/gdpr.py, both "
-        "behind require_role('admin','owner'). The module's FUNCTIONS are live "
-        "(core/gdpr.delete_customer_data / export_customer_data); only this "
-        "router is dead. This is the 2026-09-13 ledger entry's own worked example "
-        "('10 share a (method, path) with a live route', e.g. core/gdpr.py:60); "
-        "re-derived by execution 2026-09-27. Deletion candidate, not adjudicated."
     ),
     "modules/purchase_orders/router.py::router": (
         "unmounted duplicate, already adjudicated elsewhere: app.py:1473 mounts "
