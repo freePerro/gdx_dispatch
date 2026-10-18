@@ -43,7 +43,7 @@ Delete the cookie-based implementation; keep the model.
   `verify_magic_link` — superseded by the token handling inside `routers/portal.py`).
 - **Keep** `gdx_dispatch/modules/customer_portal/models.py` (`CustomerUser`) — it is the live
   credential store for the JWT router; `__init__.py` shrinks to exporting `models` only.
-- **Update** `tests/test_05_sprint4_compliance.py`: `test_magic_link_verify` exercised the dead
+- **Update** `tests/test_05_sprint4_compliance.py`: `test_magic_link_verify` exercised the dead <!-- file deleted 2026-10-18 by GDXA-1586; link-ok -->
   helpers; the equivalent behavior (issue → verify → single-use) is already covered against the
   live router by `tests/test_customer_portal.py` (`test_verify_valid_token_returns_jwt`,
   `test_verify_token_cannot_be_reused`, `test_admin_invite_creates_user_and_link`), so the dead
