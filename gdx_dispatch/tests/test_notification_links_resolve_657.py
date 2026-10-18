@@ -179,7 +179,9 @@ def test_a_dispatcher_message_sends_the_tech_to_the_job_chat(chat_db):
     _send(db, job_id, _DISPATCHER, "Customer called, running late?")
 
     by_user = {s["user_id"]: s["url"] for s in sent}
-    assert "user-1" in by_user
+    # Exactly the tech's user: jobs.assigned_to ('tech-1') is a technician id
+    # and used to be pushed to as if it were a user (GDXA-1541).
+    assert set(by_user) == {"user-1"}
     url = by_user["user-1"]
     assert _route_for(url) == "/mobile/jobs/:id"
     assert urlsplit(url).path == f"/mobile/jobs/{job_id}"
