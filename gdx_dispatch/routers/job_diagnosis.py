@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_access import assert_can_attach_to_job
 from gdx_dispatch.models.tenant_models import JobDiagnosis
@@ -166,8 +167,7 @@ def create_diagnosis(
     assert_can_attach_to_job(db, _tenant, current_user, job_id)
     job_uuid = _validate_uuid(job_id, "Job")
     _validate_service_type(payload.service_type)
-    user = current_user or {}
-    created_by = str(user.get("user_id") or user.get("sub") or "system")
+    created_by = _actor(current_user)
 
     try:
         diag = JobDiagnosis(
@@ -181,6 +181,15 @@ def create_diagnosis(
             updated_at=datetime.now(UTC),
         )
         db.add(diag)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=created_by,
+            action="create_job_diagnosis",
+            entity_type="job_diagnosis",
+            entity_id=str(diag.id),
+            details={"job_id": str(job_uuid), "service_type": diag.service_type},
+        )
         db.commit()
         db.refresh(diag)
         return _to_response(diag)
@@ -188,6 +197,11 @@ def create_diagnosis(
         db.rollback()
         log.exception("diagnosis_create_failed", extra={"job_id": job_id})
         raise HTTPException(status_code=500, detail="Failed to save diagnosis") from None
+
+
+def _actor(current_user: Any) -> str:
+    user = current_user or {}
+    return str(user.get("user_id") or user.get("sub") or "system")
 
 
 def _assert_may_touch_diagnosis(db, request, current_user, diag) -> None:
@@ -222,10 +236,32 @@ def update_diagnosis(
         if not diag:
             raise HTTPException(status_code=404, detail="Diagnosis not found")
         _assert_may_touch_diagnosis(db, request, current_user, diag)
+        changed = [
+            field for field, new in (
+                ("service_type", payload.service_type),
+                ("data", payload.data),
+                ("notes", payload.notes),
+            )
+            if getattr(diag, field) != new
+        ]
+        previous_service_type = diag.service_type
         diag.service_type = payload.service_type
         diag.data = payload.data
         diag.notes = payload.notes
         diag.updated_at = datetime.now(UTC)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=_actor(current_user),
+            action="update_job_diagnosis",
+            entity_type="job_diagnosis",
+            entity_id=str(diag.id),
+            details={
+                "job_id": str(diag.job_id),
+                "changed": changed,
+                "service_type": {"old": previous_service_type, "new": diag.service_type},
+            },
+        )
         db.commit()
         db.refresh(diag)
         return _to_response(diag)
@@ -254,6 +290,15 @@ def delete_diagnosis(
             raise HTTPException(status_code=404, detail="Diagnosis not found")
         _assert_may_touch_diagnosis(db, request, current_user, diag)
         diag.deleted_at = datetime.now(UTC)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=_actor(current_user),
+            action="delete_job_diagnosis",
+            entity_type="job_diagnosis",
+            entity_id=str(diag.id),
+            details={"job_id": str(diag.job_id), "service_type": diag.service_type},
+        )
         db.commit()
         return {"deleted": True}
     except SQLAlchemyError:
