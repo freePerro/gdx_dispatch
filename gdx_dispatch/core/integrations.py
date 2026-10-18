@@ -13,7 +13,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import secrets
-import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -417,14 +416,14 @@ async def create_integration(
 
 @router.put("/{integration_id}", response_model=IntegrationOut)
 async def update_integration(
-    integration_id: str,
+    integration_id: UUID,
     body: IntegrationUpdate,
     request: Request,
     db: Session = Depends(get_db),
     _auth: Any = Depends(require_auth),
 ):
     tenant_id = _get_tenant_id(request)
-    config = db.get(IntegrationConfig, uuid.UUID(integration_id))
+    config = db.get(IntegrationConfig, integration_id)
     if not config or config.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="not found")
 
@@ -443,7 +442,7 @@ async def update_integration(
     await log_audit_event(
         db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
         action="integration.updated", entity_type="integration_config",
-        entity_id=integration_id, details=body.model_dump(exclude_none=True),
+        entity_id=str(integration_id), details=body.model_dump(exclude_none=True),
     )
     db.commit()
     return config
@@ -451,20 +450,20 @@ async def update_integration(
 
 @router.delete("/{integration_id}", status_code=204)
 async def delete_integration(
-    integration_id: str,
+    integration_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
     _auth: Any = Depends(require_auth),
 ):
     tenant_id = _get_tenant_id(request)
-    config = db.get(IntegrationConfig, uuid.UUID(integration_id))
+    config = db.get(IntegrationConfig, integration_id)
     if not config or config.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="not found")
 
     await log_audit_event(
         db, tenant_id=tenant_id, user_id=resolve_audit_actor(_auth, request), request=request,
         action="integration.deleted", entity_type="integration_config",
-        entity_id=integration_id, details={"name": config.name},
+        entity_id=str(integration_id), details={"name": config.name},
     )
     db.delete(config)
     db.commit()
@@ -472,14 +471,14 @@ async def delete_integration(
 
 @router.post("/{integration_id}/test", status_code=200)
 def test_integration(
-    integration_id: str,
+    integration_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
     _auth: Any = Depends(require_auth),
 ):
     """Send a test payload using the job.created event."""
     tenant_id = _get_tenant_id(request)
-    config = db.get(IntegrationConfig, uuid.UUID(integration_id))
+    config = db.get(IntegrationConfig, integration_id)
     if not config or config.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="not found")
 
@@ -509,14 +508,14 @@ def test_integration(
 
 @router.get("/{integration_id}/deliveries")
 def get_deliveries(
-    integration_id: str,
+    integration_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
     _auth: Any = Depends(require_auth),
 ):
     """Return delivery history for this integration's webhook endpoint."""
     tenant_id = _get_tenant_id(request)
-    config = db.get(IntegrationConfig, uuid.UUID(integration_id))
+    config = db.get(IntegrationConfig, integration_id)
     if not config or config.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="not found")
 
@@ -858,7 +857,11 @@ async def connect_integration_route(
     return result
 
 
-@router.delete("/{integration_type}", status_code=200)
+# Not `DELETE /{integration_type}`: that is the same shape as
+# `DELETE /{integration_id}` above, which is registered first and won every
+# request, so this handler was unreachable and a type name 500'd in
+# `uuid.UUID()` (GDXA-1523). The pair to `POST /{integration_type}/connect`.
+@router.delete("/{integration_type}/connect", status_code=200)
 async def disconnect_integration_route(
     integration_type: str,
     request: Request,
