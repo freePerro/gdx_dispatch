@@ -321,3 +321,141 @@ def test_runner_stays_quiet_when_the_failures_are_named(
     assert MUTED not in result.stdout, result.stdout
     log = (tmp_path / "logs" / "group_1.log").read_text(encoding="utf-8")
     assert re.search(r"(?m)^FAILED ", log), log
+
+
+# ── interpreter choice: an empty .venv must not win (GDXA-1432) ───────────
+#
+# The runner used to take `$REPO_ROOT/.venv/bin/python` whenever that file was
+# executable, and in --scans mode the mere presence of a .venv also skipped its
+# docker-app default. The maintainer checkout carries a .venv with no pytest in
+# it, so a run without PYTEST= picked a Python that cannot run the suite and
+# stopped at the dependency probe. These run a COPY of the runner in a fake
+# repo, so the fake .venv is the one it sees.
+
+TOOLS_HELPER = REPO_ROOT / "gdx_dispatch" / "tools" / "baseline_scan_tests.py"
+
+PASSING_PROBE = "def test_probe_passes():\n    assert True\n"
+
+
+def _fake_repo(tmp_path: Path, *, venv: str) -> tuple[Path, Path, Path]:
+    """A repo root holding a copy of the runner, a venv and a stub PATH.
+
+    ``venv`` is "empty" (no site-packages beyond the stdlib, the host's shape),
+    "partial" (imports pytest but not fastapi: a venv someone half-filled),
+    "usable" (sees this interpreter's packages) or "none". PATH carries a
+    ``python3`` that is this interpreter and a ``docker`` stub that logs its
+    argv and succeeds, so the docker choice is observable without a daemon.
+    """
+    root = tmp_path / "repo"
+    tools = root / "gdx_dispatch" / "tools"
+    tests = root / "gdx_dispatch" / "tests"
+    tools.mkdir(parents=True)
+    tests.mkdir(parents=True)
+    (tools / RUNNER.name).write_text(RUNNER.read_text(encoding="utf-8"), encoding="utf-8")
+    (tools / TOOLS_HELPER.name).write_text(
+        TOOLS_HELPER.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # baseline_scan_tests.py exits 2 when its one required file is missing.
+    (tests / "test_saas_surfaces_retired.py").write_text(PASSING_PROBE, encoding="utf-8")
+    (tests / "test_probe.py").write_text(PASSING_PROBE, encoding="utf-8")
+    if venv != "none":
+        args = [sys.executable, "-m", "venv", "--without-pip"]
+        if venv == "usable":
+            args.append("--system-site-packages")
+        subprocess.run([*args, str(root / ".venv")], check=True, timeout=120)
+    if venv == "partial":
+        site = next((root / ".venv" / "lib").glob("python*/site-packages"))
+        (site / "pytest").mkdir()
+        (site / "pytest" / "__init__.py").write_text("", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker_log = tmp_path / "docker_argv.log"
+    (bin_dir / "python3").write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8"
+    )
+    (bin_dir / "docker").write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{docker_log}"\nexit 0\n', encoding="utf-8"
+    )
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+    return root, bin_dir, docker_log
+
+
+def _run_copy(root: Path, bin_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        "PATH": f"{bin_dir}:/usr/local/bin:/usr/bin:/bin",
+        "N": "1",
+        "LOG_DIR": str(root / "logs"),
+        "MATRIX_LOCK": "0",
+        "SKIP_DEP_CHECK": "1",
+        "IMAGE_AGE_CHECK": "0",
+        "TEST_PG": "0",
+    }
+    return subprocess.run(
+        ["bash", str(root / "gdx_dispatch" / "tools" / RUNNER.name), *args],
+        capture_output=True, text=True, env=env, cwd=str(root), timeout=300,
+    )
+
+
+def _venv_lacks_the_suite(root: Path, venv: str) -> None:
+    """Precondition: the fake venv cannot run the suite, and fails for its reason."""
+    py = str(root / ".venv" / "bin" / "python")
+    has_pytest = subprocess.run([py, "-c", "import pytest"], capture_output=True, timeout=60)
+    has_fastapi = subprocess.run([py, "-c", "import fastapi"], capture_output=True, timeout=60)
+    assert has_fastapi.returncode != 0, f"the {venv!r} venv imports fastapi; the test is void"
+    assert (has_pytest.returncode == 0) == (venv == "partial"), (
+        f"the {venv!r} venv is not the shape it claims; the test is void"
+    )
+
+
+UNUSABLE_VENVS = pytest.mark.parametrize("venv", ["empty", "partial"])
+
+
+@UNUSABLE_VENVS
+def test_matrix_skips_an_unusable_venv(tmp_path: Path, venv: str) -> None:
+    root, bin_dir, _ = _fake_repo(tmp_path, venv=venv)
+    _venv_lacks_the_suite(root, venv)
+    result = _run_copy(root, bin_dir, "gdx_dispatch/tests/test_probe.py")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    stamp = (root / "logs" / "result.txt").read_text(encoding="utf-8")
+    pytest_line = next(ln for ln in stamp.splitlines() if ln.startswith("pytest: "))
+    assert ".venv" not in pytest_line, stamp
+    assert pytest_line == "pytest: python3 -m pytest", stamp
+
+
+@UNUSABLE_VENVS
+def test_scans_skips_an_unusable_venv_and_defaults_to_docker(
+    tmp_path: Path, venv: str
+) -> None:
+    root, bin_dir, docker_log = _fake_repo(tmp_path, venv=venv)
+    _venv_lacks_the_suite(root, venv)
+    result = _run_copy(root, bin_dir, "--scans")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert ".venv" not in out, out
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert any("docker-app -m pytest" in c and "test_saas_surfaces_retired.py" in c
+               for c in calls), calls
+
+
+@pytest.mark.parametrize("mode", [(), ("--scans",)], ids=["matrix", "scans"])
+def test_a_usable_venv_is_still_chosen(tmp_path: Path, mode: tuple[str, ...]) -> None:
+    """Control: the probe must not reject a venv that can run pytest."""
+    root, bin_dir, docker_log = _fake_repo(tmp_path, venv="usable")
+    target = () if mode else ("gdx_dispatch/tests/test_probe.py",)
+    result = _run_copy(root, bin_dir, *mode, *target)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert not docker_log.exists(), docker_log.read_text(encoding="utf-8")
+    if not mode:
+        stamp = (root / "logs" / "result.txt").read_text(encoding="utf-8")
+        assert f"pytest: {root}/.venv/bin/python -m pytest" in stamp, stamp
+
+
+def test_no_venv_keeps_the_old_defaults(tmp_path: Path) -> None:
+    """Control: with no .venv at all, --scans still goes to docker-app."""
+    root, bin_dir, docker_log = _fake_repo(tmp_path, venv="none")
+    result = _run_copy(root, bin_dir, "--scans")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "docker-app -m pytest" in docker_log.read_text(encoding="utf-8")

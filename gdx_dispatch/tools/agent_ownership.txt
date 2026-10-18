@@ -67,6 +67,9 @@ gdx_dispatch/tests/test_roles_canonical.py                   platform-core
 # The real-Postgres pave guard and its pg_dump/psql client resolution, which
 # ci.yml's postgresql-client step feeds (GDXA-1169). Not gated, like pg.py.
 gdx_dispatch/tests/test_pave_rebuild_pg.py                   platform-core
+# The matrix runner's -r flag and its interpreter choice, run against the real
+# tools/run_tests_split.sh (GDXA-1432). Not gated, like pg.py.
+gdx_dispatch/tests/test_run_tests_split_report_opts.py       platform-core
 .github/*                                                    platform-core
 scripts/*                                                    platform-core
 tools/*                                                      platform-core

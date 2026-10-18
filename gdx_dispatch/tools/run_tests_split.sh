@@ -181,14 +181,20 @@ mkdir -p "$LOG_DIR"
 
 # Resolve a Python that can actually run the suite. There is usually NO host
 # venv for this repo — deps live in the docker-app image (see the PYTEST
-# docker example above and docs). Order: explicit $PYTEST > .venv > python3.
+# docker example above and docs). Order: explicit $PYTEST > a .venv that passes
+# the dependency probe below > docker-app (--scans only) > python3. Executable
+# is not enough: the maintainer checkout's .venv has no pytest, and choosing it
+# stopped --scans at that probe instead of using docker-app (GDXA-1432). A
+# matrix run without PYTEST still needs a host python3 that passes the probe.
+SUITE_IMPORTS="import pytest, fastapi, pytest_split"
 if [ -z "${PYTEST:-}" ]; then
-  if [ "$MODE" = "scans" ] && [ ! -x "$REPO_ROOT/.venv/bin/python" ]; then
+  if [ -x "$REPO_ROOT/.venv/bin/python" ] \
+     && "$REPO_ROOT/.venv/bin/python" -c "$SUITE_IMPORTS" >/dev/null 2>&1; then
+    PYTEST="$REPO_ROOT/.venv/bin/python -m pytest"
+  elif [ "$MODE" = "scans" ]; then
     # A pre-check nobody runs because it needs a 150-character env var is no
     # pre-check: --scans defaults to the docker-app image the matrix uses.
     PYTEST="docker run --rm --entrypoint python -e PYTHONPATH=/app -e JWT_SECRET=test-secret-key-at-least-32-bytes-long-x -v $REPO_ROOT:/app -w /app docker-app -m pytest"
-  elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-    PYTEST="$REPO_ROOT/.venv/bin/python -m pytest"
   else
     PYTEST="python3 -m pytest"
   fi
@@ -279,7 +285,7 @@ fi
 # CONFIG FILE, not code — probing that way would fail with a misleading error).
 if [[ "$PYTEST" == *" -m pytest" ]]; then
   PYBIN="${PYTEST% -m pytest}"
-  if ! $PYBIN -c "import pytest, fastapi, pytest_split" >/dev/null 2>&1; then
+  if ! $PYBIN -c "$SUITE_IMPORTS" >/dev/null 2>&1; then
     echo "✗ '$PYTEST' lacks the suite's dependencies (pytest/fastapi/pytest-split)."
     echo "  This repo usually has no host venv — run inside the docker-app image:"
     echo "  PYTEST=\"docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> -v \$PWD:/app -w /app docker-app -m pytest\" $0"
