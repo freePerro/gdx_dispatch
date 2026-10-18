@@ -87,6 +87,30 @@ def _actor_id(current_user: dict[str, Any]) -> str:
     return str(actor)
 
 
+def _linked_user_id(db: Session, raw: str | None) -> str | None:
+    """The canonical id of the live login a technician row links to, or None.
+
+    GDXA-1583: technicians.user_id is the join every per-tech surface uses
+    (assignments, locations, day close, install sheet), always against a real
+    users.id. The New Technician form once fell back to the email or a name
+    slug, which stored a row nothing could ever match. Only an existing,
+    non-deleted user is accepted, and its id is stored in the dashed form
+    those joins compare against."""
+    value = (raw or "").strip()
+    hex_digits = value.replace("-", "")
+    if len(hex_digits) != 32 or not all(c in "0123456789abcdefABCDEF" for c in hex_digits):
+        return None  # an email or a name slug: not a users.id, refused with a 400
+    wanted = uuid.UUID(hex_digits)
+    found = db.execute(
+        select(User.id).where(User.id == wanted).where(User.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    return str(found) if found is not None else None
+
+
+_USER_ID_REQUIRED = "user_id is required"
+_USER_ID_UNKNOWN = "user_id must be the id of an existing user"
+
+
 def _to_skill_list(value: list[str] | str | None) -> list[str]:
     if value is None:
         return []
@@ -275,9 +299,11 @@ def create_technician(
     db: Session = Depends(get_db),
 ):
     actor = _actor_id(current_user)
-    user_id = (payload.user_id or "").strip()
-    if not user_id:
-        return jsonable_response({"detail": "user_id is required"}, 400)
+    if not (payload.user_id or "").strip():
+        return jsonable_response({"detail": _USER_ID_REQUIRED}, 400)
+    user_id = _linked_user_id(db, payload.user_id)
+    if user_id is None:
+        return jsonable_response({"detail": _USER_ID_UNKNOWN}, 400)
 
     tenant_id = _tenant_id(request)
     now = datetime.now(UTC)
@@ -374,11 +400,19 @@ def patch_technician(
 
     updates = payload.model_dump(exclude_unset=True)
 
+    if "user_id" in updates and (updates["user_id"] or "").strip() == (tech.user_id or ""):
+        # Re-sending the stored link is no change. Checking it again would lock
+        # a row whose login was since deleted out of every edit, deactivation
+        # included.
+        updates.pop("user_id")
     if "user_id" in updates:
-        user_id = (updates["user_id"] or "").strip()
-        if not user_id:
-            return jsonable_response({"detail": "user_id is required"}, 400)
+        if not (updates["user_id"] or "").strip():
+            return jsonable_response({"detail": _USER_ID_REQUIRED}, 400)
+        user_id = _linked_user_id(db, updates["user_id"])
+        if user_id is None:
+            return jsonable_response({"detail": _USER_ID_UNKNOWN}, 400)
         tech.user_id = user_id
+        updates["user_id"] = user_id
     if "skills" in updates:
         tech.skills = _serialize_skills(_to_skill_list(updates["skills"]))
     if "hourly_rate" in updates:
