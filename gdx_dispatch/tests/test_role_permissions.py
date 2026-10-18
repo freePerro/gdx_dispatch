@@ -607,11 +607,20 @@ def test_admin_cannot_unassign_any_role_from_an_admin():
     """Removing even a low role from an admin-tier user changes what they resolve to."""
     tc = _owner_client()
     try:
+        from uuid import UUID
+
+        from gdx_dispatch.models.tenant_models import UserRoleAssignment
+
         target = _seed_user(tc, "admin")
-        # A custom role: a builtin one would rewrite users.role away from admin.
+        # A custom role on an admin: assign_role refuses to create one now
+        # (GDXA-1464), but rows from before that fix remain, so seed it directly.
         lead = tc.post("/api/role-permissions/roles", json={"name": "Lead", "permissions": ["jobs.read_all"]}).json()["id"]
-        r = tc.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": lead})
-        assert r.status_code == 201, r.text  # owner may touch the admin tier
+        s = sessionmaker(bind=tc._engine)()
+        try:
+            s.add(UserRoleAssignment(company_id="tenant-test", user_id=target, role_id=UUID(lead)))
+            s.commit()
+        finally:
+            s.close()
         assert _users_role(tc, target) == "admin"
         _act_as_admin(tc)
         r = tc.delete(f"/api/role-permissions/users/{target}/roles/{lead}")
