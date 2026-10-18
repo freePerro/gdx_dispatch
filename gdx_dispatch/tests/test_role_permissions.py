@@ -71,6 +71,7 @@ def _make_client(
 
     tc = TestClient(app, raise_server_exceptions=True)
     tc._engine = engine  # type: ignore[attr-defined]
+    tc._actor = actor  # type: ignore[attr-defined]  # mutate in place to switch actor
     return tc
 
 
@@ -329,12 +330,12 @@ def test_assign_is_idempotent(client):
 
 def test_unassign_role(client):
     roles = client.get("/api/role-permissions/roles").json()
-    admin = next(r for r in roles if r["name"] == "admin")
+    dispatcher = next(r for r in roles if r["name"] == "dispatcher")
     client.post(
         "/api/role-permissions/users/user-7/roles",
-        json={"role_id": admin["id"]},
+        json={"role_id": dispatcher["id"]},
     )
-    r = client.delete(f"/api/role-permissions/users/user-7/roles/{admin['id']}")
+    r = client.delete(f"/api/role-permissions/users/user-7/roles/{dispatcher['id']}")
     assert r.status_code == 204
     listing = client.get("/api/role-permissions/users/user-7/roles").json()
     assert listing == []
@@ -488,10 +489,10 @@ def test_tenant_scope():
         assert "Secret A" not in names_b
 
         # Assign a role in A, confirm B doesn't see it
-        admin_a = next(r for r in roles_a if r["name"] == "admin")
+        dispatcher_a = next(r for r in roles_a if r["name"] == "dispatcher")
         tc_a.post(
             "/api/role-permissions/users/shared-user/roles",
-            json={"role_id": admin_a["id"]},
+            json={"role_id": dispatcher_a["id"]},
         )
         a_list = tc_a.get("/api/role-permissions/users/shared-user/roles").json()
         b_list = tc_b.get("/api/role-permissions/users/shared-user/roles").json()
@@ -502,3 +503,158 @@ def test_tenant_scope():
         tc_a._engine.dispose()
         tc_b.app.dependency_overrides.clear()
         tc_b._engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# GDXA-1469 — assign/unassign run the owner-only and delegation-cap checks
+# the other role writers (users.py, admin_ops.py, create/update_role) run.
+# ---------------------------------------------------------------------------
+
+def _seed_user(tc, role: str) -> str:
+    """Insert a real users row so the guard can read the target's users.role."""
+    from uuid import uuid4
+
+    from gdx_dispatch.models.tenant_models import User
+
+    uid = uuid4()
+    s = sessionmaker(bind=tc._engine)()
+    try:
+        s.add(User(id=uid, email=f"{uid.hex[:8]}@e.co", username=uid.hex[:8], role=role, company_id="tenant-test"))
+        s.commit()
+    finally:
+        s.close()
+    return str(uid)
+
+
+def _users_role(tc, user_id: str) -> str | None:
+    from uuid import UUID
+
+    from gdx_dispatch.models.tenant_models import User
+
+    s = sessionmaker(bind=tc._engine)()
+    try:
+        return s.get(User, UUID(user_id)).role
+    finally:
+        s.close()
+
+
+def _role_id(tc, name: str) -> str:
+    return next(r["id"] for r in tc.get("/api/role-permissions/roles").json() if r["name"] == name)
+
+
+def _owner_client():
+    return _make_client(actor_role="owner", actor_id="owner-1")
+
+
+def _act_as_admin(tc) -> None:
+    tc._actor.update(user_id="u1", sub="u1", role="admin")
+
+
+@pytest.mark.parametrize("role_name", ["owner", "admin"])
+def test_admin_cannot_assign_admin_tier_role_to_self(client, role_name):
+    r = client.post("/api/role-permissions/users/u1/roles", json={"role_id": _role_id(client, role_name)})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["error_type"] == "insufficient_role"
+    assert client.get("/api/role-permissions/users/u1/roles").json() == []
+
+
+@pytest.mark.parametrize("role_name", ["owner", "admin"])
+def test_admin_cannot_assign_admin_tier_role_to_other(client, role_name):
+    target = _seed_user(client, "technician")
+    r = client.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": _role_id(client, role_name)})
+    assert r.status_code == 403, r.text
+    assert _users_role(client, target) == "technician"  # no promotion by sync
+    assert client.get(f"/api/role-permissions/users/{target}/roles").json() == []
+
+
+@pytest.mark.parametrize("role_name", ["owner", "admin"])
+def test_owner_can_assign_admin_tier_role(role_name):
+    tc = _owner_client()
+    try:
+        target = _seed_user(tc, "technician")
+        r = tc.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": _role_id(tc, role_name)})
+        assert r.status_code == 201, r.text
+        assert _users_role(tc, target) == role_name
+    finally:
+        tc.app.dependency_overrides.clear()
+        tc._engine.dispose()  # type: ignore[attr-defined]
+
+
+def test_admin_cannot_assign_any_role_to_an_owner(client):
+    """A low role on an owner demotes them: the resolver trusts the assignment."""
+    target = _seed_user(client, "owner")
+    r = client.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": _role_id(client, "viewer")})
+    assert r.status_code == 403, r.text
+    assert _users_role(client, target) == "owner"
+
+
+def test_admin_cannot_unassign_owner_role(client):
+    tc = _owner_client()
+    try:
+        target = _seed_user(tc, "technician")
+        owner_role = _role_id(tc, "owner")
+        assert tc.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": owner_role}).status_code == 201
+        _act_as_admin(tc)
+        r = tc.delete(f"/api/role-permissions/users/{target}/roles/{owner_role}")
+        assert r.status_code == 403, r.text
+        assert len(tc.get(f"/api/role-permissions/users/{target}/roles").json()) == 1
+    finally:
+        tc.app.dependency_overrides.clear()
+        tc._engine.dispose()  # type: ignore[attr-defined]
+
+
+def test_admin_cannot_unassign_any_role_from_an_admin():
+    """Removing even a low role from an admin-tier user changes what they resolve to."""
+    tc = _owner_client()
+    try:
+        target = _seed_user(tc, "admin")
+        # A custom role: a builtin one would rewrite users.role away from admin.
+        lead = tc.post("/api/role-permissions/roles", json={"name": "Lead", "permissions": ["jobs.read_all"]}).json()["id"]
+        r = tc.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": lead})
+        assert r.status_code == 201, r.text  # owner may touch the admin tier
+        assert _users_role(tc, target) == "admin"
+        _act_as_admin(tc)
+        r = tc.delete(f"/api/role-permissions/users/{target}/roles/{lead}")
+        assert r.status_code == 403, r.text
+        assert len(tc.get(f"/api/role-permissions/users/{target}/roles").json()) == 1
+    finally:
+        tc.app.dependency_overrides.clear()
+        tc._engine.dispose()  # type: ignore[attr-defined]
+
+
+def test_owner_can_unassign_owner_role():
+    tc = _owner_client()
+    try:
+        target = _seed_user(tc, "technician")
+        owner_role = _role_id(tc, "owner")
+        tc.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": owner_role})
+        r = tc.delete(f"/api/role-permissions/users/{target}/roles/{owner_role}")
+        assert r.status_code == 204, r.text
+    finally:
+        tc.app.dependency_overrides.clear()
+        tc._engine.dispose()  # type: ignore[attr-defined]
+
+
+def test_admin_cannot_assign_custom_role_beyond_own_grant_set():
+    """An owner may create a role with billing.write; an admin may not route anyone through it."""
+    tc = _owner_client()
+    try:
+        made = tc.post("/api/role-permissions/roles", json={"name": "Biller", "permissions": ["billing.write"]})
+        assert made.status_code == 201, made.text
+        role_id = made.json()["id"]
+        _act_as_admin(tc)  # same DB, now acting as an admin
+        target = _seed_user(tc, "technician")
+        r = tc.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": role_id})
+        assert r.status_code == 403, r.text
+        assert "billing.write" in r.json()["detail"]
+        assert tc.get(f"/api/role-permissions/users/{target}/roles").json() == []
+    finally:
+        tc.app.dependency_overrides.clear()
+        tc._engine.dispose()  # type: ignore[attr-defined]
+
+
+def test_admin_can_still_assign_custom_role_within_grant_set(client):
+    made = client.post("/api/role-permissions/roles", json={"name": "Lead", "permissions": ["jobs.read_all"]})
+    target = _seed_user(client, "technician")
+    r = client.post(f"/api/role-permissions/users/{target}/roles", json={"role_id": made.json()["id"]})
+    assert r.status_code == 201, r.text

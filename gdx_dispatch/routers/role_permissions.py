@@ -46,6 +46,7 @@ from gdx_dispatch.core.permissions import (  # noqa: E402
     PERMISSIONS,
     PLATFORM_LOCKED_ROLES,
     WILDCARD,
+    assert_can_assign_role,
 )
 from gdx_dispatch.core.plugin_permissions import (  # noqa: E402
     catalog_entries as plugin_catalog_entries,
@@ -279,6 +280,31 @@ def _enforce_delegation_cap(
             status_code=403,
             detail=f"Cannot grant permissions you don't have: {overreach}",
         )
+
+
+def _role_grant_set(role: Role) -> list[str]:
+    """The permissions an assignment of ``role`` actually confers.
+
+    owner/admin resolve from BUILTIN_ROLES whatever their DB row says (see
+    PLATFORM_LOCKED_ROLES); every other role confers its stored snapshot.
+    """
+    if role.is_system and role.name in PLATFORM_LOCKED_ROLES:
+        return list(BUILTIN_ROLES[role.name])
+    try:
+        return list(json.loads(role.permissions) if role.permissions else [])
+    except json.JSONDecodeError:
+        log.exception("_role_grant_set_failed role=%s", role.id)
+        return []
+
+
+def _target_db_role(db: Session, user_id: str) -> str | None:
+    """users.role of the assignment's target, or None when there is no such row."""
+    from gdx_dispatch.models.tenant_models import User as _User
+    try:
+        uid = UUID(str(user_id))
+    except (ValueError, AttributeError):
+        return None
+    return db.execute(select(_User.role).where(_User.id == uid)).scalar_one_or_none()
 
 
 def _audit(
@@ -680,6 +706,13 @@ def assign_role(
 
     role = _get_role_scoped(db, role_uuid, tenant_id)
 
+    # The same two checks every other role writer runs (GDXA-1469): only an
+    # owner grants the admin/owner tier or touches a user already in it (any
+    # assignment changes what the resolver hands that user), and nobody confers
+    # permissions they do not hold themselves.
+    assert_can_assign_role(user, role.name, _target_db_role(db, user_id))
+    _enforce_delegation_cap(request, _role_grant_set(role))
+
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     existing = db.execute(
         select(UserRoleAssignment).where(
@@ -774,6 +807,12 @@ def unassign_role(
     ).scalar_one_or_none()
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
+    # Removing an assignment changes the target's permissions as surely as
+    # adding one (GDXA-1469): owner-only for an admin/owner role or user.
+    removed_role_name = db.execute(
+        select(Role.name).where(Role.id == role_id)
+    ).scalar_one_or_none()
+    assert_can_assign_role(user, removed_role_name, _target_db_role(db, user_id))
     db.delete(assignment)
     db.commit()
     _audit(
