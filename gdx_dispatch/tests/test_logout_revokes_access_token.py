@@ -3,16 +3,16 @@
 Before the fix ``POST /auth/logout`` revoked the refresh token and deleted
 the cookies, nothing more: a copied access token kept working for the rest
 of its 15-minute TTL on every path that trusts the token, among them the
-bearer fallback behind ``require_role`` and the ``/ws/dispatch`` handshake.
+bearer fallback behind ``require_role``.
 
 Every test here does a real logout over HTTP through the real auth router,
-then presents the same token on a real route or a real WebSocket handshake
-in the same app, so the denylist the logout wrote is the one the reader
-checks. Only the refresh-token Redis set and the audit writer are stubbed.
+then presents the same token on a real route in the same app, so the
+denylist the logout wrote is the one the reader checks. Only the
+refresh-token Redis set and the audit writer are stubbed.
 
-The socket also runs the users-row check and the jobs.read_all gate
-(GDXA-1210), so the tests that open it mint the token for a real
-dispatcher row in an in-memory SQLite database.
+``get_current_user`` also runs the users-row check, so the tests that call
+``/user-gated`` mint the token for a real dispatcher row in an in-memory
+SQLite database.
 """
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from starlette.websockets import WebSocketDisconnect
 
 from gdx_dispatch.core import database
 from gdx_dispatch.core.audit import TenantBase
@@ -33,23 +32,19 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.denylist import Denylist
 from gdx_dispatch.core.modules import require_role
 from gdx_dispatch.core.tenant import single_tenant
-from gdx_dispatch.core.websocket import manager
 from gdx_dispatch.models.tenant_models import User
-from gdx_dispatch.routers import dispatch_ws
 from gdx_dispatch.routers.auth import core as auth_core
 from gdx_dispatch.routers.auth.core import _issue, get_current_user
-from gdx_dispatch.routers.dispatch_ws import dispatch_board_ws
 
 TENANT = single_tenant()["id"]
 
 
 @pytest.fixture
 def dispatcher(monkeypatch) -> str:
-    """A dispatcher users row the socket's row check and permission lookup read."""
+    """A dispatcher users row for get_current_user's row check."""
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     TenantBase.metadata.create_all(engine, checkfirst=True)
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    monkeypatch.setattr(dispatch_ws, "SessionLocal", factory)
     monkeypatch.setattr(database, "app_engine", engine)
     uid = uuid4()
     with factory() as db:
@@ -103,8 +98,6 @@ def client(monkeypatch, audit_rows) -> TestClient:
     def user_gated(user: Annotated[dict, Depends(get_current_user)]) -> dict[str, str]:
         return {"user_id": user["user_id"]}
 
-    app.add_api_websocket_route("/ws", dispatch_board_ws)
-    manager._connections.clear()
     with TestClient(app) as tc:
         yield tc
 
@@ -113,30 +106,17 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _ws_close_code(client: TestClient, token: str) -> int | None:
-    """None when the socket was accepted, else the code it was closed with."""
-    try:
-        with client.websocket_connect(f"/ws?token={token}") as ws:
-            ws.send_json({"type": "board_refresh"})
-            assert ws.receive_json() == {"type": "board_refresh"}
-    except WebSocketDisconnect as exc:
-        return exc.code
-    return None
-
-
 def test_bearer_logout_then_the_same_token_is_refused_everywhere(client, audit_rows, dispatcher):
     token, jti = _issue(dispatcher, TENANT, "dispatcher", 600, "access")
-    # Falsifier: the token works on all three before logout, so a refusal
+    # Falsifier: the token works on both before logout, so a refusal
     # afterwards is the logout's doing, not a broken fixture.
     assert client.get("/role-gated", headers=_bearer(token)).status_code == 200
     assert client.get("/user-gated", headers=_bearer(token)).status_code == 200
-    assert _ws_close_code(client, token) is None
 
     assert client.post("/auth/logout", headers=_bearer(token)).status_code == 200
 
     assert client.get("/role-gated", headers=_bearer(token)).status_code == 401
     assert client.get("/user-gated", headers=_bearer(token)).status_code == 401
-    assert _ws_close_code(client, token) == 1008
 
     logout = [r for r in audit_rows if r["action"] == "logout"]
     assert len(logout) == 1
@@ -157,7 +137,6 @@ def test_cookie_logout_revokes_the_cookie_token_and_the_refresh_token(client, di
 
     # The copied cookie value, replayed as a bearer, is now refused.
     assert client.get("/role-gated", headers=_bearer(access)).status_code == 401
-    assert _ws_close_code(client, access) == 1008
     assert refresh_jti in auth_core.redis.sets["used_refresh_jtis"]
 
 

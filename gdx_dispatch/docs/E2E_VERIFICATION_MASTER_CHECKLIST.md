@@ -246,13 +246,13 @@ The dispatch board shows a real-time view of today's jobs, technician assignment
 | DISP-01 | Dispatch page renders | Calendar/board view loads, shows jobs for current day/week |
 | DISP-02 | Jobs shown on board | Each scheduled job appears as a card with customer name, address, time, assigned tech |
 | DISP-03 | Drag-and-drop assignment | Drag job card to technician column, API call fires, `job.assigned_to` updates. **Not** `technician_id` — that is not a field on `JobUpdate`, so the patch mapped nothing and the router answered 400 "no fields to update" (corrected 2026-09-12, #640). Exercise it on a scratch job: patching `assigned_to` re-derives crew and soft-deletes assignments not in the set |
-| DISP-04 | WebSocket connects | On page load, WS connection to /ws/dispatch established (check network tab) |
+| DISP-04 | ~~WebSocket connects~~ | Retired 2026-10-18 (GDXA-1562): `/ws/dispatch` was deleted; it had no client and no server-side producer. The board does not open a WebSocket |
 | DISP-05 | WebSocket receives job_assigned | When another user assigns a job, board updates without refresh |
 | DISP-06 | WebSocket receives job_status | When tech marks job in_progress, card color/status changes live |
 | DISP-07 | WebSocket receives tech_location | Technician location update reflected on map (if map view active) |
 | DISP-08 | WebSocket receives board_refresh | Full board refresh triggered by broadcast |
 | DISP-09 | WebSocket reconnect | Kill WS connection, verify automatic reconnect within 5 seconds |
-| DISP-10 | WebSocket auth | WS connection without valid token is rejected (code 1008) |
+| DISP-10 | ~~WebSocket auth~~ | Retired 2026-10-18 (GDXA-1562) with `/ws/dispatch`; there is no dispatch socket to authenticate |
 | DISP-11 | WebSocket tenant isolation | Messages from tenant A do not appear on tenant B's board |
 | DISP-12 | Dispatch with no jobs | Empty state shown, no JS errors |
 | DISP-13 | Dispatch time range | Switch between day/week/month view, jobs update accordingly |

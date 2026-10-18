@@ -197,7 +197,6 @@ gdx_dispatch/core/validation.py                              platform-core
 gdx_dispatch/core/webhook_auth.py                            platform-core
 gdx_dispatch/core/webhook_delivery.py                        platform-core
 gdx_dispatch/core/webhook_logger.py                          platform-core
-gdx_dispatch/core/websocket.py                               platform-core
 gdx_dispatch/core/well_known_manifest.py                     platform-core
 gdx_dispatch/core/app_version.py                             platform-core
 gdx_dispatch/release_notes/*                                 platform-core
@@ -385,7 +384,6 @@ gdx_dispatch/routers/job_costing.py                          jobs-dispatch
 gdx_dispatch/routers/job_diagnosis.py                        jobs-dispatch
 gdx_dispatch/routers/job_hazards_receipts.py                 jobs-dispatch
 gdx_dispatch/routers/dispatch_scheduling.py                  jobs-dispatch
-gdx_dispatch/routers/dispatch_ws.py                          jobs-dispatch
 gdx_dispatch/routers/scheduling.py                           jobs-dispatch
 gdx_dispatch/routers/appointments.py                         jobs-dispatch
 gdx_dispatch/routers/planner.py                              jobs-dispatch
