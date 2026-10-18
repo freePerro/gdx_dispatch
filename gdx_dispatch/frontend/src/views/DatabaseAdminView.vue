@@ -49,6 +49,10 @@
                 class="ml-2 text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">
             {{ status.tenant_drift.missing_count }} missing
           </span>
+          <span v-if="status.tenant_drift.mismatch_count"
+                class="ml-2 text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+            {{ status.tenant_drift.mismatch_count }} nullability mismatch
+          </span>
         </h3>
         <p v-if="!status.tenant_drift.total" class="text-sm text-gray-500">No drift — ORM matches the database.</p>
         <ul v-else class="text-xs font-mono space-y-0.5 max-h-72 overflow-y-auto">
@@ -123,12 +127,12 @@ const verdictTitle = computed(() => ({
 const verdictDetail = computed(() => ({
   ok: 'At head, ORM matches the database.',
   pending: 'Migrations are available to apply.',
-  drift: 'The ORM expects columns/tables the database is missing — some features will 500.',
+  drift: 'The database is missing columns/tables the ORM expects (some features will 500), or a column\'s nullability disagrees with the ORM (writes may be refused, or reads may meet NULLs the code does not expect).',
   orphaned: 'DB revision is not in the migration tree; forward migration is blocked.',
 }[verdict.value] || ''));
 
 function severityClass(s) {
-  return { missing: 'text-red-600', stale: 'text-gray-400', review: 'text-amber-600' }[s] || '';
+  return { missing: 'text-red-600', mismatch: 'text-red-600', stale: 'text-gray-400', review: 'text-amber-600' }[s] || '';
 }
 function fmtSize(b) { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
 
