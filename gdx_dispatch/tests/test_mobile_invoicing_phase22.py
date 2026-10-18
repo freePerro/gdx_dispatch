@@ -1573,3 +1573,83 @@ def test_mobile_resend_with_picks_inside_the_window_is_suppressed(session_factor
         assert len(audits) == 1
     finally:
         db.close()
+
+
+# GDXA-1369: the truck send goes through the tech's own mailbox, as the desktop
+# /send goes through the office user's. The ids are real UUIDs
+# here because send_transactional_email skips every Outlook rung on an id that
+# is not one, which is how the old user_id=None call went unnoticed. Only the
+# provider hops are faked; the outbound_emails row is really written.
+_TECH_UUID = "11111111-1111-4111-8111-111111111111"
+_OFFICE_UUID = "22222222-2222-4222-8222-222222222222"
+_TENANT_UUID = "33333333-3333-4333-8333-333333333333"
+
+
+def _send_as_uuid_tech(session_factory, monkeypatch, outlook):
+    """Send a verified invoice as a tech whose ids are UUIDs; returns the
+    response body, the Outlook calls and the invoice's outbound_emails rows."""
+    from sqlalchemy import select
+
+    import gdx_dispatch.core.transactional_email as te
+    from gdx_dispatch.models.tenant_models import OutboundEmail
+
+    calls: list[str] = []
+
+    def _fake_outlook(**kw):
+        calls.append(str(kw["user_id"]))
+        return outlook(str(kw["user_id"]))
+
+    smtp_calls: list[dict] = []
+    monkeypatch.setattr(te, "_try_outlook_graph", _fake_outlook)
+    monkeypatch.setattr(te, "_designated_sender_user_id", lambda _db: _OFFICE_UUID)
+    monkeypatch.setattr(te, "_try_smtp", lambda **kw: (smtp_calls.append(kw), (False, "smtp_not_configured"))[1])
+    # The ownership gate is not under test; the UUID tech owns no seeded job.
+    monkeypatch.setattr(mobile_invoicing, "_job_belongs_to_tech", lambda *a, **k: True)
+    tech = {"user_id": _TECH_UUID, "role": "technician", "tenant_id": _TENANT_UUID}
+    db = session_factory()
+    try:
+        inv_id = _verified_invoice_with_customer(session_factory, db)
+        body = _as_json(mobile_invoicing.mobile_send_invoice(
+            invoice_id=inv_id, request=_request(_TENANT_UUID), current_user=tech, db=db,
+        ))
+        rows = db.scalars(select(OutboundEmail).where(OutboundEmail.entity_id == inv_id)).all()
+        return body, calls, smtp_calls, [(r.initiator_kind, r.initiator_ref, r.status) for r in rows]
+    finally:
+        db.close()
+
+
+def test_mobile_send_goes_from_the_techs_mailbox(session_factory, monkeypatch):
+    body, calls, smtp_calls, rows = _send_as_uuid_tech(
+        session_factory, monkeypatch, lambda uid: (True, None),
+    )
+    assert body["email_sent"] is True
+    assert calls == [_TECH_UUID]
+    assert smtp_calls == []
+    assert rows == [("user", _TECH_UUID, "sent")]
+
+
+def test_mobile_send_without_a_tech_mailbox_does_not_use_the_office_mailbox(session_factory, monkeypatch):
+    """A tech with no connected mailbox goes on to SMTP, as the desktop /send
+    does — never through the office's "Send as" mailbox, which this call site
+    does not opt into (outbound_emails cannot record which mailbox carried
+    it). The row still names the tech."""
+    body, calls, smtp_calls, rows = _send_as_uuid_tech(
+        session_factory, monkeypatch,
+        lambda uid: (True, None) if uid == _OFFICE_UUID else (False, "outlook_not_connected"),
+    )
+    assert body["email_sent"] is False
+    assert calls == [_TECH_UUID]
+    assert len(smtp_calls) == 1
+    assert [(k, ref) for k, ref, _ in rows] == [("user", _TECH_UUID)]
+
+
+def test_mobile_send_expired_tech_mailbox_does_not_fall_back(session_factory, monkeypatch):
+    """An expired connection is the tech's to reconnect — no silent office
+    send (send_transactional_email's rule); it reports non-delivery."""
+    body, calls, smtp_calls, rows = _send_as_uuid_tech(
+        session_factory, monkeypatch, lambda uid: (False, "outlook_reconnect_required"),
+    )
+    assert body["email_sent"] is False
+    assert calls == [_TECH_UUID]
+    assert len(smtp_calls) == 1
+    assert [(k, ref) for k, ref, _ in rows] == [("user", _TECH_UUID)]

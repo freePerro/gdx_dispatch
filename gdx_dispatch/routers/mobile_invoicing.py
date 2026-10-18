@@ -1275,7 +1275,12 @@ def mobile_send_invoice(
     db.refresh(invoice)
 
     send_report: dict[str, Any] = {}
-    delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id, picked=picked, report=send_report)
+    # The tech's own mailbox, as the desktop /send uses the office user's
+    # (GDXA-1369). Without user_id the send skipped Outlook entirely and the
+    # outbound_emails row named no initiator.
+    delivered = _send_invoice_email(
+        db, invoice, tenant_id=tenant_id, user_id=user_id, picked=picked, report=send_report,
+    )
 
     # sent_at is a delivery fact. Same tail as the desktop /send (GDXA-673):
     # if the email step left the transaction dead, the commit raises — roll
