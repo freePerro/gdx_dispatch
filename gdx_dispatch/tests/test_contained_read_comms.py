@@ -31,13 +31,12 @@ by monkeypatching the session: a mock proves which arguments were passed, never
 that the transaction survived. A rename is what a drifted or mid-migration
 schema looks like to that one statement.
 
-``table=None`` means the read already fails in this fixture on its own, because
-``fixtures/structure.sql`` is a ``TenantBase``-scoped dump and these tables are
-mapped on a different Base: ``outbound_emails``, ``customer_contacts``,
-``outlook_accounts`` and ``outlook_folders`` are absent from it even though
-migration 001 creates them on a real box. That injected failure exercises the
-containment exactly as a genuine ``UndefinedTable`` would, but say plainly what
-it is — a fixture artifact, not a reproduction of the production failure mode.
+``table=None`` means the read already fails without help. Until GDXA-1558
+``outbound_emails``, ``customer_contacts``, ``outlook_accounts``,
+``outlook_folders`` and ``outlook_settings`` were missing from a stale
+``fixtures/structure.sql``, and these tests passed ``None`` for them; with the
+dump regenerated from the ORM they rename the table like every other test,
+because a ``None`` would now let the read succeed and the test pass vacuously.
 """
 from __future__ import annotations
 
@@ -97,37 +96,6 @@ def _caller_survives(pg_test_engine, table: str | None, call):
             f"a failed read of {table} cost the caller its row"
         )
     return result
-
-
-def _reconcile_to_the_orm(engine, model) -> None:
-    """Add columns the model declares and ``fixtures/structure.sql`` lacks.
-
-    The dump is a ``TenantBase``-scoped snapshot and it lags the ORM: ``Estimate``
-    has a ``jobsite_address`` column that is not in it. An ORM ``SELECT`` names
-    every mapped column, so against the dump it fails with ``UndefinedColumn``
-    before the read under test is ever reached — which would make these tests
-    pass or fail for a reason that has nothing to do with the savepoint.
-
-    Reconciles rather than re-creating from ``model.__table__`` deliberately: the
-    dump's ``estimates.status`` is the Postgres enum ``estimate_status``, so
-    creating the table from the ORM would CREATE TYPE over one that already
-    exists. This is the repo's documented "create_all tables diverge from the
-    ORM" edge, met from the other side — the database is the authority, so ask it
-    what it has rather than assuming.
-    """
-    from sqlalchemy import inspect as _inspect
-
-    table = model.__table__
-    have = {c["name"] for c in _inspect(engine).get_columns(table.name)}
-    missing = [c for c in table.columns if c.name not in have]
-    if not missing:
-        return
-    with engine.begin() as c:
-        for col in missing:
-            ddl = col.type.compile(engine.dialect)
-            c.execute(
-                text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ddl} NULL')
-            )
 
 
 class _Stub:
@@ -260,6 +228,9 @@ def test_pg_the_bare_swallow_loses_the_callers_row(pg_test_engine):
     db = Session()
     db.add(_Row(id=1, v="the caller's work"))
 
+    with pg_test_engine.begin() as c:
+        c.execute(text("ALTER TABLE outbound_emails RENAME TO outbound_emails_gone"))
+
     from contextlib import suppress
     with suppress(Exception):            # what the `except` used to do, unguarded
         db.execute(text("SELECT id FROM outbound_emails LIMIT 1"))
@@ -290,7 +261,7 @@ def test_pg_recently_sent_cannot_cost_the_caller_its_work(pg_test_engine):
     from gdx_dispatch.core.transactional_email import recently_sent
 
     answered = _caller_survives(
-        pg_test_engine, None,            # outbound_emails: absent from the fixture
+        pg_test_engine, "outbound_emails",
         lambda db: recently_sent(db, "estimate", str(uuid.uuid4())),
     )
     assert answered is False             # fails OPEN, as documented
@@ -340,7 +311,7 @@ def test_pg_recipient_resolution_cannot_cost_the_caller_its_work(pg_test_engine)
         id=str(uuid.uuid4()), email="owner@example.test", name="Example Account",
     )
     resolved = _caller_survives(
-        pg_test_engine, None,            # customer_contacts: absent from the fixture
+        pg_test_engine, "customer_contacts",
         lambda db: resolve_recipient(db, customer),
     )
     assert resolved.source == "account_email"
@@ -431,7 +402,7 @@ def test_pg_bounce_outbound_lookup_cannot_cost_the_caller_its_work(pg_test_engin
     from gdx_dispatch.modules.outlook.bounce_detect import _outbound_row
 
     assert _caller_survives(
-        pg_test_engine, None,            # outbound_emails: absent from the fixture
+        pg_test_engine, "outbound_emails",
         lambda db: _outbound_row(
             db, None, "estimate", str(uuid.uuid4()),
             datetime.now(timezone.utc), kind=None,
@@ -447,9 +418,6 @@ def test_pg_bounce_outbound_lookup_cannot_cost_the_caller_its_work(pg_test_engin
 def _insert_rejected_estimate(engine) -> str:
     """One rejected estimate, so ``process_resends`` gets past its early return
     and actually reaches the contained read."""
-    from gdx_dispatch.modules.proposals.models import Estimate
-
-    _reconcile_to_the_orm(engine, Estimate)
     eid, cid = str(uuid.uuid4()), str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     with engine.begin() as c:
@@ -587,10 +555,12 @@ def test_pg_tagger_settings_requery_cannot_cost_the_caller_its_work(pg_test_engi
     from gdx_dispatch.modules.outlook.tagger import tag_message
 
     Session = _sessions(pg_test_engine)
+    with pg_test_engine.begin() as c:
+        c.execute(text("ALTER TABLE outlook_settings RENAME TO outlook_settings_gone"))
     db = Session()
     msg = _Stub(tag_strategy=None, subject="Re: hello")
     with pytest.raises(Exception) as exc:
-        tag_message(msg, db)          # outlook_settings is absent from the fixture
+        tag_message(msg, db)
     assert "does not exist" in str(exc.value).lower(), f"expected UndefinedTable, got {exc.value}"
 
     db.add(_Row(id=1, v="the upsert tasks.py promises to keep"))
@@ -632,7 +602,7 @@ def test_pg_mailbox_address_cannot_cost_the_caller_its_work(pg_test_engine):
 
     msg = _Stub(account_id=uuid.uuid4())
     assert _caller_survives(
-        pg_test_engine, None,            # outlook_accounts: absent from the fixture
+        pg_test_engine, "outlook_accounts",
         lambda db: _mailbox_address(db, msg),
     ) is None
 
@@ -647,7 +617,7 @@ def test_pg_unbadged_folder_read_cannot_cost_the_caller_its_work(pg_test_engine)
     from gdx_dispatch.modules.outlook.views_router import _unbadged_folder_ids
 
     assert _caller_survives(
-        pg_test_engine, None,            # outlook_folders: absent from the fixture
+        pg_test_engine, "outlook_folders",
         _unbadged_folder_ids,
     ) == []
 
@@ -671,16 +641,11 @@ def test_pg_visibility_role_preload_cannot_cost_the_caller_its_work(pg_test_engi
     Postgres transaction the per-row fallback it names cannot run either.
 
     This one needs its two EARLIER reads to succeed before the third can be the
-    failure, and ``outlook_settings``/``outlook_accounts`` are absent from the
-    ``TenantBase`` dump — so create them from the ORM and seed one account. That
-    is the only way to reach read 3 of 3; renaming a table the first read needs
-    would test the wrong line.
+    failure, so seed one account. That is the only way to reach read 3 of 3;
+    renaming a table the first read needs would test the wrong line.
     """
-    from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSettings
     from gdx_dispatch.modules.outlook.visibility import build_visibility_context
 
-    OutlookSettings.__table__.create(pg_test_engine, checkfirst=True)
-    OutlookAccount.__table__.create(pg_test_engine, checkfirst=True)
     account_id, user_id = uuid.uuid4(), str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     with pg_test_engine.begin() as c:

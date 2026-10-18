@@ -72,12 +72,12 @@ COMMITTED, and the entrypoint migrates before serving, so the live triggers are
 narrow: a migration window, a genuinely raw table, a future ``statement_timeout``.
 This is cheap insurance on a real mechanism. It is not a post-mortem.
 
-``tests/fixtures/structure.sql`` is the lever for most of that. It is generated
-from the migrated schema and genuinely lacks ``tenant_settings``,
-``labor_price_items``, ``tax_config`` and ``tax_exemptions`` (they are declared
-on ``TenantBase``, which ``migrations/env.py`` does not autogenerate against),
-so those reads fail on their own. Where the table IS present the test drops the
-column the query selects.
+``tests/fixtures/structure.sql`` is ``TenantBase`` and nothing else, so
+``tenant_settings`` (declared on the Alembic ``Base``) is absent and that read
+fails on its own. Every other test breaks the schema itself: it drops or renames
+the table or column the query selects. Until GDXA-1558 a stale dump also lacked
+``labor_price_items``, ``tax_config`` and ``tax_exemption``, and the tests leaned
+on that.
 
 What is NOT covered, and deliberately:
 
@@ -127,27 +127,6 @@ def _break(engine, ddl: str) -> None:
     """Make a read fail the way production can: the column/table is gone."""
     with engine.begin() as conn:
         conn.execute(text(ddl))
-
-
-def _reconcile(engine, model) -> None:
-    """Add any ORM column ``structure.sql`` lacks, so a real read can run.
-
-    The PG template is generated from the migrated schema and lags the models
-    in places (``job_parts_needed.sku`` is missing today). A test that wants to
-    drive real code through a table needs it READABLE; the shape it is missing
-    is not the shape under test, and letting the wrong column blow up would
-    prove nothing about containment.
-    """
-    from sqlalchemy import inspect as sa_inspect
-
-    have = {c["name"] for c in sa_inspect(engine).get_columns(model.__tablename__)}
-    with engine.begin() as conn:
-        for col in model.__table__.columns:
-            if col.name not in have:
-                conn.execute(text(
-                    f'ALTER TABLE {model.__tablename__} '
-                    f'ADD COLUMN "{col.name}" {col.type.compile(engine.dialect)}'
-                ))
 
 
 def _survivors(engine) -> int:
@@ -283,22 +262,16 @@ def test_pg_autodraft_survives_a_failed_tax_read_in_closeout_jobs_own_frame(pg_t
     away and logged ``closeout_autodraft_failed``, leaving Ready-for-Billing
     showing a blank form.
 
-    ``tax_config`` is created and ``tax_exemptions`` deliberately is not, so
+    ``tax_exemption`` is dropped and ``tax_config`` is kept, so
     ``resolve_rate`` gets past ``_load_tax_labor_flag`` (the deferred sibling,
     which would otherwise abort the transaction first and make the wrap inert)
     and fails inside ``is_customer_exempt``. That one RAISES rather than
     swallowing, which is what makes ``contained_read`` the right tool here.
     """
     from gdx_dispatch.core.closeout_billing import autodraft_invoice_for_closeout
-    from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, JobPartNeeded
-    from gdx_dispatch.modules.tax.models import TaxConfig
+    from gdx_dispatch.models.tenant_models import Invoice
 
-    TaxConfig.__table__.create(pg_test_engine)
-    _reconcile(pg_test_engine, JobPartNeeded)
-    # `core/invoice_invariants.py` registers a before_commit listener that reads
-    # the invoice's lines, so the commit at the end of this test needs the table
-    # readable too.
-    _reconcile(pg_test_engine, InvoiceLine)
+    _break(pg_test_engine, "DROP TABLE tax_exemption")
     Session = _sessions(pg_test_engine)
     db = Session()
 
@@ -397,10 +370,11 @@ def test_pg_journal_source_lookup_failure_does_not_kill_the_page(pg_test_engine)
 
 def test_pg_labor_provenance_lookup_failure_does_not_cost_the_invoice(pg_test_engine):
     """This runs while the caller is copying estimate lines onto a NEW invoice,
-    with those lines pending in the session. ``labor_price_items`` is absent
-    from the PG template on its own, so the real read fails."""
+    with those lines pending in the session. ``labor_price_items`` is renamed
+    away, so the real read fails."""
     from gdx_dispatch.routers.invoices import _labor_price_was_overridden
 
+    _break(pg_test_engine, "ALTER TABLE labor_price_items RENAME TO labor_price_items_gone")
     Session = _sessions(pg_test_engine)
     db = Session()
     db.add(_Row(id=1, v="the invoice line being copied"))
@@ -434,13 +408,13 @@ def test_pg_begin_nested_contains_the_rolling_volume_refresh(pg_test_engine):
     the next line. Before the fix a failed refresh aborted the transaction and
     that ``db.commit()`` took the payment, the GL posting and the audit row
     with it — money captured on a tech's phone, reported as success.
-    ``customers.cached_rolling_volume_paid_12mo`` is absent from the PG
-    template on its own, and that column is exactly what the helper loads and
-    writes — so the real read fails here with no DDL, the way it would during
-    the migration window that adds it.
+    ``customers.cached_rolling_volume_paid_12mo`` is dropped, and that column
+    is exactly what the helper loads and writes — so the real read fails the
+    way it would during the migration window that adds it.
     """
     from gdx_dispatch.services.customer_rolling_volume import refresh_cached_volume
 
+    _break(pg_test_engine, "ALTER TABLE customers DROP COLUMN cached_rolling_volume_paid_12mo")
     Session = _sessions(pg_test_engine)
     db = Session()
     db.add(_Row(id=1, v="the payment + its GL posting"))

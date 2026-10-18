@@ -16,15 +16,13 @@ The reads fail the way production fails: a real aborted transaction on a real
 engine, never a monkeypatched session. A monkeypatch proves the ``except`` runs;
 only a real abort proves the containment.
 
-Be exact about the mechanism, because "``DROP TABLE`` on the real engine" is what
-this said first and it is only true for some of them:
-``tests/fixtures/structure.sql`` carries no ``phone_com_calls`` and no
-``outlook_accounts``, and its ``planner_tasks`` lacks ``contact_phone`` /
-``phone_com_call_id`` / ``source``. So for those sites ``_drop()`` is a no-op and
-the read fails on a table that was never created — fixture ABSENCE, not a drop.
-The abort, and therefore the containment, is identical either way; the claim
-about how it was produced is what needed correcting. It also means no PG guard in
-this repo can drive an ORM path over ``planner_tasks``. The PG
+Be exact about the mechanism. Until GDXA-1558 ``tests/fixtures/structure.sql``
+carried no ``phone_com_calls`` and no ``outlook_accounts``, and its
+``planner_tasks`` lacked ``contact_phone`` / ``phone_com_call_id`` / ``source``,
+so for those sites ``_drop()`` was a no-op and the read failed on a table that
+was never created. The dump is the ORM now, so every ``_drop()`` is a real drop.
+The abort, and therefore the containment, is identical either way. When these
+tests were written no PG guard could drive an ORM path over ``planner_tasks``. The PG
 ``link_customer`` test therefore asserts the transaction shape; the endpoint
 itself is driven on an ORM-built SQLite schema
 (``test_link_customer_does_not_report_a_backfill_it_rolled_back``), which

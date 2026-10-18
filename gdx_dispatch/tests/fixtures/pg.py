@@ -9,7 +9,8 @@ fresh database cloned from that template via
 isolated).
 
 Regenerate structure.sql via gdx_dispatch/tools/refresh_test_schema.sh whenever the
-ORM changes. GDX prod (post-pave) has the same shape as the ORM, so
+ORM changes; gdx_dispatch/tests/test_structure_sql_drift.py is red until you do
+(GDXA-1558: the script was named here for months before it existed). GDX prod (post-pave) has the same shape as the ORM, so
 "prod-like" is automatic — no per-tenant schema dump needed.
 
 Activated by adding `gdx_dispatch.tests.fixtures.pg` to `pytest_plugins` in
