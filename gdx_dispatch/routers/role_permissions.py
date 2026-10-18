@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.roles import is_admin_tier, is_role_admin_actor
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -684,23 +685,66 @@ def assign_role(
 
     role = _get_role_scoped(db, role_uuid, tenant_id)
 
+    from gdx_dispatch.models.tenant_models import User as _User
+    try:
+        target = db.execute(select(_User).where(_User.id == UUID(str(user_id)))).scalar_one_or_none()
+    except (ValueError, AttributeError):
+        target = None
+
+    # The UI's "Assign / Replace" column means replace, and the permission
+    # resolver reads one assignment: it prefers the row whose role name matches
+    # users.role, so a builtin row left beside a new custom one keeps winning
+    # and the custom role never takes effect (GDXA-1464). Make the new role the
+    # user's sole assignment, as users._sync_user_role_assignment does.
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-    existing = db.execute(
-        select(UserRoleAssignment).where(
-            UserRoleAssignment.user_id == user_id,
-            UserRoleAssignment.role_id == role_uuid,
+    current = db.execute(
+        select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id)
+    ).scalars().all()
+    existing = next((a for a in current if a.role_id == role_uuid), None)
+    stale = [a for a in current if a.role_id != role_uuid]
+    # Keep users.role in sync with a builtin-role assignment: the JWT carries
+    # users.role and change_role syncs both directions. A custom role leaves
+    # users.role on the user's builtin tier, since users.role only holds
+    # builtin names; the resolver resolves the lone custom assignment to its
+    # snapshot.
+    sync_role = role.name in BUILTIN_ROLES and target is not None and (target.role or "") != role.name
+    # A custom role cannot narrow an admin or owner: the JWT role, every
+    # require_role gate and the last-owner count read users.role, which would
+    # still say admin/owner. Refuse instead of half-applying it.
+    if role.name not in BUILTIN_ROLES and target is not None and is_admin_tier(target.role):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{target.role} is a full-access role. Give the user a non-admin built-in "
+                   f"role first, then assign {role.name}.",
         )
-    ).scalar_one_or_none()
-    if existing is not None:
+    if existing is not None and not stale and not sync_role:
         return _serialize_assignment(existing, role)
 
-    assignment = UserRoleAssignment(
-        company_id=tenant_id,
-        user_id=user_id,
-        role_id=role_uuid,
-        assigned_by=_user_id(user),
-    )
-    db.add(assignment)
+    # A builtin assignment syncs users.role, so this endpoint can demote the
+    # owner; the last-owner guard change_role applies holds here too.
+    if target is not None and is_role_admin_actor(target.role) and not is_role_admin_actor(role.name):
+        from gdx_dispatch.routers.users import _assert_not_last_owner
+        _assert_not_last_owner(db, tenant_id, target, action="demote")
+
+    stale_names = dict(
+        db.execute(select(Role.id, Role.name).where(Role.id.in_([a.role_id for a in stale]))).all()
+    ) if stale else {}
+    removed = [{"role_id": str(a.role_id), "role_name": stale_names.get(a.role_id)} for a in stale]
+    for a in stale:
+        db.delete(a)
+    assignment = existing
+    if assignment is None:
+        assignment = UserRoleAssignment(
+            company_id=tenant_id,
+            user_id=user_id,
+            role_id=role_uuid,
+            assigned_by=_user_id(user),
+        )
+        db.add(assignment)
+    old_role = target.role if target is not None else None
+    if sync_role:
+        target.role = role.name
+        target.updated_at = utcnow()
     try:
         db.commit()
     except IntegrityError:
@@ -717,34 +761,20 @@ def assign_role(
             return _serialize_assignment(existing, role)
         raise HTTPException(status_code=409, detail="Assignment conflict") from None
     db.refresh(assignment)
-
-    # Keep users.role in sync with a builtin-role assignment. The permission
-    # resolver prefers the assignment, and the JWT carries users.role; if the
-    # two drift apart for admin/owner, the user is silently downgraded to the
-    # lower set (an owner stuck on admin perms, 2026-06-26). change_role already
-    # syncs both directions — assign_role must too. (Custom roles leave
-    # users.role alone; the snapshot drives their perms.)
-    details: dict[str, Any] = {"user_id": user_id, "role_id": str(role_uuid), "role_name": role.name}
-    if role.name in BUILTIN_ROLES:
-        from gdx_dispatch.models.tenant_models import User as _User
-        try:
-            target = db.execute(select(_User).where(_User.id == UUID(str(user_id)))).scalar_one_or_none()
-        except (ValueError, AttributeError):
-            target = None
-        if target is not None and (target.role or "") != role.name:
-            # The audit row keeps the role this overwrites (GDXA-1461).
-            details["users_role"] = {"from": target.role, "to": role.name}
-            target.role = role.name
-            target.updated_at = utcnow()
-            db.commit()
-            log.info("assign_role synced users.role=%s for user=%s", role.name, user_id)
+    if sync_role:
+        log.info("assign_role synced users.role=%s for user=%s", role.name, user_id)
 
     _audit(
         db, tenant_id=tenant_id, user=user,
         action="user_role_assigned",
         entity_type="user_role_assignment",
         entity_id=str(assignment.id),
-        details=details,
+        details={
+            "user_id": user_id, "role_id": str(role_uuid), "role_name": role.name,
+            "removed_assignments": removed,
+            "old_users_role": old_role,
+            "new_users_role": target.role if target is not None else None,
+        },
         request=request,
     )
     # Privilege change → revoke the user's sessions so an unexpired token can't

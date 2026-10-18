@@ -258,7 +258,8 @@ def test_assigning_a_builtin_role_records_the_users_role_it_overwrites(db):
     db.expire_all()
     assert db.get(User, u.id).role == "dispatcher"
     (row,) = _audits(db, "user_role_assigned")
-    assert row.details["users_role"] == {"from": "technician", "to": "dispatcher"}
+    assert row.details["old_users_role"] == "technician"
+    assert row.details["new_users_role"] == "dispatcher"
 
 
 def test_renaming_a_custom_role_keeps_the_old_name_and_description(db):

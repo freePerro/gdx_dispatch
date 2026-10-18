@@ -56,6 +56,7 @@ from gdx_dispatch.modules.equipment.models import CustomerEquipment
 from gdx_dispatch.modules.numbering import allocate_job_number
 from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
 from gdx_dispatch.modules.tax.service import resolve_rate_for_job
+from gdx_dispatch.routers.users import _sync_user_role_assignment
 
 NOW = datetime.now(timezone.utc)
 ADMIN_EMAIL = os.getenv("GDX_ADMIN_EMAIL", "demo@gdxdispatch.com")  # pii-ok: public demo login
@@ -207,6 +208,10 @@ def seed() -> None:
             u.schedulable = schedulable
             u.must_change_password = False
             u.password_hash = generate_password_hash(DEMO_PASSWORD)
+            # A demo login promoted in the UI keeps that assignment row, and
+            # the resolver trusts the row over users.role (GDXA-1453).
+            db.flush()
+            _sync_user_role_assignment(db, tenant_id, str(u.id), role)
             if role == "technician":
                 tech_user = u
             print(f"[seed] {verb} {role} login {email}")

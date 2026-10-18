@@ -5,18 +5,21 @@ import json
 import os
 import tempfile
 import uuid
+from unittest.mock import patch
 
 import pytest
 
 pytestmark = pytest.mark.admin
 from fastapi import HTTPException
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
+from gdx_dispatch.core.modules import _load_user_permissions
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.models.tenant_models import Base as TenantModelsBase
-from gdx_dispatch.models.tenant_models import Customer, Invoice, Job
+from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, TenantRole, UserRoleAssignment
 from gdx_dispatch.routers import admin_ops
 
 
@@ -69,7 +72,9 @@ def _owner_user() -> dict:
     return {"user_id": "owner-1", "tenant_id": "tenant-1", "role": "owner"}
 
 
-def _seed_user(db: Session, *, username: str, email: str, role: str = "viewer", active: bool = True) -> str:
+def _seed_user(
+    db: Session, *, username: str, email: str, role: str = "viewer", active: bool = True, company_id: str = "tenant-test",
+) -> str:
     user_id = uuid.uuid4()
     db.execute(
         text(
@@ -85,7 +90,7 @@ def _seed_user(db: Session, *, username: str, email: str, role: str = "viewer", 
             "password_hash": "hashed",
             "role": role,
             "active": 1 if active else 0,
-            "company_id": "tenant-test",
+            "company_id": company_id,
         },
     )
     db.commit()
@@ -212,6 +217,125 @@ def test_patch_admin_user_updates_role_and_active(db: Session):
     assert body["id"] == user_id
     assert body["role"] == "admin"
     assert body["active"] is False
+
+
+def _tenant_request() -> Request:
+    request = Request({"type": "http", "headers": [], "method": "PATCH"})
+    request.state.tenant = {"id": company_id()}
+    return request
+
+
+def _tenant_role(db: Session, name: str, perms: list[str]) -> TenantRole:
+    role = TenantRole(id=uuid.uuid4(), company_id=company_id(), name=name, permissions=json.dumps(perms), is_system=True)
+    db.add(role)
+    db.flush()
+    return role
+
+
+def _assign(db: Session, user_id: str, role: TenantRole) -> None:
+    db.add(UserRoleAssignment(id=uuid.uuid4(), company_id=company_id(), user_id=user_id, role_id=role.id))
+    db.commit()
+
+
+def _assigned(db: Session, user_id: str) -> list:
+    return db.execute(select(UserRoleAssignment.role_id).where(UserRoleAssignment.user_id == user_id)).scalars().all()
+
+
+def test_patch_admin_user_demotion_rewrites_role_assignment(db: Session):
+    """GDXA-1453: the resolver trusts a UserRoleAssignment row over users.role,
+    so a demotion that left the admin row behind kept admin permissions."""
+    user_id = _seed_user(db, username="demoteme", email="demoteme@example.com", role="admin", company_id=company_id())
+    admin_role = _tenant_role(db, "admin", ["jobs.read_all", "users.write"])
+    tech_role = _tenant_role(db, "technician", ["jobs.read_own"])
+    _assign(db, user_id, admin_role)
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions", return_value=2) as revoke:
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(role="technician"), _owner_user(), db)
+
+    assert _assigned(db, user_id) == [tech_role.id]
+    # A stale JWT still saying admin must not matter either.
+    perms = _load_user_permissions(db, _tenant_request(), {"user_id": user_id, "role": "admin"})
+    assert perms == {"jobs.read_own"}
+    revoke.assert_called_once_with(user_id, reason="role_changed")
+    audit = db.execute(select(AuditLog).where(AuditLog.action == "user_updated")).scalars().one()
+    details = audit.details if isinstance(audit.details, dict) else json.loads(audit.details)
+    assert details["old_role"] == "admin"
+    assert details["role"] == "technician"
+    assert details["sessions_revoked"] == 2
+
+
+def test_patch_admin_user_role_change_audits_the_custom_role_it_drops(db: Session):
+    # GDXA-1461: the role change deletes the custom assignment; the audit row
+    # is then the only record the user ever held it.
+    user_id = _seed_user(db, username="leadtech", email="leadtech@example.com", role="technician", company_id=company_id())
+    _tenant_role(db, "technician", ["jobs.read_own"])
+    dispatcher = _tenant_role(db, "dispatcher", ["jobs.read_all"])
+    lead = TenantRole(id=uuid.uuid4(), company_id=company_id(), name="Lead Tech",
+                      permissions=json.dumps(["jobs.read_own", "invoices.write"]), is_system=False)
+    db.add(lead)
+    db.flush()
+    _assign(db, user_id, lead)
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions", return_value=0):
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(role="dispatcher"), _owner_user(), db)
+
+    assert _assigned(db, user_id) == [dispatcher.id]
+    audit = db.execute(select(AuditLog).where(AuditLog.action == "user_updated")).scalars().one()
+    details = audit.details if isinstance(audit.details, dict) else json.loads(audit.details)
+    assert details["dropped_assignments"] == [{"role_id": str(lead.id), "role_name": "Lead Tech"}]
+
+
+def test_patch_admin_user_same_role_keeps_a_custom_assignment(db: Session):
+    # A custom role leaves users.role alone by design (role_permissions.assign_role),
+    # so re-sending the unchanged role must not strip it.
+    user_id = _seed_user(db, username="custom", email="custom@example.com", role="technician", company_id=company_id())
+    _tenant_role(db, "technician", ["jobs.read_own"])
+    lead = TenantRole(id=uuid.uuid4(), company_id=company_id(), name="Lead Tech",
+                      permissions=json.dumps(["jobs.read_own", "invoices.write"]), is_system=False)
+    db.add(lead)
+    db.flush()
+    _assign(db, user_id, lead)
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions") as revoke:
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(role="technician"), _owner_user(), db)
+
+    assert _assigned(db, user_id) == [lead.id]
+    revoke.assert_not_called()
+
+
+def test_patch_admin_user_active_only_leaves_assignment_and_sessions(db: Session):
+    user_id = _seed_user(db, username="keepme", email="keepme@example.com", role="admin", company_id=company_id())
+    admin_role = _tenant_role(db, "admin", ["jobs.read_all"])
+    _assign(db, user_id, admin_role)
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions") as revoke:
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(active=True), _owner_user(), db)
+
+    assert _assigned(db, user_id) == [admin_role.id]
+    revoke.assert_not_called()
+
+
+def test_patch_admin_user_refuses_to_demote_the_last_owner(db: Session):
+    user_id = _seed_user(db, username="soleowner", email="soleowner@example.com", role="owner", company_id=company_id())
+    owner_role = _tenant_role(db, "owner", ["*"])
+    _assign(db, user_id, owner_role)
+
+    with pytest.raises(HTTPException) as exc:
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(role="technician"), _owner_user(), db)
+    assert exc.value.status_code == 400
+    db.rollback()
+    role = db.execute(text("SELECT role FROM users WHERE id = :id"), {"id": uuid.UUID(user_id).hex}).scalar_one()
+    assert role == "owner"
+    assert _assigned(db, user_id) == [owner_role.id]
+
+
+def test_patch_admin_user_demotes_an_owner_when_another_remains(db: Session):
+    _seed_user(db, username="otherowner", email="otherowner@example.com", role="owner", company_id=company_id())
+    user_id = _seed_user(db, username="exowner", email="exowner@example.com", role="owner", company_id=company_id())
+
+    with patch("gdx_dispatch.core.auth_revoke.revoke_user_sessions", return_value=0):
+        body = admin_ops.patch_user(user_id, admin_ops.UserPatch(role="technician"), _owner_user(), db)
+    assert body["role"] == "technician"
 
 
 def test_patch_admin_user_role_grant_denied_for_admin(db: Session):
