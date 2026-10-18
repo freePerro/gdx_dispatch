@@ -124,6 +124,12 @@
 # /decline (the technician's phone records the customer's answer there) and
 # /deposit-invoice (dispatcher and accounting hold opposite halves of the keys
 # it would need).
+#
+# 345 → 345 (2026-10-18, GDXA-1523): DELETE /api/integrations/{integration_type}
+# RENAMED to DELETE /api/integrations/{integration_type}/connect, not added. The
+# old path was shadowed by DELETE /{integration_id} and never reached its
+# handler; the handler and its gate (require_auth, as on every other
+# /api/integrations write listed below) are unchanged.
 
 # ── customer portal ───────────────────────────────────────────────────────
 # These authenticate a CUSTOMER, not a tenant user, so no role or permission
@@ -172,7 +178,7 @@ DELETE /api/hazards/{hazard_id}
 DELETE /api/holding-areas/{area_id}
 DELETE /api/integrations/zapier/unsubscribe
 DELETE /api/integrations/{integration_id}
-DELETE /api/integrations/{integration_type}
+DELETE /api/integrations/{integration_type}/connect
 DELETE /api/inventory/parts/{item_id}
 DELETE /api/jobs/{job_id}/dependencies/{dependency_id}
 DELETE /api/jobs/{job_id}/notes/{note_id}
