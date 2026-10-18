@@ -37,6 +37,27 @@ export const PASSWORD_CHANGE_REQUIRED = 'password_change_required';
 const CHANGE_PASSWORD_URL = '/api/users/me/change-password';
 const ME_URL = '/api/users/me';
 
+// An outage (a gateway 5xx mid-deploy, a dropped connection) fails every call
+// and poll at once, and each used to stack its own toast (GDXA-1490). These
+// say the same thing whichever call failed, so one on screen at a time is
+// enough. The window is the toast's life: a failure after it has gone (a Save
+// a few seconds after a poll failed) still says so. The map is module-level
+// because every view and poller holds its own useApi().
+export const OUTAGE_TOAST_WINDOW_MS = 4000;
+const lastOutageToast = new Map();
+
+function addOutageToast(toast, message) {
+  const now = Date.now();
+  if (now - (lastOutageToast.get(message.summary) ?? -Infinity) < OUTAGE_TOAST_WINDOW_MS) return;
+  lastOutageToast.set(message.summary, now);
+  toast.add(message);
+}
+
+// For specs: the window outlives a test, so each starts with a clean slate.
+export function resetOutageToasts() {
+  lastOutageToast.clear();
+}
+
 export function isPasswordChangeRequired(err) {
   return err?.status === 403 &&
     (err.code === PASSWORD_CHANGE_REQUIRED || err.message === PASSWORD_CHANGE_REQUIRED);
@@ -319,9 +340,9 @@ export function useApi() {
     } else if (status === 429) {
       toast.add({ severity: 'warn', summary: 'Slow down', detail: 'Too many requests — try again in a moment.', life: 4000 });
     } else if (status >= 500) {
-      toast.add({ severity: 'error', summary: 'Something went wrong', detail: 'Please try again.', life: 4000 });
+      addOutageToast(toast, { severity: 'error', summary: 'Something went wrong', detail: 'Please try again.', life: OUTAGE_TOAST_WINDOW_MS });
     } else if (/Failed to fetch|NetworkError/i.test(msg)) {
-      toast.add({ severity: 'error', summary: 'Network error', detail: 'Check your connection', life: 4000 });
+      addOutageToast(toast, { severity: 'error', summary: 'Network error', detail: 'Check your connection', life: OUTAGE_TOAST_WINDOW_MS });
     } else {
       // Generic fallback for any unclassified error. A refused token refresh
       // arrives as the 401 above, not here.
