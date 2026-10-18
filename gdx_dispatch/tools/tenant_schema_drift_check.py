@@ -3,10 +3,12 @@ nothing schedules it — ARCHITECTURAL_INVARIANTS.md row 6).
 
 Defends ARCHITECTURAL_INVARIANTS.md row 6: every table the ORM declares must
 match the ORM's definition of it, column by column. It is a one-way check and
-deliberately so — a tenant DB is a superset of the ORM, holding the Alembic
-base (`alembic_version`, `tenants`, `tenant_settings`, `server_errors`, the
-game tables) and the `plug_*` tables `schema_reconcile` creates at boot. A
-table here that the ORM does not declare is not drift. (Reading the older
+deliberately so — a tenant DB is a superset of the ORM, holding tables no
+model declares (`alembic_version`, `server_errors`) and the `plug_*` tables
+`schema_reconcile` creates at boot. A table here that the ORM does not declare
+is not drift. "The ORM" is both declarative bases: TenantBase and the Alembic
+`Base` (`tenants`, `tenant_settings`, the game tables), which are checked too
+(GDXA-1537). (Reading the older
 "every tenant DB must equal what `create_all()` would produce" as *the ORM is
 the whole database* is what made `tools/pave_tenant_db.py` rebuild one slice
 of a database it had dumped whole — GDXA-13.)
@@ -103,18 +105,22 @@ _GENERIC_PG_TOKENS = frozenset(_ORM_TO_PG.values())
 
 
 def _orm_metadata():
-    """Load ORM metadata using the same import path as pave_tenant_db.py."""
+    """Every declarative base's metadata: TenantBase (loaded through the same
+    import path as pave_tenant_db.py) and the Alembic Base in
+    core/tenant_settings.py. Reading TenantBase alone left the game tables,
+    tenants and tenant_settings unchecked (GDXA-1537)."""
     # This single import registers every tenant-plane model.
     import gdx_dispatch.models  # noqa: F401
     from gdx_dispatch.core.audit import TenantBase
-    return TenantBase.metadata
+    from gdx_dispatch.core.tenant_settings import Base
+    return (TenantBase.metadata, Base.metadata)
 
 
 def _orm_schema() -> dict[str, dict[str, str]]:
     """{table: {col: canonical_pg_token}} from ORM."""
-    md = _orm_metadata()
     out: dict[str, dict[str, str]] = {}
-    for table_name, table in md.tables.items():
+    tables = [t for md in _orm_metadata() for t in md.tables.items()]
+    for table_name, table in tables:
         cols: dict[str, str] = {}
         for col in table.columns:
             t = col.type

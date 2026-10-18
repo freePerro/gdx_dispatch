@@ -3,8 +3,8 @@
 Surfaces what `ssh + alembic + psql` would, behind guardrails:
 
 * Alembic state (current rev vs head, pending, ORPHANED detection)
-* ORM-vs-live drift for the `create_all` tables — where "model has
-  column X, table lacks it" bugs live, e.g. invoices.job_id
+* ORM-vs-live drift for every modelled table, on both declarative bases —
+  where "model has column X, table lacks it" bugs live, e.g. invoices.job_id
 * safe actions: backup (pg_dump -Fc), offline SQL preview, and a guarded
   migrate-to-head (backup-gated → advisory-locked in env.py → audited).
 
@@ -36,6 +36,7 @@ import gdx_dispatch.models  # noqa: F401 — registers every ORM model on Tenant
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync
 from gdx_dispatch.core.auth_dispatcher import require_role
 from gdx_dispatch.core.database import DATABASE_URL, engine, get_db
+from gdx_dispatch.core.tenant_settings import Base as AlembicBase
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -60,22 +61,25 @@ def _alembic_cfg() -> Config:
     return cfg
 
 
-# Tables TenantBase.metadata does not know, so compare_metadata reports each
-# as "in DB, not in ORM" — a false positive to suppress. Two kinds:
-#   * owned by Alembic on its own base (Tenant, TenantSettings, the game
-#     tables, server_errors — migration 001's baseline);
+# Every declarative base the app models tables on: TenantBase (business tables,
+# create_all) and the Alembic Base in core/tenant_settings.py (tenants,
+# tenant_settings, the game tables). Compared together, so drift on either is
+# reported; comparing TenantBase alone hid game_events.created_by_user_id
+# (migration 094) behind a suppression list (GDXA-1537).
+_ORM_METADATA = (TenantBase.metadata, AlembicBase.metadata)
+
+# Tables migration 001's baseline creates that no ORM model on either base
+# declares, so compare_metadata reports each as "in DB, not in ORM" — a false
+# positive to suppress. server_errors is written by raw SQL (modules/error_sink).
 #   (The retired-model tables — tenant_module_grants, service_accounts,
 #   platform_feature_flags, bug_reports — were dropped by migration 087.)
-_TABLES_WITHOUT_ORM_MODEL = frozenset({
-    "tenants", "tenant_settings", "server_errors", "game_definitions", "game_events", "game_state",
-})
+_TABLES_WITHOUT_ORM_MODEL = frozenset({"server_errors"})
 
 
 def _render_diff(diff) -> dict | None:
     """Turn one compare_metadata tuple into a UI-friendly row, or None to skip."""
     kind = diff[0]
-    # Don't flag tables the ORM does not model (or their columns/indexes) as
-    # drift against TenantBase.
+    # Don't flag tables no ORM model declares (or their columns/indexes).
     if kind == "remove_table" and diff[1].name in _TABLES_WITHOUT_ORM_MODEL:
         return None
     if kind == "remove_column" and diff[2] in _TABLES_WITHOUT_ORM_MODEL:
@@ -100,7 +104,16 @@ def _render_diff(diff) -> dict | None:
         col = diff[3]
         return {"severity": "stale", "kind": kind, "object": f"{diff[2]}.{col.name}",
                 "detail": f"column '{diff[2]}.{col.name}' — in DB, not in ORM (stale)"}
-    # everything else (nullable/type/index/fk changes) = review
+    # nullability disagrees: either the DB refuses a NULL the ORM writes, or
+    # holds NULLs code reads as never-NULL. Counts toward the drift verdict.
+    if kind == "modify_nullable":
+        # (kind, schema, table, column, existing_kw, db_nullable, orm_nullable)
+        tbl, col = diff[2], diff[3]
+        db_says = "nullable" if diff[5] else "NOT NULL"
+        orm_says = "nullable" if diff[6] else "NOT NULL"
+        return {"severity": "mismatch", "kind": kind, "object": f"{tbl}.{col}",
+                "detail": f"column '{tbl}.{col}' — DB {db_says}, ORM {orm_says}"}
+    # everything else (type/index/fk changes) = review
     obj = getattr(diff[-1], "name", None) or (str(diff[1]) if len(diff) > 1 else kind)
     return {"severity": "review", "kind": kind, "object": str(obj), "detail": f"{kind}: review"}
 
@@ -127,7 +140,7 @@ def _status_payload() -> dict:
     with engine.connect() as conn:
         mc = MigrationContext.configure(conn)
         current = mc.get_current_revision()
-        raw_diffs = compare_metadata(mc, TenantBase.metadata)
+        raw_diffs = compare_metadata(mc, list(_ORM_METADATA))
 
     orphaned = bool(current and current not in known)
     if orphaned:
@@ -138,10 +151,11 @@ def _status_payload() -> dict:
         pending = [s.revision for s in script.iterate_revisions(head, current)]
 
     drift = [r for d in _flatten_diffs(raw_diffs) if (r := _render_diff(d))]
-    # Surface the dangerous "missing" rows first so truncation never hides them.
-    _order = {"missing": 0, "stale": 1, "review": 2}
-    drift.sort(key=lambda r: _order.get(r["severity"], 3))
+    # Surface the verdict-affecting rows first so truncation never hides them.
+    _order = {"missing": 0, "mismatch": 1, "stale": 2, "review": 3}
+    drift.sort(key=lambda r: _order.get(r["severity"], 4))
     missing = [r for r in drift if r["severity"] == "missing"]
+    mismatch = [r for r in drift if r["severity"] == "mismatch"]
 
     latest_backup = None
     if _BACKUP_DIR.exists():
@@ -162,13 +176,14 @@ def _status_payload() -> dict:
         "tenant_drift": {
             "total": len(drift),
             "missing_count": len(missing),  # ORM expects, DB lacks — the dangerous kind
+            "mismatch_count": len(mismatch),  # nullability disagrees with the ORM
             "items": drift[:200],
         },
         "latest_backup": latest_backup,
         # The single headline the panel acts on.
         "verdict": (
             "orphaned" if orphaned
-            else "drift" if missing
+            else "drift" if (missing or mismatch)
             else "pending" if pending
             else "ok"
         ),
