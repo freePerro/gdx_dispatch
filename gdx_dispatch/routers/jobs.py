@@ -27,6 +27,7 @@ from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_site, resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
+from gdx_dispatch.core.link_sms import as_uuid
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.part_pricing import (
     duplicate_capture_groups,
@@ -330,10 +331,8 @@ def _norm_id(value: Any) -> str | None:
     s = str(value).strip() if value is not None else ""
     if not s:
         return None
-    try:
-        return str(uuid.UUID(s))
-    except ValueError:
-        return s
+    parsed = as_uuid(s)
+    return str(parsed) if parsed else s
 
 
 def _current_lead(db: Session, job: Job) -> str | None:
