@@ -34,7 +34,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, true
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -253,6 +253,63 @@ def user_names(db: Session, user_ids: set[str]) -> dict[str, str]:
         label = u.full_name or u.name or u.username or u.email
         if label:
             out[parsed.get(u.id, str(u.id))] = str(label)
+    return out
+
+
+def user_labels(
+    db: Session,
+    tenant_id: str,
+    ids: set[str] | None = None,
+    *,
+    active_only: bool = False,
+    log_event: str = "user_labels_failed",
+) -> dict[str, str]:
+    """id → display label for one tenant's users, best effort.
+
+    The one label lookup behind the timesheet exception card and export
+    (`routers/timeclock._tech_names`), the roster's active staff and the
+    pay-period send (`tasks/payroll_timesheet._names`). Those were three raw
+    `id::text = ANY(:ids)` queries that failed on SQLite and were swallowed,
+    so no SQLite test could see a name (GDXA-1793).
+
+    `ids=None` means every user of the tenant; an empty set means none. Ids
+    compare as UUIDs, never text (SQLite stores a `Uuid` dashless), and each
+    key is returned as the caller spelled it. Without `ids` a key is the
+    dashed lowercase form, which is what Postgres' `id::text` produced.
+    `active_only` drops soft-deleted users and treats a NULL `active` as
+    active, as `users._serialize` does.
+
+    Only the label columns are selected, so a `users` table behind the ORM
+    elsewhere cannot fail this read. A database error is contained and
+    swallowed: a missing label must not cost the caller its session.
+    """
+    parsed: dict[UUID, str] | None = None
+    if ids is not None:
+        parsed = _parse_user_ids(ids)
+        if not parsed:
+            return {}
+    stmt = select(User.id, User.full_name, User.name, User.username, User.email).where(
+        User.company_id == tenant_id
+    )
+    if parsed is not None:
+        stmt = stmt.where(User.id.in_(list(parsed)))
+    if active_only:
+        stmt = stmt.where(
+            User.deleted_at.is_(None),
+            func.coalesce(User.active, true()) == true(),
+        )
+    try:
+        with contained_read(db):
+            rows = db.execute(stmt).all()
+    except SQLAlchemyError:  # noqa: silent-failure — no labels: ids show bare, roster drops staff with no entries; logged
+        log.exception(log_event, extra={"tenant_id": tenant_id})
+        return {}
+    out: dict[str, str] = {}
+    for r in rows:
+        label = r.full_name or r.name or r.username or r.email
+        if label:
+            key = parsed.get(r.id, str(r.id)) if parsed is not None else str(r.id)
+            out[key] = str(label)
     return out
 
 

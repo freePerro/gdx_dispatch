@@ -384,6 +384,20 @@
               Blank = the shop default from Settings → Time off and holidays. 0 = no vacation hours.
             </p>
           </div>
+          <div class="form-field">
+            <label for="edit-hire-date">Hire date</label>
+            <InputText
+              id="edit-hire-date"
+              v-model="editForm.hire_date"
+              type="date"
+              class="w-full"
+              data-testid="users-edit-hire-date"
+            />
+            <p class="form-hint">
+              When Settings → Time off and holidays counts vacation from each hire
+              anniversary, this person's year starts on this date. Blank = the calendar year.
+            </p>
+          </div>
           <div v-if="editError" class="inline-error" data-testid="users-edit-error">
             {{ editError }}
           </div>
@@ -758,6 +772,7 @@ function emptyEditForm() {
   return {
     name: '', email: '', phone: '', route_start_address: '', certifications: '',
     shift_start: '', shift_end: '', workdays: null, vacation_allowance_hours: null,
+    hire_date: '',
   };
 }
 
@@ -1006,6 +1021,7 @@ function openEditDialog(user) {
     shift_end: user.shift_end || '',
     workdays: Number.isInteger(user.workdays) ? user.workdays : null,
     vacation_allowance_hours: user.vacation_allowance_hours == null ? null : Number(user.vacation_allowance_hours),
+    hire_date: user.hire_date || '',
   };
   editError.value = '';
   showEditDialog.value = true;
@@ -1030,6 +1046,8 @@ async function submitEdit() {
       workdays: editForm.value.workdays,
       // null = inherit the shop's vacation allowance.
       vacation_allowance_hours: editForm.value.vacation_allowance_hours ?? null,
+      // 'YYYY-MM-DD' from the date input; blank clears it.
+      hire_date: editForm.value.hire_date || null,
     };
     if (payload.shift_start && payload.shift_end && payload.shift_end <= payload.shift_start) {
       throw new Error('Shift end must be after shift start.');

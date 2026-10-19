@@ -26,13 +26,18 @@ from gdx_dispatch.tools import silent_failure_scanner
 # someone re-froze over a new finding, and review sees it here.
 BASELINE_CEILING = {
     # 324 -> 323: GDXA-755 logs the rate-read swallow in proposals/totals.py.
-    "drift_scanner": 323,
+    # 323 -> 319: GDXA-1793 drops the `::text` / `= ANY` user-label SQL in
+    # routers/timeclock.py (3) and tasks/payroll_timesheet.py (1).
+    "drift_scanner": 319,
     # 94 -> 93: GDXA-981 drops the auth-import fallback in routers/technicians.py.
     # 93 -> 92: GDXA-1188 drops dispatch_ws.py's own JWT decode (log + None).
     # 92 -> 91: GDXA-1560 deletes payroll.py's `_fetch_active_rate` (log + None).
-    "silent_failure_scanner": 91,
+    # 91 -> 90: GDXA-1793 moves timeclock.py's label swallow into
+    # core/time_off.user_labels, marked in source.
+    "silent_failure_scanner": 90,
     # 71 -> 70: GDXA-1730 drops appointments.py's pointer to deleted routers/booking.py.
-    "comment_drift_scan": 70,
+    # 70 -> 69: GDXA-1793 rewrites timeclock.py's roster user-label read.
+    "comment_drift_scan": 69,
     # 4 -> 2: GDXA-1129 drops SettingsView's phantom `result.quickbooks` read.
     "frontend_contract_scan": 2,
 }
