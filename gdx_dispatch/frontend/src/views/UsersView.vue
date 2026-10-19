@@ -602,7 +602,6 @@
         </div>
       </Dialog>
 
-      <Toast data-testid="users-toast" />
     </section>
 </template>
 
@@ -620,7 +619,6 @@ import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
-import Toast from 'primevue/toast';
 import Toolbar from 'primevue/toolbar';
 import Password from 'primevue/password';
 import PhoneInput from '../components/PhoneInput.vue';
