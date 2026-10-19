@@ -1382,6 +1382,23 @@
                   </span>
                 </div>
                 <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+                  <label for="time-off-vacation-year" style="min-width:170px;">Vacation year starts</label>
+                  <Select
+                    v-model="timeOff.vacation_year_policy"
+                    inputId="time-off-vacation-year"
+                    :options="VACATION_YEAR_OPTIONS"
+                    optionLabel="label"
+                    optionValue="value"
+                    style="min-width:240px;"
+                    data-testid="time-off-vacation-year"
+                  />
+                  <span class="muted" style="flex:1; min-width:16rem;" data-testid="time-off-vacation-year-hint">
+                    Hire anniversary uses the hire date on each person's profile under Users;
+                    anyone without one stays on the calendar year. Vacation balances still
+                    count the calendar year until they read this setting.
+                  </span>
+                </div>
+                <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
                   <label style="min-width:170px;">Counts toward overtime</label>
                   <ToggleSwitch v-model="timeOff.counts_toward_overtime" data-testid="time-off-counts-ot" />
                   <span class="muted" style="flex:1; min-width:16rem;">
@@ -2851,7 +2868,15 @@ async function savePayPeriod() {
 // MINUTES go on the wire (the server stores minutes — a half day is 240,
 // never 4.0). Posting needs the date to be on the SAVED calendar, so the
 // Post button is disabled on a row that has not been saved yet.
-const timeOff = reactive({ default_hours: 8, counts_toward_overtime: false, vacation_allowance_hours: null, holidays: [] });
+const timeOff = reactive({
+  default_hours: 8, counts_toward_overtime: false, vacation_allowance_hours: null,
+  vacation_year_policy: "calendar_year", holidays: [],
+});
+// GDXA-1827: the values routers/settings.py VACATION_YEAR_POLICIES accepts.
+const VACATION_YEAR_OPTIONS = [
+  { label: "January 1 (calendar year)", value: "calendar_year" },
+  { label: "Each person's hire anniversary", value: "hire_anniversary" },
+];
 const timeOffSaving = ref(false);
 const holidayPosted = ref({});           // 'YYYY-MM-DD' → people already holding the day
 const savedHolidayDates = ref(new Set());
@@ -2865,6 +2890,7 @@ function applyTimeOff(s) {
   timeOff.counts_toward_overtime = Boolean(s.time_off_counts_toward_overtime);
   timeOff.vacation_allowance_hours =
     s.vacation_allowance_hours == null ? null : Number(s.vacation_allowance_hours);
+  timeOff.vacation_year_policy = s.vacation_year_policy || "calendar_year";
   timeOff.holidays = (Array.isArray(s.holiday_calendar) ? s.holiday_calendar : []).map((h) => ({
     key: `h${(holidayRowKey += 1)}`,
     date: h.date,
@@ -2957,6 +2983,7 @@ async function saveTimeOff() {
         // Hours, not minutes: an allowance is stated in hours. null = not set.
         vacation_allowance_hours:
           timeOff.vacation_allowance_hours == null ? null : Number(timeOff.vacation_allowance_hours),
+        vacation_year_policy: timeOff.vacation_year_policy,
         holiday_calendar: timeOff.holidays.map((h) => ({
           date: h.date,
           name: String(h.name).trim(),

@@ -401,6 +401,7 @@ CREATE TABLE public.app_settings (
     time_off_default_minutes smallint DEFAULT 480 NOT NULL,
     time_off_counts_toward_overtime boolean DEFAULT false NOT NULL,
     vacation_allowance_hours numeric(6,2),
+    vacation_year_policy character varying(20) DEFAULT 'calendar_year'::character varying NOT NULL,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL
 );
