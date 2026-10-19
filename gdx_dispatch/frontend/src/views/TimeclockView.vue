@@ -487,8 +487,6 @@
           <Button label="Save" icon="pi pi-check" data-testid="save-inspection-btn" @click="saveInspection" />
         </template>
       </Dialog>
-
-      <Toast data-testid="timeclock-toast" />
     </section>
 </template>
 
@@ -511,7 +509,6 @@ import InputNumber from 'primevue/inputnumber';
 import Textarea from 'primevue/textarea';
 import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
-import Toast from 'primevue/toast';
 import TimeEntryDialog from '../components/TimeEntryDialog.vue';
 import TimeOffRequestPanel from '../components/TimeOffRequestPanel.vue';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
