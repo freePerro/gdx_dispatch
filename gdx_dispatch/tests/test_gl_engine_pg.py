@@ -121,7 +121,7 @@ def test_engine_posting_survives_triggers_at_commit(pg_ledger):
     lines = pg_ledger.scalars(
         select(GlJournalLine).where(GlJournalLine.entry_id == entry.id)
     ).all()
-    assert sorted(l.amount_cents for l in lines) == [-10_000, 10_000]
+    assert sorted(line.amount_cents for line in lines) == [-10_000, 10_000]
 
 
 def test_engine_reversal_survives_triggers_at_commit(pg_ledger):

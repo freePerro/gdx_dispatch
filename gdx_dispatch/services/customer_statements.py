@@ -31,15 +31,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.money_format import format_money
-from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings
-from gdx_dispatch.models.tenant_models import (
-    AppSettings,
-    Customer,
-    Invoice,
-    InvoiceAdjustment,
-    Job,
-    Payment,
-)
+from gdx_dispatch.core.pay_periods import shop_day_of, shop_today_from_settings, shop_tz_name_from_settings
+from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceAdjustment, Job, Payment
 
 log = logging.getLogger(__name__)
 
@@ -95,10 +88,6 @@ class _InvoiceState:
 
 def _money(value: Any) -> Decimal:
     return Decimal(str(value or 0)).quantize(_CENT)
-
-
-def _shop_tz(db: Session) -> str:
-    return db.query(AppSettings.timezone).limit(1).scalar() or "America/New_York"
 
 
 def _day_of_stamp(value: datetime | None, tz_name: str) -> date | None:
@@ -269,7 +258,7 @@ def build_statement(
     from gdx_dispatch.core.payments import card_surcharge_notice, public_pay_url
 
     today = today or shop_today_from_settings(db)
-    tz_name = _shop_tz(db)
+    tz_name = shop_tz_name_from_settings(db)
     company_id = str(customer.company_id)
 
     invoices = db.execute(

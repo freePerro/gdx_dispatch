@@ -69,8 +69,8 @@ def _ledger_snapshot(db):
     snap = []
     for e in _entries(db):
         lines = sorted(
-            (str(l.account_id), l.amount_cents)
-            for l in db.scalars(
+            (str(line.account_id), line.amount_cents)
+            for line in db.scalars(
                 select(GlJournalLine).where(GlJournalLine.entry_id == e.id)
             )
         )
@@ -238,7 +238,7 @@ def test_post_resolves_roles_and_balances(ledger_db):
     lines = ledger_db.scalars(
         select(GlJournalLine).where(GlJournalLine.entry_id == entry.id)
     ).all()
-    assert sorted(l.amount_cents for l in lines) == [-10_000, 10_000]
+    assert sorted(line.amount_cents for line in lines) == [-10_000, 10_000]
     assert entry.entry_no == 1
 
 
@@ -355,9 +355,9 @@ def test_reversal_negates_lines_and_marks_original(ledger_db):
     assert reversal.reverses_entry_id == entry.id
     assert reversal.idempotency_key == reversal_key(entry.id)
 
-    orig = {(str(l.account_id), l.amount_cents) for l in ledger_db.scalars(
+    orig = {(str(line.account_id), line.amount_cents) for line in ledger_db.scalars(
         select(GlJournalLine).where(GlJournalLine.entry_id == entry.id))}
-    mirror = {(str(l.account_id), -l.amount_cents) for l in ledger_db.scalars(
+    mirror = {(str(line.account_id), -line.amount_cents) for line in ledger_db.scalars(
         select(GlJournalLine).where(GlJournalLine.entry_id == reversal.id))}
     assert orig == mirror
 

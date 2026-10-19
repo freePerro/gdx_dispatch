@@ -12,9 +12,10 @@ from uuid import UUID as _UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job, flatten_door_spec
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.quantities import recorded_quantity
@@ -187,6 +188,70 @@ def daily_loadsheet(
     }
 
 
+# Catalog fallback for install_specs: the CHI feed plus tenant-custom doors,
+# matched on description, model number or SKU.
+_CATALOG_DOOR_SQL = text("""
+        SELECT model_number, brand, width, height, color, insulation_type, r_value,
+               panel_style, section_construction, window_option, window_type,
+               finish_type, high_lift, high_lift_in, sales_talking_point
+        FROM (
+            SELECT model_number, brand, width, height, color, insulation_type, r_value,
+                   panel_style, section_construction, window_option, window_type,
+                   finish_type, high_lift, high_lift_in, sales_talking_point,
+                   description, sku
+            FROM chi_door_catalog
+            -- is_active is the soft-delete flag for this feed. Every
+            -- other reader (catalog.py, door_catalog.py,
+            -- instant_estimate.py, parts_needed.py) filters it; these
+            -- two UNION arms did not, so retiring the feed left it
+            -- still enriching install sheets — a soft-delete that was
+            -- not actually soft-deleted anywhere you could see.
+            WHERE is_active = true
+            UNION ALL
+            SELECT ds.model_number, ds.manufacturer AS brand,
+                   ds.width, ds.height, ds.color, ds.insulation_type, ds.r_value,
+                   ds.panel_style, ds.section_construction, ds.window_option,
+                   ds.window_type, ds.finish_type, ds.high_lift, ds.high_lift_in,
+                   ds.sales_talking_point,
+                   COALESCE(cci.description, cci.name) AS description,
+                   cci.sku AS sku
+            FROM custom_catalog_items cci
+            LEFT JOIN door_specs ds ON ds.catalog_item_id = cci.id
+            WHERE cci.product_class = 'door' AND cci.active = true
+                  AND cci.deleted_at IS NULL
+        ) AS unioned
+        -- lower() LIKE lower(), not ILIKE: SQLite has no ILIKE, so the
+        -- fallback raised there and never returned a row.
+        WHERE lower(description) LIKE lower(:q)
+           OR lower(model_number) LIKE lower(:q)
+           OR lower(sku) LIKE lower(:q)
+        LIMIT 1
+    """)
+
+
+def _catalog_door(db: Session, lines: list[dict], job_id: str) -> dict | None:
+    """The first catalog door any estimate line matches, or None.
+
+    The read is contained: on Postgres a failed statement aborts the request's
+    transaction, so a swallowed failure would make every later line fail and
+    log too. The first DB error ends the lookup, since the next line runs the
+    same query.
+    """
+    for line in lines:
+        desc = (line["description"] or "").strip()
+        if not desc:
+            continue
+        try:
+            with contained_read(db):
+                spec = db.execute(_CATALOG_DOOR_SQL, {"q": f"%{desc[:50]}%"}).mappings().first()
+        except SQLAlchemyError:  # noqa: silent-failure — catalog match is best-effort enrichment; the sheet renders without it; logged once
+            log.exception("install sheet catalog door lookup failed for job %s", job_id)
+            return None
+        if spec:
+            return dict(spec)
+    return None
+
+
 @router.get("/api/jobs/{job_id}/install-specs",
             dependencies=[Depends(require_module("jobs"))])
 def install_specs(
@@ -200,16 +265,15 @@ def install_specs(
     try:
         _job_uuid = _UUID(job_id)
     except (ValueError, AttributeError):
-        logging.getLogger(__name__).exception("install_specs caught exception")
-        _job_uuid = None
-    estimate_obj = None
-    if _job_uuid is not None:
-        estimate_obj = db.execute(
-            select(Estimate).where(
-                Estimate.job_id == _job_uuid,
-                Estimate.deleted_at.is_(None),
-            ).order_by(Estimate.created_at.desc()).limit(1)
-        ).scalar_one_or_none()
+        # Same answer install_sheet gives below: a malformed id is a missing job,
+        # not a server error worth a traceback.
+        raise HTTPException(status_code=404, detail="Job not found") from None
+    estimate_obj = db.execute(
+        select(Estimate).where(
+            Estimate.job_id == _job_uuid,
+            Estimate.deleted_at.is_(None),
+        ).order_by(Estimate.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
 
     lines = []
     if estimate_obj:
@@ -232,51 +296,10 @@ def install_specs(
     door_specs = flatten_door_spec(captured_doors[0]) if captured_doors else None
 
     # Find door specs from line items — CHI feed + tenant-custom doors.
-    for line in lines:
-        if door_specs is not None:
-            break
-        desc = (line["description"] or "").strip()
-        if not desc:
-            continue
-        try:
-            spec = db.execute(text("""
-                SELECT model_number, brand, width, height, color, insulation_type, r_value,
-                       panel_style, section_construction, window_option, window_type,
-                       finish_type, high_lift, high_lift_in, sales_talking_point
-                FROM (
-                    SELECT model_number, brand, width, height, color, insulation_type, r_value,
-                           panel_style, section_construction, window_option, window_type,
-                           finish_type, high_lift, high_lift_in, sales_talking_point,
-                           description, sku
-                    FROM chi_door_catalog
-                    -- is_active is the soft-delete flag for this feed. Every
-                    -- other reader (catalog.py, door_catalog.py,
-                    -- instant_estimate.py, parts_needed.py) filters it; these
-                    -- two UNION arms did not, so retiring the feed left it
-                    -- still enriching install sheets — a soft-delete that was
-                    -- not actually soft-deleted anywhere you could see.
-                    WHERE is_active = true
-                    UNION ALL
-                    SELECT ds.model_number, ds.manufacturer AS brand,
-                           ds.width, ds.height, ds.color, ds.insulation_type, ds.r_value,
-                           ds.panel_style, ds.section_construction, ds.window_option,
-                           ds.window_type, ds.finish_type, ds.high_lift, ds.high_lift_in,
-                           ds.sales_talking_point,
-                           COALESCE(cci.description, cci.name) AS description,
-                           cci.sku AS sku
-                    FROM custom_catalog_items cci
-                    LEFT JOIN door_specs ds ON ds.catalog_item_id = cci.id
-                    WHERE cci.product_class = 'door' AND cci.active = true
-                          AND cci.deleted_at IS NULL
-                ) AS unioned
-                WHERE description ILIKE :q OR model_number ILIKE :q OR sku ILIKE :q
-                LIMIT 1
-            """), {"q": f"%{desc[:50]}%"}).mappings().first()
-            if spec:
-                door_specs = {k: (_val(v, "") if not isinstance(v, (int, float)) else v) for k, v in dict(spec).items()}
-                break
-        except Exception:
-            logging.getLogger(__name__).exception("install_specs caught exception")
+    if door_specs is None:
+        spec = _catalog_door(db, lines, job_id)
+        if spec:
+            door_specs = {k: (_val(v, "") if not isinstance(v, (int, float)) else v) for k, v in spec.items()}
 
     return {
         # The captured door(s), role-split, one per door — the UI renders these
@@ -286,7 +309,7 @@ def install_specs(
         "door_specs": door_specs,
         "lines": lines,
         "notes": estimate_obj.notes if estimate_obj else None,
-        "estimate_total": sum(l["quantity"] * l["unit_price"] for l in lines),
+        "estimate_total": sum(line["quantity"] * line["unit_price"] for line in lines),
     }
 
 
@@ -363,43 +386,7 @@ def install_sheet(
 
     # Try to find door specs (CHI + custom) from line item descriptions — only
     # when there's no captured door to show (non-CHI installs).
-    door_specs = None
-    for line in lines:
-        if captured_doors:
-            break
-        desc = (line["description"] or "").strip()
-        if not desc:
-            continue
-        spec = db.execute(text("""
-            SELECT model_number, brand, width, height, color, insulation_type, r_value,
-                   panel_style, section_construction, window_option, window_type,
-                   finish_type, high_lift, high_lift_in, sales_talking_point, description
-            FROM (
-                SELECT model_number, brand, width, height, color, insulation_type, r_value,
-                       panel_style, section_construction, window_option, window_type,
-                       finish_type, high_lift, high_lift_in, sales_talking_point,
-                       description, sku
-                FROM chi_door_catalog
-                WHERE is_active = true   -- see the note on the sibling query above
-                UNION ALL
-                SELECT ds.model_number, ds.manufacturer AS brand,
-                       ds.width, ds.height, ds.color, ds.insulation_type, ds.r_value,
-                       ds.panel_style, ds.section_construction, ds.window_option,
-                       ds.window_type, ds.finish_type, ds.high_lift, ds.high_lift_in,
-                       ds.sales_talking_point,
-                       COALESCE(cci.description, cci.name) AS description,
-                       cci.sku AS sku
-                FROM custom_catalog_items cci
-                LEFT JOIN door_specs ds ON ds.catalog_item_id = cci.id
-                WHERE cci.product_class = 'door' AND cci.active = true
-                      AND cci.deleted_at IS NULL
-            ) AS unioned
-            WHERE description ILIKE :q OR model_number ILIKE :q OR sku ILIKE :q
-            LIMIT 1
-        """), {"q": f"%{desc[:50]}%"}).mappings().first()
-        if spec:
-            door_specs = dict(spec)
-            break
+    door_specs = None if captured_doors else _catalog_door(db, lines, job_id)
 
     # Get technician name via ORM
     tech_name = "—"
