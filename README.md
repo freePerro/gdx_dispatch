@@ -85,8 +85,8 @@ cp .env.template .env
 gdx_dispatch/docker/dev-up.sh --build            # add --reload for hot reload
 ```
 
-This brings up PostgreSQL, Redis, the API, the plugin host and the Celery
-workers as compose project `docker`. The API is exposed on
+This brings up PostgreSQL, Redis, the API (whose container also runs the Celery
+workers and beat), and the plugin host as compose project `docker`. The API is exposed on
 <http://localhost:8001> with a health check at `/health`.
 
 On first start the API container automatically (and idempotently) runs database
@@ -113,23 +113,34 @@ secret to fill in** — a `secrets-init` container mints strong secrets on first
 boot and persists them in a volume, so restarts and updates keep your logins
 and encrypted data.
 
-Requirements: a Linux VPS with [Docker + Compose v2](https://get.docker.com)
+Requirements: a Linux VPS with Docker 24+ and Compose v2
 (any Hostinger/DigitalOcean "Docker" image works), ports 80/443 reachable,
-and — optionally — a domain with an A record pointing at the server.
+at least 4 GB of RAM, and — optionally — a domain with an A record pointing at
+the server.
+
+```bash
+curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/install.sh | sudo sh  # release asset name; link-ok
+# with a domain (automatic HTTPS via Let's Encrypt) and your login email:
+curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/install.sh | sudo sh -s -- --domain dispatch.example.com --email you@example.com  # release asset name; link-ok
+```
+
+That's the whole install. The script checks Docker, writes `/opt/gdx/.env`
+(asking for the domain and email when run in a terminal), downloads the
+compose file of its own release, and starts the stack. On first boot the stack
+mints its secrets, runs all database migrations, seeds your admin account, and
+(with a domain) obtains a real TLS certificate automatically. Without a domain
+it serves plain HTTP on the server's IP. The script waits until the app is
+healthy and prints the address, the admin email and the one-time password.
+`--help` lists its options (`--dir`, `--install-docker`, …).
+
+Without the script, the same install is three commands; the admin password is
+then in the app log:
 
 ```bash
 mkdir gdx && cd gdx
-curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/docker-compose.customer.yml -o docker-compose.customer.yml  # release asset name; link-ok
+curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/docker-compose.customer.yml -o docker-compose.yml  # release asset name; link-ok
 echo 'GDX_DOMAIN=dispatch.example.com' > .env   # optional — enables automatic HTTPS via Let's Encrypt
-docker compose -p gdx -f docker-compose.customer.yml up -d  # release asset name; link-ok
-```
-
-That's the whole install. On first boot the stack mints its secrets, runs all
-database migrations, seeds your admin account, and (with `GDX_DOMAIN` set)
-obtains a real TLS certificate automatically. Without a domain it serves plain
-HTTP on the server's IP. Read your one-time admin password from the app log:
-
-```bash
+docker compose -p gdx up -d
 docker compose -p gdx logs app | grep -A5 "initial admin"
 ```
 
@@ -138,11 +149,16 @@ header): `GDX_TENANT_NAME`, `GDX_ADMIN_EMAIL`, `GDX_ADMIN_PASSWORD`,
 `APP_VERSION` to pin a release, and integration keys (Stripe, QuickBooks,
 Google Maps, SMTP) — every integration is optional and its feature simply
 stays off while blank. A backup sidecar dumps the database daily to the
-`gdx_backups` volume (30-day retention). To update:
+`gdx_backups` volume (30-day retention). To update, run the latest
+`install.sh` again: it snapshots the database to `/opt/gdx/backups/` first,
+then pulls the new release and restarts, keeping every volume and setting.
+Without the script, download the new release's compose file over
+`docker-compose.yml` as above (an install made before `install.sh` named it
+`docker-compose.customer.yml`; the script renames it), then: <!-- release asset name; link-ok -->
 
 ```bash
-docker compose -p gdx -f docker-compose.customer.yml pull  # release asset name; link-ok
-docker compose -p gdx -f docker-compose.customer.yml up -d  # release asset name; link-ok
+docker compose -p gdx pull
+docker compose -p gdx up -d --remove-orphans
 ```
 
 Data lives in named volumes (`gdx_db_data`, `gdx_uploads`, `gdx_recordings`,
@@ -178,7 +194,8 @@ COMPOSE_FILE=gdx_dispatch/docker/docker-compose.yml:gdx_dispatch/docker/docker-c
 
 To upgrade to a newer release, bump `APP_VERSION` in `.env` (or leave it on
 `latest`) and run the updater — it snapshots the database, pulls the new image,
-applies migrations on boot, and only starts the workers once `/health` is green:
+applies migrations on boot (the app container starts its Celery workers after
+them), and only starts plugin-host and the backup sidecar once `/health` is green:
 
 ```bash
 ./gdx_dispatch/docker/update.sh

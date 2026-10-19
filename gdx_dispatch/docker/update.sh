@@ -38,7 +38,7 @@ if [ -z "${db_volume}" ] || ! docker volume inspect "${db_volume}" >/dev/null 2>
   echo "[update] Refusing: these compose files put the database on volume '${db_volume:-?}', which does not exist." >&2
   echo "[update] Files: ${files}${EXTRA_COMPOSE:+ + ${EXTRA_COMPOSE}}" >&2
   echo "[update] Set COMPOSE_FILE in .env to the files this install runs (docker volume ls shows the data volumes)." >&2
-  echo "[update] A new install starts with docker compose -p gdx ... up -d (see README.md), not update.sh." >&2
+  echo "[update] A new install runs install.sh (see README.md), not update.sh." >&2
   exit 1
 fi
 

@@ -8,8 +8,9 @@ only. **Built:** Build A, the one layout (base + `docker-compose.prod.yml` /
 and the compose guard tests only. Build B, the s6 all-in-one app container
 (`gdx_dispatch/docker/s6-overlay/`, guard
 `gdx_dispatch/tests/test_s6_service_tree.py`), booted locally on an empty
-database: see "As built" under B. **Not built:** <!-- still to be built; link-ok -->
-C (`install.sh`), D (wizard and boot gaps), and every vps2 rehearsal. <!-- still to be built; link-ok -->
+database: see "As built" under B. Build C, `gdx_dispatch/docker/install.sh` and
+its release asset, tested with fakes only: see "As built" under C.
+**Not built:** D (wizard and boot gaps) and every vps2 rehearsal. <!-- still to be built; link-ok -->
 Production is not touched by this work: the prod switch is a separate,
 maintainer-run step after review (see "Prod switch" below).
 
@@ -194,6 +195,18 @@ The command is `curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/la
 6. Print the URL, and on first install the admin email and the generated password, read from the bootstrap banner. Say it will be changed on first login.
 
 A shellcheck-clean script gets a test that runs it in a container with a fake `docker` shim (argument assertions), plus the real VPS run.
+
+- **As built (2026-10-19), where it differs from the steps above:**
+  - `gdx_dispatch/docker/install.sh`, POSIX sh (`curl | sh` runs dash). The README command is `… | sudo sh`: it needs the Docker daemon and writes `/opt/gdx`. <!-- built in this change; link-ok -->
+  - No `--no-proxy`: the base compose gives the app no way in except through Caddy, so a no-proxy install would serve nothing.
+  - `.env` is not "only if absent": `APP_VERSION` is rewritten on every run (that is the update), `GDX_DOMAIN` and `GDX_ADMIN_EMAIL` only when passed; every other line is kept. Values are restricted to characters that need no quoting, because `entrypoint.sh` sources the file. Mode 600, set on every run: the old README's `echo >` left it 644.
+  - The snapshot is `pg_dump` through `docker compose exec db`, not the backup sidecar (which may not be running), run on the files the install ran before: the new `.env` and compose file are staged as `.new` and moved in only after the dump succeeds, so a failed snapshot really leaves nothing changed (the first audit of C caught the old order rewriting both first). An install from the README before the script has `docker-compose.customer.yml` and maybe no `.env`; the snapshot runs on that file (with `--env-file /dev/null`), and the script then renames it to `docker-compose.yml` (second audit). The pull also runs on the staged files, before they are moved in: a failed pull leaves the old pin and compose file. The final `up` passes `--pull never` when Compose has the flag (checked with `up --help`): `app`, `secrets-init` and `plugin-host` set `pull_policy: always`, so a plain `up` pulls a second time after the switch and, under `--no-pull`, fails on an image that exists only locally (fourth audit). A Compose without the flag refuses `--no-pull` in preflight, before any file is written (fifth audit). <!-- release asset name; link-ok -->
+  - Every command runs inside `main()`, called on the last line. Under `curl | sh` stdin is the script, and `compose exec` forwards stdin even with `-T`: on a host where `sh` is bash, the first audit of C measured an update that stopped after the snapshot and exited 0. The exec calls also read `/dev/null`.
+  - It refuses two installs it must not take over: a `gdx` stack whose containers run from another directory, and a `.env` with `COMPOSE_FILE` (a checkout that `update.sh` manages).
+  - Rehearsal flags: `--version` (an unstamped copy refuses to run without it), `--compose-file`, `--no-pull`.
+  - Release: `release.yml` publishes `install.sh` beside the compose file with `GDX_RELEASE` stamped to the tag, and its image gate now also boots the image under `/init` with Postgres and Redis and requires all four processes up (twice, 30 s apart) before the push.
+  - Tests: `gdx_dispatch/tests/test_install_sh.py` (20) runs the real script under `sh` with fake `docker`, `curl`, `ss`, `ip` and `sleep`, and four of them pipe it into `sh` and `bash` as the one-liner does, against a fake `compose exec` that reads stdin; the `main()` wrapper, the snapshot-on-old-files order, the old-README file, pull-before-switch, the relative `--compose-file`, the symlinked working directory and four earlier guards were mutation-checked. The admin banner was seen in `docker logs` of an s6 boot in the same format the script parses.
+  - Not yet run for real: a fresh-VM install and an update over the split layout (both are the vps2 rehearsal).
 
 ### D. First-run gaps (from the 2026-10-19 walk)
 
