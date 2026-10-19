@@ -113,9 +113,24 @@ function fmtDate(d) {
   if (!d) return "";
   return d instanceof Date ? d.toISOString().slice(0, 10) : d;
 }
+// The API sends job.status as a display label ("In Progress", "Complete"),
+// not the lifecycle_stage key, so fold both spellings onto the enum.
+const STATUS_ALIAS = { complete: "completed", canceled: "cancelled" };
+const STATUS_SEVERITY = {
+  lead: "info",
+  service_call: "info",
+  estimate: "info",
+  scheduled: "warn",
+  in_progress: "info",
+  completed: "success",
+  cancelled: "danger",
+};
+function normalizeStatus(s) {
+  const key = String(s || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return STATUS_ALIAS[key] || key;
+}
 function statusSeverity(s) {
-  const map = { completed: "success", in_progress: "info", scheduled: "warn", cancelled: "danger" };
-  return map[(s || "").toLowerCase()] || "secondary";
+  return STATUS_SEVERITY[normalizeStatus(s)] || "secondary";
 }
 
 async function loadReport() {
