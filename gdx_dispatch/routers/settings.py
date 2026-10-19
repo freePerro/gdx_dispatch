@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import functools
 import logging
 import re
@@ -122,10 +123,9 @@ def vacation_year_start(policy: str | None, hire_date: date | None, on: date) ->
         return date(on.year, 1, 1)
 
     def anniversary(year: int) -> date:
-        try:
-            return hire_date.replace(year=year)
-        except ValueError:
+        if hire_date.month == 2 and hire_date.day == 29 and not calendar.isleap(year):
             return date(year, 2, 28)
+        return hire_date.replace(year=year)
 
     start = anniversary(on.year)
     return start if start <= on else anniversary(on.year - 1)
