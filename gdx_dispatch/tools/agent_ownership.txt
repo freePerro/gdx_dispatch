@@ -773,7 +773,6 @@ gdx_dispatch/frontend/src/views/MobileSmsView.vue            comms-email-phone
 ## orders, vendor master, vendor on-order tracking, distributor ordering.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/inventory.py                            inventory-purchasing
-gdx_dispatch/routers/van_inventory.py                        inventory-purchasing
 gdx_dispatch/routers/parts_needed.py                         inventory-purchasing
 gdx_dispatch/routers/purchase_orders.py                      inventory-purchasing
 gdx_dispatch/routers/vendors.py                              inventory-purchasing

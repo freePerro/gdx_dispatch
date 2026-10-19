@@ -339,8 +339,6 @@ from gdx_dispatch.core.rate_limiter import TenantRateLimitMiddleware as _TenantR
 
 parts_pricing_router = _load_router("gdx_dispatch.core.parts_pricing", "router")
 
-van_inventory_router = _load_router("gdx_dispatch.routers", "van_inventory")
-
 commission_router = _load_router("gdx_dispatch.routers", "commission")
 
 service_triggers_router = _load_router("gdx_dispatch.routers", "service_triggers")
@@ -1267,7 +1265,6 @@ def create_app() -> FastAPI:
     app.include_router(_load_router("gdx_dispatch.routers", "voice").router)
 
     app.include_router(integrations_router)
-    app.include_router(van_inventory_router.router if hasattr(van_inventory_router, "router") else van_inventory_router)
     app.include_router(commission_router.router if hasattr(commission_router, "router") else commission_router)
     app.include_router(service_triggers_router.router if hasattr(service_triggers_router, "router") else service_triggers_router)
     app.include_router(variance_report_router.router if hasattr(variance_report_router, "router") else variance_report_router)

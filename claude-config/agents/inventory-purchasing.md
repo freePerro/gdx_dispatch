@@ -15,7 +15,7 @@ this territory; where the two disagree, CLAUDE.md wins.
 Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner inventory-purchasing`
 (map: `gdx_dispatch/tools/agent_ownership.txt`). In outline:
 
-- Routers: `inventory`, `van_inventory`, `parts_needed` (1,000 lines),
+- Routers: `inventory`, `parts_needed` (1,000 lines),
   `purchase_orders`, `vendors`
 - Modules: `inventory` (stock), `purchase_orders`, `vendor_orders` (parsers,
   matching, on-order, job confirm), `distributor` (onboarding, order portal;

@@ -114,8 +114,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     TimeEntry,
     User,
     UserRoleAssignment,
-    VanInventoryItem,
-    VanInventoryLog,
     Vendor,
     Warranty,
     WarrantyClaim,

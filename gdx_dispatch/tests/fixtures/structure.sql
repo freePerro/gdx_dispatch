@@ -4979,40 +4979,6 @@ CREATE TABLE public.users (
 
 
 --
--- Name: van_inventory; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.van_inventory (
-    id uuid NOT NULL,
-    company_id character varying(36) NOT NULL,
-    truck_id character varying(36) NOT NULL,
-    sku character varying(100),
-    name character varying(300) NOT NULL,
-    quantity integer NOT NULL,
-    min_stock integer NOT NULL,
-    category character varying(100),
-    created_at timestamp with time zone,
-    updated_at timestamp with time zone,
-    deleted_at timestamp with time zone
-);
-
-
---
--- Name: van_inventory_log; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.van_inventory_log (
-    id uuid NOT NULL,
-    van_inventory_id uuid NOT NULL,
-    job_id character varying(36),
-    quantity_change integer NOT NULL,
-    reason character varying(500),
-    created_by character varying(36) NOT NULL,
-    created_at timestamp with time zone
-);
-
-
---
 -- Name: vehicle_inspections; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -7761,22 +7727,6 @@ ALTER TABLE ONLY public.user_tour_progress
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-
-
---
--- Name: van_inventory_log van_inventory_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.van_inventory_log
-    ADD CONSTRAINT van_inventory_log_pkey PRIMARY KEY (id);
-
-
---
--- Name: van_inventory van_inventory_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.van_inventory
-    ADD CONSTRAINT van_inventory_pkey PRIMARY KEY (id);
 
 
 --

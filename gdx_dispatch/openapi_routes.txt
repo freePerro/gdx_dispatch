@@ -604,8 +604,6 @@ GET /api/v1/invoices
 GET /api/v1/jobs
 GET /api/v1/jobs/{job_id}
 GET /api/v1/listings
-GET /api/van-inventory
-GET /api/van-inventory/low-stock
 GET /api/variance/job/{job_id}
 GET /api/variance/summary
 GET /api/vehicle-inspections
@@ -1215,8 +1213,6 @@ POST /api/v1/customers
 POST /api/v1/jobs
 POST /api/v1/landing-leads
 POST /api/v1/webhooks
-POST /api/van-inventory
-POST /api/van-inventory/use
 POST /api/vehicle-inspections
 POST /api/vendor-invoices/upload
 POST /api/vendor-invoices/{invoice_id}/lines/{line_id}/confirm
