@@ -40,7 +40,13 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of, shop_tz_name
-from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry, User
+from gdx_dispatch.models.tenant_models import (
+    AppSettings,
+    Technician,
+    TimeclockEntry,
+    TimeOffRequest,
+    User,
+)
 
 log = logging.getLogger(__name__)
 
@@ -345,6 +351,90 @@ def create_time_off_entries(
         db.add(entry)
         result.created.append(entry)
     return result
+
+
+# ── Approved time off, for the schedule ──────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ApprovedTimeOff:
+    """One approved request as the schedule reads it. ``technician_id`` is a
+    `technicians.id`; ``user_id`` is the request's own key (a `users.id`)."""
+
+    technician_id: str
+    user_id: str
+    request_id: str
+    entry_type: str
+    start_date: date
+    end_date: date
+
+    def covers(self, day: date) -> bool:
+        return self.start_date <= day <= self.end_date
+
+
+def _user_key(raw: Any) -> str:
+    """A user id in one spelling. `time_off_requests.technician_id` and
+    `technicians.user_id` are both text and either may hold the dashed or
+    dashless form; parsing as UUID makes them compare equal."""
+    try:
+        return UUID(str(raw)).hex
+    except (ValueError, TypeError):
+        return str(raw or "").strip()
+
+
+def approved_time_off_for_range(
+    db: Session, start: date, end: date, *, technician_ids: set[str] | None = None
+) -> dict[str, list[ApprovedTimeOff]]:
+    """technician id → the approved, live time-off requests whose days overlap
+    [start, end], inclusive, ordered by start date.
+
+    The one lookup behind the schedule's view of time off (GDXA-1775): a
+    `TimeOffRequest` keyed by its USER id, mapped here to every live
+    `Technician` row linked to that user. Only ``approved`` counts; pending,
+    denied, cancelled and revoked requests block nothing, and a request whose
+    user has no live technician row is dropped (nobody on the board to block).
+    ``technician_ids`` narrows the result to those technicians.
+
+    Database errors propagate: a schedule that silently reads "nobody is
+    off" would book a job onto someone's vacation.
+    """
+    if end < start or (technician_ids is not None and not technician_ids):
+        return {}
+    tech_stmt = select(Technician.id, Technician.user_id).where(
+        Technician.deleted_at.is_(None), Technician.user_id.is_not(None)
+    )
+    if technician_ids is not None:
+        tech_stmt = tech_stmt.where(Technician.id.in_(sorted(str(t) for t in technician_ids)))
+    techs_of_user: dict[str, list[str]] = {}
+    for tech_id, user_id in db.execute(tech_stmt).all():
+        techs_of_user.setdefault(_user_key(user_id), []).append(str(tech_id))
+    if not techs_of_user:
+        return {}
+
+    requests = db.execute(
+        select(TimeOffRequest)
+        .where(
+            TimeOffRequest.deleted_at.is_(None),
+            TimeOffRequest.status == STATUS_APPROVED,
+            TimeOffRequest.start_date <= end,
+            TimeOffRequest.end_date >= start,
+        )
+        .order_by(TimeOffRequest.start_date.asc(), TimeOffRequest.id.asc())
+    ).scalars().all()
+    out: dict[str, list[ApprovedTimeOff]] = {}
+    for req in requests:
+        for tech_id in techs_of_user.get(_user_key(req.technician_id), ()):
+            out.setdefault(tech_id, []).append(
+                ApprovedTimeOff(
+                    technician_id=tech_id,
+                    user_id=str(req.technician_id),
+                    request_id=str(req.id),
+                    entry_type=str(req.entry_type),
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                )
+            )
+    return out
 
 
 # ── Holiday calendar ─────────────────────────────────────────────────────────

@@ -580,7 +580,6 @@ GET /api/technicians
 GET /api/technicians/daily-loadsheet
 GET /api/technicians/skills
 GET /api/technicians/{technician_id}
-GET /api/technicians/{technician_id}/availability
 GET /api/technicians/{technician_id}/skills
 GET /api/timeclock/breaks
 GET /api/timeclock/entries
@@ -1190,7 +1189,6 @@ POST /api/tax/exemptions
 POST /api/tech-unavailability
 POST /api/technicians
 POST /api/technicians/{technician_id}/skills
-POST /api/technicians/{technician_id}/unavailability
 POST /api/timeclock/break/end
 POST /api/timeclock/break/start
 POST /api/timeclock/clock-in
