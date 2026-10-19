@@ -3,26 +3,25 @@ Scheduling router — calendar views, availability slots and conflicts. This is
 a read-heavy view layer built on top of the existing Appointment model
 (gdx_dispatch/routers/appointments.py).
 
-Owns exactly ONE new entity: TechUnavailability (vacation/sick/other).
+Owns no entity. A technician's time off is the approved `TimeOffRequest`
+(routers/time_off.py), read through core/time_off.approved_time_off_for_range;
+the parallel `tech_unavailability` routes were retired by GDXA-1829.
 
-Gated behind the "jobs" module. Every query is tenant-scoped via
-request.state.tenant["id"]. Mutations write audit events.
+Gated behind the "jobs" module. Read-only: every route here is a GET.
 """
 from __future__ import annotations
 
 import logging
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.time_off import approved_time_off_for_range
 from gdx_dispatch.routers.appointments import Appointment
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -32,31 +31,6 @@ router = APIRouter(
     tags=["scheduling"],
     dependencies=[Depends(require_module("jobs"))],
 )
-
-
-# ---------------------------------------------------------------------------
-# Model (one new table)
-# ---------------------------------------------------------------------------
-
-
-from gdx_dispatch.models.tenant_models import TechUnavailability  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# Pydantic
-# ---------------------------------------------------------------------------
-
-
-class TechUnavailabilityIn(BaseModel):
-    tech_id: str = Field(min_length=1, max_length=64)
-    start_at: datetime
-    end_at: datetime
-    reason: str | None = Field(default=None, max_length=200)
-
-    @model_validator(mode="after")
-    def _validate_range(self) -> TechUnavailabilityIn:
-        if self.end_at <= self.start_at:
-            raise ValueError("end_at must be after start_at")
-        return self
 
 
 # ---------------------------------------------------------------------------
@@ -121,49 +95,6 @@ def _serialize_appt(a: Appointment) -> dict[str, Any]:
         "end_at": a.end_at.isoformat() if a.end_at else None,
         "status": a.status,
     }
-
-
-def _serialize_unavail(u: TechUnavailability) -> dict[str, Any]:
-    return {
-        "id": str(u.id),
-        "company_id": u.company_id,
-        "tech_id": u.tech_id,
-        "start_at": u.start_at.isoformat() if u.start_at else None,
-        "end_at": u.end_at.isoformat() if u.end_at else None,
-        "reason": u.reason,
-        "created_by": u.created_by,
-        "created_at": u.created_at.isoformat() if u.created_at else None,
-    }
-
-
-def _audit(
-    db: Session,
-    *,
-    tenant_id: str,
-    user: Any,
-    action: str,
-    entity_type: str,
-    entity_id: str,
-    details: dict[str, Any] | None = None,
-    request: Request | None = None,
-) -> None:
-    try:
-        log_audit_event_sync(
-            db,
-            tenant_id=tenant_id,
-            user_id=_user_id(user),
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            details=details or {},
-            request=request,
-        )
-        db.commit()
-    except Exception:
-        log.exception(
-            "scheduling_audit_failed action=%s entity_id=%s", action, entity_id
-        )
-        db.rollback()
 
 
 # ---------------------------------------------------------------------------
@@ -357,15 +288,10 @@ def available_slots(
         )
     ).scalars().all()
 
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-    unavail = db.execute(
-        select(TechUnavailability).where(
-            TechUnavailability.deleted_at.is_(None),
-            TechUnavailability.tech_id == tech_id,
-            TechUnavailability.start_at < day_end,
-            TechUnavailability.end_at > day_start,
-        )
-    ).scalars().all()
+    # Approved time off is a whole shop day (GDXA-1829): a tech who is off has
+    # no slot that day, whatever the appointments say.
+    if approved_time_off_for_range(db, d, d, technician_ids={tech_id}):
+        return []
 
     # SQLite strips tzinfo on round-trip. Normalize all rows to UTC-aware so
     # comparisons with the UTC-aware slot cursor don't blow up in tests.
@@ -385,12 +311,6 @@ def available_slots(
             if a_start and a_end and a_start < slot_end and a_end > cursor:
                 blocked = True
                 break
-        if not blocked:
-            for u in unavail:
-                u_start, u_end = _aware(u.start_at), _aware(u.end_at)
-                if u_start and u_end and u_start < slot_end and u_end > cursor:
-                    blocked = True
-                    break
         if not blocked:
             slots.append(
                 {
@@ -443,89 +363,3 @@ def schedule_conflicts(
                         }
                     )
     return conflicts
-
-
-# ---------------------------------------------------------------------------
-# Tech unavailability CRUD
-# ---------------------------------------------------------------------------
-
-
-@router.get("/api/tech-unavailability", response_model=None)
-def list_tech_unavailability(
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    tech_id: str | None = None,
-) -> list[dict[str, Any]]:
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-    stmt = select(TechUnavailability).where(
-        TechUnavailability.deleted_at.is_(None),
-    )
-    if tech_id:
-        stmt = stmt.where(TechUnavailability.tech_id == tech_id)
-    stmt = stmt.order_by(TechUnavailability.start_at.desc())
-    rows = db.execute(stmt).scalars().all()
-    return [_serialize_unavail(r) for r in rows]
-
-
-@router.post("/api/tech-unavailability", response_model=None, status_code=201)
-def create_tech_unavailability(
-    payload: TechUnavailabilityIn,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    tenant_id = _tenant_id(request)
-    row = TechUnavailability(
-        company_id=tenant_id,
-        tech_id=payload.tech_id,
-        start_at=payload.start_at,
-        end_at=payload.end_at,
-        reason=payload.reason,
-        created_by=_user_id(user),
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="tech_unavailability_created",
-        entity_type="tech_unavailability",
-        entity_id=str(row.id),
-        details={"tech_id": row.tech_id, "reason": row.reason},
-        request=request,
-    )
-    return _serialize_unavail(row)
-
-
-@router.delete("/api/tech-unavailability/{unavail_id}", response_model=None, status_code=204)
-def delete_tech_unavailability(
-    unavail_id: UUID,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    tenant_id = _tenant_id(request)
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-    row = db.execute(
-        select(TechUnavailability).where(
-            TechUnavailability.id == unavail_id,
-            TechUnavailability.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Unavailability not found")
-    row.deleted_at = utcnow()
-    db.commit()
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="tech_unavailability_deleted",
-        entity_type="tech_unavailability",
-        entity_id=str(unavail_id),
-        request=request,
-    )
-    return None

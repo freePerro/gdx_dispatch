@@ -25,7 +25,7 @@ vacation day or holiday pay." Shape decisions, all Doug's, same day:
 | Pay-period export: one hours authority, CSV + PDF + email built from the same `PeriodTimesheet` | shipped | `core/timesheet_hours.py`, `core/timesheet_export.py`, `core/timesheet_delivery.py` |
 | Pay-period settings card in Settings → Feature Settings, saved through `PATCH /api/settings` | shipped | `views/SettingsView.vue` (~1114), `routers/settings.py` |
 | Shop hours: `default_shift_start`, `default_workdays` bitmask (Mon=1 … Sun=64), per-user overrides on `users.shift_start` / `users.workdays` | shipped | `AppSettings`, `User` |
-| `tech_unavailability` (vacation/sick/other, scheduling only) | API only, **no UI caller** (as of 2026-09-23; being retired by GDXA-1775, see §6) | `routers/scheduling.py`; the `routers/technicians.py` routes were removed 2026-10-19 (GDXA-1828) |
+| `tech_unavailability` (vacation/sick/other, scheduling only) | **retired**: no route reads or writes it. The `routers/technicians.py` routes were removed 2026-10-19 (GDXA-1828), and `/api/tech-unavailability` plus the available-slots reader were removed 2026-10-19 (GDXA-1829). The table drop is GDXA-1775's last child | the model in `models/tenant_models.py` |
 | In-app payroll summary with weekly overtime math | **orphan**: no frontend caller, reads job-level `time_entries`, revenue side 503s by design | `routers/payroll.py` |
 
 Nothing links a day off to hours or pay today. The Pay Runs page is a shell
@@ -184,11 +184,14 @@ stretching an approved day.
 - Any change to `tech_unavailability`; a PTO approval does not create a
   scheduling block. Ledgered as a product question.
   **Ruled 2026-10-19 (Doug, GDXA-1775):** time off is one record. The
-  lookup `core/time_off.approved_time_off_for_range` exists (GDXA-1828); as
-  of 2026-10-19 nothing calls it yet. Once GDXA-1775's scheduling child
-  lands, the board will read approved `TimeOffRequest` rows through it, so an
-  approved request blocks the board's day and week views and a pending,
-  denied, cancelled or revoked one does not. `tech_unavailability` is retired: the
+  lookup `core/time_off.approved_time_off_for_range` exists (GDXA-1828). Since
+  GDXA-1829 (2026-10-19), available-slots and the board's
+  `GET /api/dispatch/time-off` read approved `TimeOffRequest` rows through it.
+  An approved request blocks the board's day and week views, and a pending,
+  denied, cancelled or revoked one does not. The refusal lives in the board's
+  drops and pickers, not on the server's assign routes. An approved request
+  blocks the whole day even when its `minutes_per_day` is a partial day; that
+  case is not yet ruled. `tech_unavailability` is retired: the
   duplicate `routers/technicians.py` routes are removed (GDXA-1828); the
   scheduling reader and `/api/tech-unavailability` move to the lookup, and the
   table is dropped, in the two follow-up children of GDXA-1775.

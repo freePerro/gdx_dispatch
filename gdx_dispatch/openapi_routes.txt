@@ -90,7 +90,6 @@ DELETE /api/surveys/templates/{template_id}
 DELETE /api/tags/{tag_id}
 DELETE /api/tasks/{task_id}
 DELETE /api/tax/exemptions/{exemption_id}
-DELETE /api/tech-unavailability/{unavail_id}
 DELETE /api/technicians/{technician_id}
 DELETE /api/time-entries/{entry_id}
 DELETE /api/users/{user_id}
@@ -242,6 +241,7 @@ GET /api/dispatch/locations
 GET /api/dispatch/partial-jobs
 GET /api/dispatch/schedule-with-traffic
 GET /api/dispatch/scheduled-unassigned
+GET /api/dispatch/time-off
 GET /api/dispatch/visits
 GET /api/distributor/analytics/orders
 GET /api/distributor/orders
@@ -572,7 +572,6 @@ GET /api/tasks/{task_id}
 GET /api/tax/config
 GET /api/tax/exemptions
 GET /api/tax/resolve
-GET /api/tech-unavailability
 GET /api/technicians
 GET /api/technicians/daily-loadsheet
 GET /api/technicians/skills
@@ -1180,7 +1179,6 @@ POST /api/tasks
 POST /api/tasks/{task_id}/complete
 POST /api/tasks/{task_id}/reopen
 POST /api/tax/exemptions
-POST /api/tech-unavailability
 POST /api/technicians
 POST /api/technicians/{technician_id}/skills
 POST /api/timeclock/break/end
