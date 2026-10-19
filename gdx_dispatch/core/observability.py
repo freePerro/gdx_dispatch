@@ -43,7 +43,6 @@ try:
     _otel_fastapi_available = True
 except ImportError:
     logging.getLogger(__name__).exception("<module> caught exception")
-    pass
 
 _otel_sqlalchemy_available = False
 try:
@@ -54,7 +53,6 @@ try:
     _otel_sqlalchemy_available = True
 except ImportError:
     logging.getLogger(__name__).exception("<module> caught exception")
-    pass
 
 _otel_redis_available = False
 try:
@@ -65,7 +63,6 @@ try:
     _otel_redis_available = True
 except ImportError:
     logging.getLogger(__name__).exception("<module> caught exception")
-    pass
 
 
 # ---------------------------------------------------------------------------
