@@ -314,7 +314,7 @@ planner_router_mod = _load_router("gdx_dispatch.routers.planner", "router")
 audit_dashboard_router = _load_router("gdx_dispatch.core.audit_dashboard", "router")
 
 
-recommendation_routes_router = _load_router("gdx_dispatch.core.recommendation_routes", "router")
+next_action_routes_router = _load_router("gdx_dispatch.core.next_action_routes", "router")
 
 ai_quote_router = _load_router("gdx_dispatch.core.ai_quote", "router")
 
@@ -1245,7 +1245,7 @@ def create_app() -> FastAPI:
     app.include_router(door_catalog_router)
     app.include_router(planner_router_mod)
     app.include_router(audit_dashboard_router)
-    app.include_router(recommendation_routes_router)
+    app.include_router(next_action_routes_router)
     app.include_router(ai_quote_router)
     app.include_router(ai_router_router)
     app.include_router(ai_usage_router)
