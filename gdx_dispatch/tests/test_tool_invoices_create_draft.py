@@ -72,6 +72,9 @@ async def test_confirm_call_proceeds_to_handler():
         {"job_id": jid},
         principal=p, db=db, approval_ref="tok_abc",
     )
-    # On confirm: handler ran. Result may be ok or fail-with-different-error
-    # (e.g. mock db can't fully simulate insert). Contract: NOT approval_required.
-    assert r.error_type != "approval_required"
+    # On confirm the handler runs and REFUSES (GDXA-1849): nothing backs this
+    # tool yet, so it must not come back looking like a success.
+    assert r.ok is False
+    assert r.error_type == "execution_error"
+    assert "not wired" in r.audit_row["error_detail"]
+    assert not db.commit.called

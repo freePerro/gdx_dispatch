@@ -3,13 +3,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
+from gdx_dispatch.core.mcp_tools._helpers import acting_user_id, coerce_uuid
 from gdx_dispatch.models.tenant_models import Customer
 
 DESCRIPTOR = ToolDescriptor(
     name="customers.mark_contacted",
-    description="Marks a customer as contacted by updating last_contacted_at and optionally appending a note.",
+    description=(
+        "Records that a customer was contacted (a customer_contacted audit row: "
+        "who and when) and optionally appends a note to the customer's notes."
+    ),
     blast_radius="green",
     approval_required=False,
     sensitivity_class="internal",
@@ -32,32 +37,44 @@ async def handler(
     customer_id: str,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Marks a customer as contacted.
-    Updates last_contacted_at and appends to notes_appended if note is provided.
-    """
-    # db is a sync SQLAlchemy Session
-    customer = db.get(Customer, customer_id)
+    """Record a contact with the customer and append ``note`` if given.
 
-    if customer is None:
-        # The test allows either input_invalid or execution_error.
-        # We'll raise an exception which invoke_tool will catch and turn into an error.
+    The contact itself is the ``customer_contacted`` audit row. Until
+    GDXA-1849 this set ``last_contacted_at``, which is not a column on
+    ``Customer``, so a call with no note committed nothing, wrote no trail
+    and still returned ``{"ok": True}``.
+    """
+    cid = coerce_uuid(customer_id)
+    customer = db.get(Customer, cid) if cid else None
+    if customer is None or customer.deleted_at is not None:
+        # invoke_tool turns the raise into execution_error, so nothing is committed.
         raise ValueError(f"Customer with id {customer_id} not found.")
 
-    # Update timestamp
-    customer.last_contacted_at = datetime.now(timezone.utc)
-
-    # Append note if provided
+    contacted_at = datetime.now(timezone.utc)
     if note:
         current_notes = customer.notes_appended or ""
-        if current_notes:
-            customer.notes_appended = f"{current_notes}\n\n{note}"
-        else:
-            customer.notes_appended = note
+        customer.notes_appended = f"{current_notes}\n\n{note}" if current_notes else note
 
+    # Staged into the same commit as the note, so neither lands without the other.
+    # Not money, so an MCP bearer may do it; its token handle stands in for a user.
+    identity = getattr(principal, "identity_id", None)
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id=acting_user_id(principal) or (str(identity) if identity else None),
+        action="customer_contacted",
+        entity_type="customer",
+        entity_id=str(customer.id),
+        details={"note_appended": bool(note), "via": "mcp"},
+    )
     db.commit()
 
-    return {"ok": True}
+    return {
+        "ok": True,
+        "customer_id": str(customer.id),
+        "contacted_at": contacted_at.isoformat(),
+        "note_appended": bool(note),
+    }
 
 
 register_tool(DESCRIPTOR, handler)
