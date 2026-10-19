@@ -1065,7 +1065,7 @@ def test_tenant_zoneinfo_failed_read_is_logged_not_silent(caplog):
     a bare ``except Exception: pass``."""
 
     class _BrokenDb(_SavepointCapableFake):
-        def execute(self, *_a, **_k):
+        def query(self, *_a, **_k):
             raise RuntimeError("connection lost")
 
     with caplog.at_level("ERROR", logger="gdx_dispatch.modules.bank_feeds.service"):
@@ -1078,25 +1078,43 @@ def test_tenant_zoneinfo_failed_read_is_logged_not_silent(caplog):
 
 
 def test_tenant_zoneinfo_invalid_zone_name_is_logged_not_silent(caplog):
-    """The sibling four lines below the failed-read fallback: a bad zone NAME
-    stored in app_settings also fell back to New York with no trace."""
-
-    class _Row:
-        def __getitem__(self, _i):
-            return "Not/AZone"
+    """The sibling of the failed-read fallback: a bad zone NAME stored in
+    app_settings used to fall back to New York with no trace. Since GDXA-1620
+    it lands where the shared reader's ``resolve_zone`` lands every other
+    caller (UTC), and still leaves the warning."""
 
     class _Db(_SavepointCapableFake):
-        def execute(self, *_a, **_k):
-            class _R:
-                def first(self_inner):
-                    return _Row()
-            return _R()
+        def query(self, *_a, **_k):
+            class _Q:
+                def limit(self_inner, _n):
+                    return self_inner
+
+                def scalar(self_inner):
+                    return "Not/AZone"
+            return _Q()
 
     with caplog.at_level("WARNING", logger="gdx_dispatch.modules.bank_feeds.service"):
         tz = service.tenant_zoneinfo(_Db())
 
-    assert str(tz) == "America/New_York"  # fallback unchanged
+    assert str(tz) == "UTC"  # the shared reader's bad-name fallback
     assert any(
         "bank_feeds_tenant_timezone_invalid" in r.message and "Not/AZone" in r.message
         for r in caplog.records
     ), [r.message for r in caplog.records]
+
+
+def test_tenant_zoneinfo_reads_through_the_shared_shop_zone_reader(tenant_db):
+    """GDXA-1620: the bank-feed day boundary comes from
+    ``core.pay_periods.shop_tz_name_from_settings`` — the reader every other
+    shop-day caller uses — not from a private AppSettings query with its own
+    fallbacks. The shared reader's ``Session.info`` cache being filled is the
+    proof the call went through it, on a real session."""
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    tenant_db.add(AppSettings(timezone="America/Chicago"))
+    tenant_db.commit()
+
+    tz = service.tenant_zoneinfo(tenant_db)
+
+    assert str(tz) == "America/Chicago"
+    assert tenant_db.info.get("gdx_shop_timezone") == "America/Chicago"
