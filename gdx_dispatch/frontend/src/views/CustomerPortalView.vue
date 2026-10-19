@@ -576,9 +576,24 @@ function estimateTitle(est) {
 }
 
 function currency(v) { return formatMoney(Number(v) || 0); }
+// One tag colour per status across the three vocabularies this page shows:
+// estimate status, invoice payment status, and the job's lifecycle_stage
+// (the full Job.lifecycle_stage enum, models/tenant_models.py). Labels such
+// as "In Progress", "Complete" or "Canceled" normalise to the enum key first,
+// so a display label never falls through to the neutral grey (GDXA-1943).
+const STATUS_ALIASES = { complete: "completed", canceled: "cancelled" };
+function normalizeStatus(s) {
+  const key = String(s || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return STATUS_ALIASES[key] || key;
+}
+const STATUS_SEVERITY = {
+  sent: "info", accepted: "success", declined: "danger", expired: "secondary",
+  paid: "success", unpaid: "warn", overdue: "danger",
+  lead: "secondary", service_call: "info", estimate: "info", scheduled: "info",
+  in_progress: "info", completed: "success", cancelled: "danger",
+};
 function statusSeverity(s) {
-  const map = { sent: "info", accepted: "success", paid: "success", declined: "danger", unpaid: "warn", overdue: "danger", expired: "secondary", scheduled: "info", in_progress: "info", completed: "success" };
-  return map[(s || "").toLowerCase()] || "secondary";
+  return STATUS_SEVERITY[normalizeStatus(s)] || "secondary";
 }
 // An overdue invoice says so; otherwise paid / unpaid.
 function invoiceStatus(inv) {
