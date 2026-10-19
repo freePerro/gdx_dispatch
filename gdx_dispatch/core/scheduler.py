@@ -15,6 +15,15 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*"),
             "options": {"queue": "priority:low"},
         },
+        "drain-winback-sends-every-minute": {
+            # GDXA-1723: Send on a win-back campaign only queues winback_sends
+            # rows; this drain texts / emails them and settles the campaign
+            # (sending -> sent | failed). Claims each row before sending, never
+            # resends. No-ops instantly when no campaign is sending.
+            "task": "gdx_dispatch.tasks.winback_drain.drain_winback_sends",
+            "schedule": crontab(minute="*"),
+            "options": {"queue": "priority:low"},
+        },
         "send-due-scheduled-sms-every-minute": {
             # Texts the office or a tech chose to "send later" (Phone.com
             # cannot schedule one itself). On priority:high, not the

@@ -16,7 +16,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
@@ -33,7 +33,9 @@ router = APIRouter(
 )
 
 
-CAMPAIGN_STATUSES = ("draft", "sent", "cancelled")
+# draft -> sending (rows queued) -> sent | failed, settled by the drainer in
+# tasks/winback_drain.py once no row is left queued or sending (GDXA-1723).
+CAMPAIGN_STATUSES = ("draft", "sending", "sent", "failed", "cancelled")
 CAMPAIGN_CHANNELS = ("sms", "email")
 FOLLOWUP_STATUSES = ("open", "completed", "cancelled")
 FOLLOWUP_ENTITY_TYPES = ("estimate", "invoice", "customer")
@@ -222,23 +224,17 @@ def _query_candidates_checked(
     `enqueued: 0`. So `send_campaign` refuses instead: 503 here (the flag below),
     409 at the write. Read its comment for why the guard belongs at the write.
 
-    Two things this tuple does NOT fix, both real:
+    One thing this tuple does NOT fix: `winback_stats` still calls
+    `_query_candidates`, so a degraded read reaches the operator as
+    `candidates_count: 0` — rendered "0" by WinbackView, indistinguishable from
+    "nobody is inactive", on the tile that decides whether a campaign gets
+    built. Telling it apart needs a response field and the view to render it;
+    an API field no screen reads is not a fix.
 
-    - `winback_stats` still calls `_query_candidates`, so a degraded read reaches
-      the operator as `candidates_count: 0` — rendered "0" by WinbackView,
-      indistinguishable from "nobody is inactive", on the tile that decides
-      whether a campaign gets built. Telling it apart needs a response field and
-      the view to render it; an API field no screen reads is not a fix.
-    - Nothing CONSUMES `winback_sends`: one writer (this router), no reader, no
-      beat task. So `enqueued: N` means "N rows written", never "N customers
-      reached", for every N and not only N=0. Be precise about the gap, because
-      the first draft of this comment said "no transport since Twilio was
-      dropped" and that is wrong in a decision-shaping way: a live SMS sender
-      exists (`modules/phone_com/client.py`'s `send_message`, reached by
-      `POST /api/phone-com/messages`) and so does
-      `core/transactional_email.py`'s `send_transactional_email`. What is missing
-      is the drainer between them and this table, not the transport. Recorded at
-      `FOUND_NOT_FILED.md` 2026-09-20, still open.
+    (Until GDXA-1723 nothing consumed `winback_sends` either, so `enqueued: N`
+    meant "N rows written" and a campaign marked `sent` had reached nobody. The
+    drainer is `tasks/winback_drain.py`; the campaign now waits in `sending`
+    until it settles.)
     """
     cutoff = utcnow() - timedelta(days=int(months) * 30)
     sql = text(
@@ -321,7 +317,15 @@ def list_campaigns(
         .order_by(WinbackCampaign.created_at.desc())
     )
     rows = db.execute(stmt).scalars().all()
-    return [_serialize_campaign(c) for c in rows]
+    # Per-status send counts, so the screen can say "40 sent, 2 not sent"
+    # instead of a bare status: the drainer's skips and failures land here.
+    counts: dict[Any, dict[str, int]] = {}
+    for campaign_id, status, n in db.execute(
+        select(WinbackSend.campaign_id, WinbackSend.status, func.count())
+        .group_by(WinbackSend.campaign_id, WinbackSend.status)
+    ).all():
+        counts.setdefault(campaign_id, {})[status] = n
+    return [{**_serialize_campaign(c), "send_counts": counts.get(c.id, {})} for c in rows]
 
 
 @router.post("/api/winback/campaigns", response_model=None, status_code=201)
@@ -425,12 +429,16 @@ def send_campaign(
         target_ids = [cand["id"] for cand in candidates]
 
     enqueued = 0
+    seen: set[UUID] = set()
     for cid in target_ids:
         try:
             customer_uuid = UUID(str(cid))
         except (ValueError, TypeError):
             log.exception("winback_send_invalid_customer_id cid=%s", cid)
             continue
+        if customer_uuid in seen:
+            continue  # a repeated override id must not text the customer twice
+        seen.add(customer_uuid)
         send = WinbackSend(
             company_id=tenant_id,
             campaign_id=c.id,
@@ -450,14 +458,10 @@ def send_campaign(
     # (useApi.js surfaces a 4xx message and genericises >= 500).
     #
     # Scope, so this is not mistaken for more than it is. It blocks the literal
-    # zero case and nothing else, so it does NOT make the audit row true:
-    #   - `enqueued > 0` does not mean anyone was contacted. Nothing consumes
-    #     `winback_sends` (no reader, no beat task — FOUND_NOT_FILED.md
-    #     2026-09-20, still open). The transports exist; the drainer does not.
-    #   - override ids are not checked for existence or tenant. There is no FK on
-    #     `winback_sends.customer_id`, so a well-formed UUID matching no customer
-    #     counts toward `enqueued` and the audit row reports it.
-    # Both are named on GDXA-162 rather than fixed here.
+    # zero case and nothing else. Override ids are not checked for existence
+    # here (no FK on `winback_sends.customer_id`), so a well-formed UUID
+    # matching no customer counts toward `enqueued`; the drainer settles that
+    # row as `skipped` / `customer_not_found`, which the campaign's counts show.
     # `shorter`, not longer: `inactivity_months` is how long they must have been
     # quiet, so a LONGER window is stricter and matches fewer people. The first
     # draft of this string said "longer" and was measured backwards by the
@@ -471,8 +475,11 @@ def send_campaign(
                    "window, which matches more customers.",
         )
 
-    c.status = "sent"
-    c.sent_at = utcnow()
+    # `sending`, not `sent` (GDXA-1723): rows are queued, nobody is contacted
+    # yet. tasks/winback_drain.py delivers them and moves the campaign to
+    # `sent` / `failed` with `sent_at` once the last row settles; it writes
+    # `winback_campaign_sent`. This row records who pressed Send.
+    c.status = "sending"
     db.commit()
     db.refresh(c)
 
@@ -480,7 +487,7 @@ def send_campaign(
         db,
         tenant_id=tenant_id,
         user=user,
-        action="winback_campaign_sent",
+        action="winback_campaign_queued",
         entity_type="winback_campaign",
         entity_id=str(c.id),
         details={"enqueued": enqueued},

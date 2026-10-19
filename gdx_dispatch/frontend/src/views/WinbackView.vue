@@ -66,6 +66,7 @@
           <Column field="status" header="Status" style="width:160px">
             <template #body="{ data }">
               <Badge :value="data.status?.replace('_', ' ')" :severity="campaignStatusSeverity(data.status)" />
+              <div v-if="sendSummary(data)" data-test="send-summary" style="font-size:0.8rem; margin-top:4px; color:var(--p-text-muted-color);">{{ sendSummary(data) }}</div>
             </template>
           </Column>
           <Column field="sent_at" header="Last Sent" style="width:150px">
@@ -310,10 +311,28 @@ function formatDate(value) {
 function campaignStatusSeverity(status) {
   return {
     draft: 'warn',
+    sending: 'secondary',
     sent: 'info',
+    failed: 'danger',
     active: 'success',
     cancelled: 'danger',
   }[status] || 'secondary';
+}
+
+// "3 waiting · 40 sent · 2 not sent" from the drainer's per-row outcomes.
+function sendSummary(campaign) {
+  const c = campaign?.send_counts || {};
+  const open = (c.queued || 0) + (c.sending || 0);
+  // Only a "sending" campaign is drained; open rows on any other status were
+  // queued before the drainer existed and will never go out.
+  const waiting = campaign?.status === 'sending' ? open : 0;
+  const notSent = (c.failed || 0) + (c.skipped || 0) + (open - waiting);
+  const parts = [];
+  if (waiting) parts.push(`${waiting} waiting`);
+  if (c.sent) parts.push(`${c.sent} sent`);
+  if (notSent) parts.push(`${notSent} not sent`);
+  if (c.unknown) parts.push(`${c.unknown} unconfirmed`);
+  return parts.join(' · ');
 }
 
 function followupStatusSeverity(status) {

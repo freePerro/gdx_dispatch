@@ -549,6 +549,7 @@ gdx_dispatch/modules/reseller/*                              customers-crm
 gdx_dispatch/modules/locations/*                             customers-crm
 gdx_dispatch/services/customer_rolling_volume.py             customers-crm
 gdx_dispatch/tasks/customer_volume_refresh.py                customers-crm
+gdx_dispatch/tasks/winback_drain.py                          customers-crm
 gdx_dispatch/frontend/src/views/CustomersView.vue            customers-crm
 gdx_dispatch/frontend/src/views/CustomerDetailView.vue       customers-crm
 gdx_dispatch/frontend/src/views/CustomerDuplicatesView.vue   customers-crm
