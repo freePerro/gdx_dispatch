@@ -35,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from gdx_dispatch.core import time_off as time_off_rules
 from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal, contained_read
@@ -356,23 +357,9 @@ def _tenant_id() -> str:
 def _names(db, tenant_id: str) -> dict[str, str]:
     """Display names, best effort — an unnamed row is still a real person's
     hours and must not be dropped for want of a label."""
-    try:
-        # SAVEPOINT for the same reason as `_audit_says`: a missing label must
-        # not cost the send that follows on this same session.
-        with contained_read(db):
-            rows = db.execute(
-                text(
-                    "SELECT id::text AS id, "
-                    "COALESCE(NULLIF(full_name,''), NULLIF(name,''), "
-                    "NULLIF(username,''), email) AS label "
-                    "FROM users WHERE company_id = :tid"
-                ),
-                {"tid": tenant_id},
-            ).mappings().all()
-        return {str(r["id"]): r["label"] for r in rows if r["label"]}
-    except Exception:
-        log.debug("payroll_timesheet_names_failed", exc_info=True)
-        return {}
+    # Contained inside `user_labels`, for the same reason as `_audit_says`: a
+    # missing label must not cost the send that follows on this same session.
+    return time_off_rules.user_labels(db, tenant_id, log_event="payroll_timesheet_names_failed")
 
 
 def _audit(db, tenant_id: str, outcome, period: PayPeriod) -> None:
