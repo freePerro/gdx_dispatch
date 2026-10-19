@@ -198,9 +198,39 @@ async function revealError() {
 
 // Unsaved-changes guard — Esc / the header X are disabled while dirty, and
 // Cancel prompts before discarding typed-in work (2026-07-01 UX audit).
-const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value, {
+const { snapshot: snapshotDirty, isDirty, confirmDiscard } = useDirtyDialog(() => form.value, {
   message: "Discard unsaved customer changes?",
 });
+
+// The form as loaded, so an edit PATCHes only the fields the user changed
+// (GDXA-1824). The endpoint honours explicit nulls, so sending an untouched
+// key writes whatever the form defaulted it to over the stored value.
+let pristine = emptyForm();
+function snapshot() {
+  pristine = { ...form.value };
+  snapshotDirty();
+}
+
+function payloadFrom(f) {
+  return {
+    name: f.name.trim(),
+    phone: f.phone || "",
+    email: f.email || "",
+    address: f.address || "",
+    notes: trimOrNull(f.notes),
+    referral_source: trimOrNull(f.referral_source),
+    customer_type: f.customer_type,
+  };
+}
+
+// Name is always sent; every other key only when its value differs from the
+// loaded one — a cleared field differs too, so it still goes as "" or null.
+function changedPayload(full) {
+  const loaded = payloadFrom(pristine);
+  return Object.fromEntries(
+    Object.entries(full).filter(([key, value]) => key === "name" || value !== loaded[key]),
+  );
+}
 
 // At-entry duplicate detection. { customer, on } or null.
 const duplicateMatch = ref(null);
@@ -302,19 +332,12 @@ async function submitForm() {
     revealError();
     return;
   }
-  const payload = {
-    name: form.value.name.trim(),
-    phone: form.value.phone || "",
-    email: form.value.email || "",
-    address: form.value.address || "",
-    notes: trimOrNull(form.value.notes),
-    referral_source: trimOrNull(form.value.referral_source),
-    customer_type: form.value.customer_type,
-  };
+  const full = payloadFrom(form.value);
   saving.value = true;
   try {
     let saved;
     if (isEditMode.value) {
+      const payload = changedPayload(full);
       if (form.value.version != null) payload.expected_version = form.value.version;
       saved = await api.patch(`/api/customers/${form.value.id}`, payload);
       toast.add({
@@ -324,7 +347,7 @@ async function submitForm() {
         life: 3000,
       });
     } else {
-      saved = await api.post("/api/customers", payload);
+      saved = await api.post("/api/customers", full);
       toast.add({
         severity: "success",
         summary: "Customer Created",
@@ -332,7 +355,7 @@ async function submitForm() {
         life: 3000,
       });
     }
-    emit("saved", saved || { ...payload, id: form.value.id });
+    emit("saved", saved || { ...full, id: form.value.id });
     emit("update:visible", false);
   } catch (e) {
     error.value = e?.message || "Failed to save customer.";
