@@ -27,8 +27,13 @@
             <EmptyState icon="pi pi-comments" title="No survey templates" message="Create a template to send NPS or post-job surveys." />
           </template>
           <Column field="name" header="Template" />
-          <Column field="template_type" header="Type" />
-          <Column field="send_channel" header="Channel" />
+          <Column field="kind" header="Type" />
+          <Column field="question" header="Question" />
+          <Column header="Active" style="width:90px">
+            <template #body="slotProps">
+              {{ slotProps.data.active ? 'Yes' : 'No' }}
+            </template>
+          </Column>
           <Column header="Last Link">
             <template #body="slotProps">
               {{ formatDateValue(slotProps.data.last_sent_at) }}
@@ -97,7 +102,7 @@
             </Card>
             <Card class="metric-card">
               <div class="metric-label">CSAT Average</div>
-              <div class="metric-value">{{ metrics.csat_score ?? '—' }}</div>
+              <div class="metric-value">{{ metrics.csat_avg ?? '—' }}</div>
             </Card>
           </div>
           <div class="metric-row compact">
@@ -111,7 +116,7 @@
             </Card>
             <Card class="metric-card">
               <div class="metric-label">Response Rate</div>
-              <div class="metric-value">{{ metrics.response_rate ? `${metrics.response_rate}%` : '—' }}</div>
+              <div class="metric-value">{{ metrics.total_sent ? `${Math.round((metrics.response_rate ?? 0) * 100)}%` : '—' }}</div>
             </Card>
           </div>
         </div>
@@ -130,20 +135,35 @@
           </div>
           <div class="form-field">
             <label>Survey Type</label>
-            <Select v-model="templateForm.template_type" :options="templateTypeOptions" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Channel</label>
-            <Select v-model="templateForm.send_channel" :options="channelOptions" class="w-full" />
+            <Select
+              v-model="templateForm.kind"
+              :options="templateKindOptions"
+              optionLabel="label"
+              optionValue="value"
+              class="w-full"
+              data-testid="survey-template-kind"
+            />
+            <small v-if="editingTemplate" class="field-hint">
+              The type cannot change once the template has responses.
+            </small>
           </div>
           <div class="form-field full-width">
-            <label>Message / Question</label>
-            <Textarea v-model="templateForm.message" rows="4" class="w-full" />
+            <label>Question</label>
+            <Textarea v-model="templateForm.question" rows="3" class="w-full" data-testid="survey-template-question" />
+          </div>
+          <div class="form-field full-width">
+            <label>Follow-up question (optional)</label>
+            <Textarea v-model="templateForm.follow_up_question" rows="2" class="w-full" data-testid="survey-template-follow-up" />
+          </div>
+          <div class="form-field">
+            <label>Active</label>
+            <ToggleSwitch v-model="templateForm.active" data-testid="survey-template-active" />
           </div>
         </div>
+        <div v-if="templateError" class="inline-error" data-testid="survey-template-error">{{ templateError }}</div>
         <template #footer>
           <Button label="Cancel" severity="secondary" @click="templateDialogVisible = false" />
-          <Button label="Save" icon="pi pi-check" :loading="templateSaving" @click="saveTemplate" />
+          <Button label="Save" icon="pi pi-check" :loading="templateSaving" data-testid="survey-template-save" @click="saveTemplate" />
         </template>
       </Dialog>
 
@@ -173,6 +193,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import EmptyState from '../components/EmptyState.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import Column from 'primevue/column';
@@ -185,9 +206,11 @@ import Tabs from 'primevue/tabs';
 import TabList from 'primevue/tablist';
 import Tab from 'primevue/tab';
 import Textarea from 'primevue/textarea';
+import ToggleSwitch from 'primevue/toggleswitch';
 import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
+const { confirmAsync } = useDestructiveConfirm();
 
 const activeTab = ref('templates');
 const templates = ref([]);
@@ -203,23 +226,26 @@ const createdLink = ref('');
 const linkCopied = ref(false);
 const editingTemplate = ref(null);
 const templateSaving = ref(false);
+const templateError = ref('');
 const sendingTemplateId = ref(null);
 
-const templateForm = ref({
+// Keys mirror SurveyTemplateIn in routers/surveys.py, which forbids any
+// other key (GDXA-1676: the old template_type/send_channel/message keys were
+// a 422 on create and silently dropped on edit).
+const emptyTemplateForm = () => ({
   name: '',
-  template_type: 'nps',
-  send_channel: 'email',
-  message: '',
+  kind: 'nps',
+  question: '',
+  follow_up_question: '',
+  active: true,
 });
 
-const templateTypeOptions = [
-  { label: 'NPS', value: 'nps' },
-  { label: 'CSAT', value: 'csat' },
-];
+const templateForm = ref(emptyTemplateForm());
 
-const channelOptions = [
-  { label: 'Email', value: 'email' },
-  { label: 'SMS', value: 'sms' },
+const templateKindOptions = [
+  { label: 'NPS (0–10)', value: 'nps' },
+  { label: 'CSAT (1–5)', value: 'csat' },
+  { label: 'Custom (0–10)', value: 'custom' },
 ];
 
 const responseFilterOptions = computed(() => [
@@ -265,32 +291,40 @@ async function loadMetrics() {
 
 function openTemplateDialog() {
   editingTemplate.value = null;
-  templateForm.value = {
-    name: '',
-    template_type: 'nps',
-    send_channel: 'email',
-    message: '',
-  };
+  templateError.value = '';
+  templateForm.value = emptyTemplateForm();
   templateDialogVisible.value = true;
 }
 
 function openEditTemplate(template) {
   editingTemplate.value = template;
+  templateError.value = '';
   templateForm.value = {
     name: template.name,
-    template_type: template.template_type || 'nps',
-    send_channel: template.send_channel || 'email',
-    message: template.message || template.body || '',
+    kind: template.kind || 'nps',
+    question: template.question || '',
+    follow_up_question: template.follow_up_question || '',
+    active: template.active !== false,
   };
   templateDialogVisible.value = true;
 }
 
 async function saveTemplate() {
-  if (!templateForm.value.name.trim()) {
+  const form = templateForm.value;
+  templateError.value = '';
+  if (!form.name.trim() || !form.question.trim()) {
+    templateError.value = 'A template needs a name and a question.';
     return;
   }
   templateSaving.value = true;
-  const payload = { ...templateForm.value };
+  const payload = {
+    name: form.name.trim(),
+    kind: form.kind,
+    question: form.question.trim(),
+    // Empty clears the follow-up; the public page skips a null one.
+    follow_up_question: form.follow_up_question.trim() || null,
+    active: form.active,
+  };
   try {
     if (editingTemplate.value) {
       await api.patch(`/api/surveys/templates/${editingTemplate.value.id}`, payload, {
@@ -350,6 +384,27 @@ watch(responsesFilter, loadResponses);
 </script>
 
 <style scoped>
+.form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.field-hint {
+  color: var(--p-text-muted-color, #6b7280);
+}
+
+.inline-error {
+  margin-top: 0.75rem;
+  color: var(--p-red-500, #ef4444);
+}
+
 .survey-link-hint {
   margin-bottom: 0.75rem;
   color: var(--p-text-muted-color, #6b7280);

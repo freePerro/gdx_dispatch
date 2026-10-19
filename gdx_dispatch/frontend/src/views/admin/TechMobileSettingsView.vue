@@ -17,6 +17,7 @@ import ColorPicker from 'primevue/colorpicker'
 import Dialog from 'primevue/dialog'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../../composables/useApi'
+import { useDestructiveConfirm } from '../../composables/useDestructiveConfirm'
 
 // Sprint tech_mobile S1-Z4 — admin page for per-tenant tech-mobile feature
 // settings. The catalog (returned by the GET) drives field rendering; type
@@ -26,6 +27,7 @@ import { useApi } from '../../composables/useApi'
 
 const api = useApi()
 const toast = useToast()
+const { confirmAsync } = useDestructiveConfirm()
 
 const loading = ref(false)
 const saving = ref({})

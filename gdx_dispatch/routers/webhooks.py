@@ -41,6 +41,7 @@ from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.ssrf_guard import (
     OutboundURLBlocked,
     validate_outbound_url,
+    validating_opener,
     webhook_allow_hosts,
 )
 from gdx_dispatch.routers.auth import get_current_user
@@ -413,7 +414,9 @@ def test_subscription(
     try:
         validate_outbound_url(row.url, webhook_allow_hosts())
         req = urllib.request.Request(row.url, data=payload_bytes, method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        # Never bare urlopen: it follows a 302 to an internal host unchecked,
+        # and the body read below is stored in the delivery log (GDXA-1703).
+        with validating_opener.open(req, timeout=5) as resp:
             status_code = resp.status
             resp_body = resp.read(5000).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:

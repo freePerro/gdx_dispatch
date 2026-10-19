@@ -1688,7 +1688,7 @@ def test_create_invoice_line_items_persist_category_cost_margin(tenant_db_sessio
     created = create_invoice(payload=payload, _=_current_user(), db=tenant_db_session)
     full = get_invoice(UUID(created["id"]), _=_current_user(), db=tenant_db_session)
 
-    lines = sorted(full["lines"], key=lambda l: l["sort_order"])
+    lines = sorted(full["lines"], key=lambda line: line["sort_order"])
     assert lines[0]["category"] == "Springs"
     assert lines[0]["cost_snapshot"] == 35.0
     assert lines[0]["margin_pct_override"] == 0.45

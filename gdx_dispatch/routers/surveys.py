@@ -26,7 +26,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -83,6 +83,11 @@ from gdx_dispatch.models.tenant_models import (  # noqa: E402
 
 
 class SurveyTemplateIn(BaseModel):
+    # An unknown key is a 422, not a silent drop: SurveysView once posted
+    # template_type/send_channel/message, and the PATCH answered 200 while
+    # changing nothing (GDXA-1676).
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     kind: str = Field(default="nps", pattern=r"^(nps|csat|custom)$")
     question: str = Field(min_length=1, max_length=500)
@@ -91,6 +96,8 @@ class SurveyTemplateIn(BaseModel):
 
 
 class SurveyTemplatePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=200)
     kind: str | None = Field(default=None, pattern=r"^(nps|csat|custom)$")
     question: str | None = Field(default=None, min_length=1, max_length=500)
@@ -311,8 +318,28 @@ def update_template(
     if not tpl:
         raise HTTPException(status_code=404, detail="Survey template not found")
     data = payload.model_dump(exclude_unset=True)
-    for key, value in data.items():
-        setattr(tpl, key, value)
+    changes = {
+        key: {"old": getattr(tpl, key), "new": value}
+        for key, value in data.items()
+        if getattr(tpl, key) != value
+    }
+    # Responses carry no kind of their own: metrics score each one by its
+    # template's current kind, so re-typing a template that has answers would
+    # re-score them (0-10 NPS answers averaged as 1-5 CSAT).
+    if "kind" in changes:
+        answered = db.execute(
+            select(SurveyResponse.id)
+            .where(SurveyResponse.template_id == tpl.id)
+            .limit(1)
+        ).first()
+        if answered is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This template already has responses, so its type cannot change. "
+                "Create a new template for the new type.",
+            )
+    for key, change in changes.items():
+        setattr(tpl, key, change["new"])
     tpl.updated_at = utcnow()
     db.commit()
     db.refresh(tpl)
@@ -323,7 +350,7 @@ def update_template(
         action="survey_template_updated",
         entity_type="survey_template",
         entity_id=str(tpl.id),
-        details={"fields": list(data.keys())},
+        details={"fields": list(changes.keys()), "changes": changes},
         request=request,
     )
     return _serialize_template(tpl)

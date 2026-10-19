@@ -7,7 +7,7 @@ import json
 import logging
 from datetime import timedelta
 from urllib.error import HTTPError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -16,6 +16,7 @@ from gdx_dispatch.core.audit import log_audit_event, utcnow
 from gdx_dispatch.core.ssrf_guard import (
     OutboundURLBlocked,
     validate_outbound_url,
+    validating_opener,
     webhook_allow_hosts,
 )
 from gdx_dispatch.core.webhooks.models import AIAction, WebhookDelivery, WebhookEndpoint
@@ -29,25 +30,6 @@ def sign_payload(payload_bytes: bytes, secret: str) -> str:
     return "sha256=" + hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
 
 
-class _ValidatingRedirectHandler(HTTPRedirectHandler):
-    """Re-run the SSRF guard on every redirect hop.
-
-    ``urlopen`` follows 301/302/303/307/308 by default, and the stock handler
-    does NOT re-validate the target — so a validated public URL that 307s to
-    ``http://plugin-host:8000/internal/...`` or ``http://169.254.169.254/...``
-    sails straight past the initial ``validate_outbound_url``. Validating each
-    hop closes that hole (adversarial audit, security-F5).
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        # Re-validate each hop under the same allowlist as the initial URL.
-        validate_outbound_url(newurl, webhook_allow_hosts())  # → OutboundURLBlocked = fail closed
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_opener = build_opener(_ValidatingRedirectHandler())
-
-
 def _post(url: str, payload: bytes, headers: dict[str, str]) -> int:
     try:
         validate_outbound_url(url, webhook_allow_hosts())
@@ -55,7 +37,7 @@ def _post(url: str, payload: bytes, headers: dict[str, str]) -> int:
         log.warning("_post blocked url=%s (SSRF guard)", url)
         return 0
     try:
-        with _opener.open(Request(url, data=payload, headers=headers, method="POST"), timeout=10) as resp:
+        with validating_opener.open(Request(url, data=payload, headers=headers, method="POST"), timeout=10) as resp:
             return int(resp.getcode())
     except HTTPError as exc:
         log.exception("_post caught HTTPError")
