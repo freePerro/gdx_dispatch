@@ -68,6 +68,17 @@
             </template>
             <small v-else class="perm-note">no elevated permissions</small>
           </div>
+          <!-- The host-version gate, shown before install: plugin-host skips a
+               plugin whose `requires` this server does not meet, so the card
+               says so instead of letting Install record a plugin that never
+               loads (GDXA-1742). -->
+          <small v-if="p.requires" class="store-requires" data-testid="store-requires">
+            Requires {{ p.requires }}
+          </small>
+          <Message v-if="incompatibleNote(p)" severity="warn" :closable="false"
+                   class="store-incompatible" data-testid="store-incompatible">
+            {{ incompatibleNote(p) }} {{ p.incompatible_reason }}
+          </Message>
           <div class="store-card-foot">
             <span class="store-state">
               <template v-if="p.state === 'running'">
@@ -86,9 +97,11 @@
                       icon="pi pi-refresh" size="small" severity="secondary"
                       :loading="restarting" @click="restartHost" />
               <Button v-if="p.update_available" :label="`Update to ${p.version}`"
-                      icon="pi pi-arrow-up" size="small" @click="askInstall(p)" />
+                      icon="pi pi-arrow-up" size="small"
+                      :disabled="p.compatible === false" @click="askInstall(p)" />
               <Button v-else-if="p.state === 'available'" label="Install"
-                      icon="pi pi-download" size="small" @click="askInstall(p)" />
+                      icon="pi pi-download" size="small"
+                      :disabled="p.compatible === false" @click="askInstall(p)" />
             </span>
           </div>
         </div>
@@ -358,6 +371,21 @@ async function loadStore() {
   } finally {
     store.loading = false;
   }
+}
+
+// What the incompatibility means for THIS card, or null when it means
+// nothing: a running plugin whose catalog version is incompatible is still
+// running fine. A recorded install of that version is the case that matters
+// most, since its "restart to load" would never come true.
+function incompatibleNote(p) {
+  if (p.compatible !== false) return null;
+  if (p.state === 'pending_restart' && p.installed_version === p.version) {
+    return `v${p.version} is installed but plugin-host won't load it.`;
+  }
+  if (p.state === 'available' || p.update_available) {
+    return `v${p.version} can't be installed here.`;
+  }
+  return null;
 }
 
 function askInstall(plugin) {
@@ -651,6 +679,8 @@ onMounted(load);
 .store-perms { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
 .perm-chip { margin-right: 0.25rem; }
 .perm-note { color: var(--p-text-muted-color); }
+.store-requires { color: var(--p-text-muted-color); }
+.store-incompatible { margin: 0; font-size: 0.85rem; }
 .store-card-foot {
   display: flex;
   align-items: center;
