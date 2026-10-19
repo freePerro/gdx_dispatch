@@ -16,7 +16,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
-from gdx_dispatch.models.tenant_models import AppSettings, Technician, TechUnavailability, User
+from gdx_dispatch.models.tenant_models import AppSettings, Technician, User
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -60,12 +60,6 @@ class TechnicianPatch(BaseModel):
 
 class TechnicianSkillCreate(BaseModel):
     skill: str | None = None
-
-
-class UnavailabilityCreate(BaseModel):
-    start_at: datetime
-    end_at: datetime
-    reason: str | None = None
 
 
 def jsonable_response(content: Any, status_code: int = 200) -> JSONResponse:
@@ -196,18 +190,6 @@ def _tech_to_dict(
         "effective_workdays": int(eff_days) if eff_days is not None else None,
     }
     return data
-
-
-def _unavail_to_dict(u: TechUnavailability) -> dict[str, Any]:
-    """Convert a TechUnavailability ORM instance to a serializable dict."""
-    return {
-        "id": str(u.id),
-        "technician_id": u.tech_id,
-        "start_at": u.start_at,
-        "end_at": u.end_at,
-        "reason": u.reason,
-        "created_at": u.created_at,
-    }
 
 
 def _get_technician(db: Session, tenant_id: str, technician_id: str) -> Technician | None:
@@ -537,73 +519,3 @@ def add_technician_skill(
     except Exception:
         log.exception('add_technician_skill_audit_failed')
     return jsonable_response({"skills": existing})
-
-
-@router.get("/{technician_id}/availability", response_model=None)
-def get_technician_availability(
-    technician_id: str,
-    request: Request,
-    current_user: Any = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    _ = current_user
-    tenant_id = _tenant_id(request)
-    tech = _get_technician(db, tenant_id, technician_id)
-    if not tech:
-        return jsonable_response({"detail": "technician not found"}, 404)
-
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-    stmt = (
-        select(TechUnavailability)
-        .where(TechUnavailability.tech_id == technician_id)
-        .order_by(TechUnavailability.start_at.asc())
-    )
-    rows = db.execute(stmt).scalars().all()
-    return jsonable_response([_unavail_to_dict(r) for r in rows])
-
-
-@router.post("/{technician_id}/unavailability", response_model=None, dependencies=_TECH_WRITE)
-def add_technician_unavailability(
-    technician_id: str,
-    payload: UnavailabilityCreate,
-    request: Request,
-    current_user: Any = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    actor = _actor_id(current_user)
-    tenant_id = _tenant_id(request)
-    tech = _get_technician(db, tenant_id, technician_id)
-    if not tech:
-        return jsonable_response({"detail": "technician not found"}, 404)
-
-    if payload.end_at <= payload.start_at:
-        return jsonable_response({"detail": "end_at must be greater than start_at"}, 400)
-
-    now = datetime.now(UTC)
-    unavail = TechUnavailability(
-        company_id=tenant_id,
-        tech_id=technician_id,
-        start_at=payload.start_at,
-        end_at=payload.end_at,
-        reason=(payload.reason or "").strip() or None,
-        created_at=now,
-    )
-    db.add(unavail)
-    db.flush()
-    db.refresh(unavail)
-    db.commit()
-    try:
-        log_audit_event_sync(
-            db,
-            tenant_id=tenant_id,
-            user_id=actor,
-            action="add_technician_unavailability",
-            entity_type="technician_unavailability",
-            entity_id=str(technician_id),
-            details={},
-            request=request,
-        )
-        db.commit()
-    except Exception:
-        log.exception('add_technician_unavailability_audit_failed')
-    return jsonable_response(_unavail_to_dict(unavail), 201)
