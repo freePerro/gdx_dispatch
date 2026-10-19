@@ -1,5 +1,6 @@
 /**
- * TimeclockView — "Vacation <year>" on the tech's own Time off card (GDXA-701).
+ * TimeclockView — "Vacation <window>" on the tech's own Time off card (GDXA-701),
+ * through the shared MyVacationLine (GDXA-1902; its own spec pins the label).
  *
  * Pins: the tech's own balance is read (no technician named, so the server
  * answers for me); left / used / still-ahead render; "no allowance set" is
@@ -42,7 +43,7 @@ vi.mock('../../composables/useTenantTimezone', async (importOriginal) => {
 import TimeclockView from '../TimeclockView.vue';
 
 const stubs = {
-  TimeOffRequestPanel: { template: '<div class="panel" />' },
+  TimeOffRequestPanel: { name: 'TimeOffRequestPanel', emits: ['changed'], template: '<div class="panel" />' },
   Button: {
     props: ['label', 'icon', 'severity', 'loading', 'disabled', 'text', 'rounded', 'size', 'outlined'],
     emits: ['click'],
@@ -71,6 +72,7 @@ const MINE = {
   technician_id: 'me', technician_name: 'Me', year: 2026, as_of: '2026-05-20',
   allowance_hours: 40, allowance_source: 'person', used_hours: 16, taken_hours: 8,
   scheduled_hours: 8, remaining_hours: 24, overdrawn: false,
+  window_start: '2026-01-01', window_end: '2026-12-31',
 };
 
 function mockApi({ balance = MINE, fail = false, status = 503 } = {}) {
@@ -109,6 +111,22 @@ describe('TimeclockView — my vacation balance', () => {
     expect(line).toContain('(8h of it still ahead)');
     expect(line).toContain('of 40h');
     expect(w.find('[data-testid="my-vacation-remaining"]').text()).toBe('24h left');
+  });
+
+  it('labels an anniversary year by its window, not the year it starts in', async () => {
+    const w = await mountView({ balance: { ...MINE, year: 2025, window_start: '2025-06-03', window_end: '2026-06-02' } });
+    const line = w.find('[data-testid="my-vacation-balance"]').text();
+    expect(line).toContain('Vacation Jun 3 2025 – Jun 2 2026:');
+    expect(line).not.toContain('Vacation 2025');
+  });
+
+  it('re-reads the balance when a time-off request changes', async () => {
+    const w = await mountView();
+    const reads = () => apiGet.mock.calls.filter(([u]) => u.startsWith('/api/timeclock/time-off/balances')).length;
+    expect(reads()).toBe(1);
+    await w.findComponent({ name: 'TimeOffRequestPanel' }).vm.$emit('changed');
+    await flushPromises();
+    expect(reads()).toBe(2);
   });
 
   it('says "no allowance set" rather than 0h left', async () => {

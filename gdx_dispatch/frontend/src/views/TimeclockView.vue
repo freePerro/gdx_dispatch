@@ -336,29 +336,8 @@
            days appear in My Timesheet as paid days off. -->
       <Card class="timecard-card" data-testid="time-off-card">
         <template #content>
-          <!-- My vacation this year (core/time_off.vacation_balances): every
-               booked day counts, approved days still ahead included, so the
-               "still ahead" hours are part of "used", never added to it. -->
-          <p v-if="myVacation" class="vacation-line" data-testid="my-vacation-balance">
-            <i class="pi pi-sun" aria-hidden="true" />
-            <strong>Vacation {{ myVacation.year }}:</strong>
-            {{ hoursText(myVacation.used_hours) }}h used<template v-if="myVacation.scheduled_hours > 0">
-              ({{ hoursText(myVacation.scheduled_hours) }}h of it still ahead)</template>
-            <template v-if="myVacation.allowance_hours == null">
-              · no allowance set — ask the office
-            </template>
-            <template v-else>
-              of {{ hoursText(myVacation.allowance_hours) }}h ·
-              <Tag
-                :value="`${hoursText(myVacation.remaining_hours)}h left`"
-                :severity="myVacation.overdrawn ? 'danger' : 'success'"
-                data-testid="my-vacation-remaining"
-              />
-            </template>
-          </p>
-          <p v-else-if="myVacationError" class="vacation-line ts-muted" data-testid="my-vacation-error">
-            Your vacation balance could not be read right now.
-          </p>
+          <!-- My vacation over my own vacation year (shared with mobile). -->
+          <MyVacationLine ref="myVacationLine" />
           <TimeOffRequestPanel @changed="onTimeOffChanged" />
         </template>
       </Card>
@@ -511,6 +490,7 @@ import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 import TimeEntryDialog from '../components/TimeEntryDialog.vue';
 import TimeOffRequestPanel from '../components/TimeOffRequestPanel.vue';
+import MyVacationLine from '../components/MyVacationLine.vue';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useWeeklyTimesheet } from '../composables/useWeeklyTimesheet';
 const { confirmAsync } = useDestructiveConfirm();
@@ -803,29 +783,11 @@ function openEntryCreate() {
   showEntryDialog.value = true;
 }
 
-// GET /api/timeclock/time-off/balances — omitted technician = me. A 403 is
-// the role holding no vacation of its own (viewer), not a failed read: the
-// line hides rather than telling them to try again.
-const myVacation = ref(null);
-const myVacationError = ref(false);
-
-async function fetchMyVacation() {
-  try {
-    const data = await api.get('/api/timeclock/time-off/balances', { suppressErrorToast: true });
-    myVacation.value = data?.balances?.[0] || null;
-    myVacationError.value = !myVacation.value;
-  } catch (err) {
-    myVacation.value = null;
-    myVacationError.value = err?.status !== 403;
-  }
-}
-
-function hoursText(h) {
-  return Number(h || 0).toFixed(2).replace(/\.00$/, '');
-}
+// The vacation line fetches itself on mount; a time-off change re-reads it.
+const myVacationLine = ref(null);
 
 async function onTimeOffChanged() {
-  await Promise.all([onEntrySaved(), fetchMyVacation()]);
+  await Promise.all([onEntrySaved(), myVacationLine.value?.refresh()]);
 }
 
 async function onEntrySaved() {
@@ -984,7 +946,7 @@ async function endBreak() {
 
 onMounted(() => {
   initGps();
-  Promise.all([fetchStatus(), fetchEntries(), fetchJobs(), loadRecentInspections(), loadFeatureSettings(), initWeek(), fetchMyVacation()]);
+  Promise.all([fetchStatus(), fetchEntries(), fetchJobs(), loadRecentInspections(), loadFeatureSettings(), initWeek()]);
 });
 
 onUnmounted(() => {
@@ -993,14 +955,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.vacation-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-  margin: 0 0 0.75rem;
-}
-
 .timeclock-view {
   display: flex;
   flex-direction: column;

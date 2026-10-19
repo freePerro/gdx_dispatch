@@ -715,10 +715,12 @@ gdx_dispatch/frontend/src/views/UserProfileView.vue          people-time
 gdx_dispatch/frontend/src/components/TimeEntryDialog.vue     people-time
 gdx_dispatch/frontend/src/components/TimeOffRequestDialog.vue people-time
 gdx_dispatch/frontend/src/components/TimeOffRequestPanel.vue people-time
+gdx_dispatch/frontend/src/components/MyVacationLine.vue      people-time
 gdx_dispatch/frontend/src/components/HolidayPostDialog.vue   people-time
 gdx_dispatch/frontend/src/components/TechEfficiencyPanel.vue people-time
 gdx_dispatch/frontend/src/composables/useWeeklyTimesheet.js  people-time
 gdx_dispatch/frontend/src/utils/hours.js                     people-time
+gdx_dispatch/frontend/src/utils/vacationWindow.js            people-time
 
 ## ---------------------------------------------------------------------------
 ## mobile-tech — the technician's phone: /api/mobile/* routers, every
