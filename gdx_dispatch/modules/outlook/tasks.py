@@ -37,7 +37,6 @@ from uuid import UUID
 from sqlalchemy import and_ as sa_and
 from sqlalchemy import func as sa_func
 from sqlalchemy import or_ as sa_or
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1348,6 +1347,7 @@ def poll_outlook_mailboxes_fallback(self) -> dict:
 
 EMAIL_SYNC_ACTION_TYPE = "email_sync_health"
 EMAIL_SYNC_REFERENCE_ID = "email-sync-health-singleton"
+EMAIL_SYNC_ACTOR = "system:outlook_sync_health"
 
 
 def _compute_sync_health(tdb: Session, now: datetime) -> dict:
@@ -1424,23 +1424,24 @@ def _compute_sync_health(tdb: Session, now: datetime) -> dict:
 
 def _upsert_sync_health_action(tdb: Session, tenant_id: str, problems: list[str]) -> str:
     """One persistent NextAction, updated in place; clears itself when sync
-    is healthy again. Same shape (and snooze contract) as billing_followup."""
-    from gdx_dispatch.core.next_action import NextAction  # see the import block
+    is healthy again. Goes through the audited background-writer helpers
+    (GDXA-1862): every create, refresh and clear writes a next_action audit
+    row under ``system:outlook_sync_health`` in the same commit, and a live
+    snooze is respected. Returns created / updated / unchanged / cleared /
+    clean."""
+    from gdx_dispatch.core.next_action import (  # see the import block
+        resolve_system_action,
+        upsert_system_action,
+    )
 
-    existing = tdb.execute(
-        select(NextAction).where(
-            NextAction.tenant_id == tenant_id,
-            NextAction.action_type == EMAIL_SYNC_ACTION_TYPE,
-            NextAction.reference_id == EMAIL_SYNC_REFERENCE_ID,
-            NextAction.status.notin_(("completed",)),
-            NextAction.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-
+    key = {
+        "tenant_id": tenant_id,
+        "actor": EMAIL_SYNC_ACTOR,
+        "action_type": EMAIL_SYNC_ACTION_TYPE,
+        "reference_id": EMAIL_SYNC_REFERENCE_ID,
+    }
     if not problems:
-        if existing is not None:
-            existing.status = "completed"
-            existing.completed_at = datetime.now(timezone.utc)
+        if resolve_system_action(tdb, **key):
             tdb.commit()
             return "cleared"
         return "clean"
@@ -1450,34 +1451,20 @@ def _upsert_sync_health_action(tdb: Session, tenant_id: str, problems: list[str]
         + ". New mail is missing from /inbox until this is fixed — "
         "check the celery-low logs / Sentry for the failing folder."
     )
-    if existing is not None:
-        existing.title = "Email inbox is not syncing"
-        existing.description = description
-        existing.priority = "high"
-        existing.action_url = "/inbox"
-        _su = _aware_utc(existing.snoozed_until)
-        is_snoozed = (
-            existing.status == "snoozed"
-            and _su is not None
-            and _su > datetime.now(timezone.utc)
-        )
-        if not is_snoozed:
-            existing.status = "pending"
+    _, outcome = upsert_system_action(
+        tdb,
+        **key,
+        fields={
+            "title": "Email inbox is not syncing",
+            "description": description,
+            "priority": "high",
+            "action_url": "/inbox",
+        },
+        wake=True,
+    )
+    if outcome != "unchanged":
         tdb.commit()
-        return "updated"
-
-    tdb.add(NextAction(
-        tenant_id=tenant_id,
-        user_id=None,
-        action_type=EMAIL_SYNC_ACTION_TYPE,
-        title="Email inbox is not syncing",
-        description=description,
-        priority="high",
-        action_url="/inbox",
-        reference_id=EMAIL_SYNC_REFERENCE_ID,
-    ))
-    tdb.commit()
-    return "created"
+    return outcome
 
 
 @celery_app.task(name="outlook.sync_health_check", bind=True)
