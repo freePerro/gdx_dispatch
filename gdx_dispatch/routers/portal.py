@@ -840,30 +840,12 @@ def portal_invoice_pdf(
 # nothing called it — and a second card mint site that could not carry the
 # card surcharge would have breached the networks' "surcharge consistently"
 # rule the day the office turned the fee on.
-
-
-@router.get("/documents", response_model=None)
-def portal_documents(
-    principal: PortalPrincipal = Depends(get_current_portal_customer),
-    db: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
-    rows = db.execute(
-        select(Document)
-        .where(Document.customer_id == principal.customer_id, Document.deleted_at.is_(None))
-        .order_by(Document.uploaded_at.desc())
-    ).scalars()
-    return [
-        {
-            "id": str(row.id),
-            "customer_id": str(row.customer_id) if row.customer_id else None,
-            "filename": row.filename,
-            "original_name": row.original_name,
-            "title": row.title,
-            "description": row.description,
-            "uploaded_at": row.uploaded_at.isoformat() if row.uploaded_at else None,
-        }
-        for row in rows
-    ]
+#
+# NOTE: ``GET /portal/documents`` was removed 2026-10-19 (GDXA-1732). No portal
+# view ever called it and nothing served the bytes, so a customer could not
+# open what it listed — yet it returned the original_name, title and
+# description of every Document carrying their customer_id, office-only notes
+# included. A customer documents tab is a product decision, not a revival.
 
 
 @router.post("/message", response_model=None)

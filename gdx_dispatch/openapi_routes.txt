@@ -650,7 +650,6 @@ GET /manifest.json
 GET /pay/{invoice_token}
 GET /portal/context
 GET /portal/dashboard
-GET /portal/documents
 GET /portal/door-listings
 GET /portal/estimates
 GET /portal/estimates/{estimate_id}
