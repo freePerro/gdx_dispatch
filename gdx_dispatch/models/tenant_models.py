@@ -2988,32 +2988,6 @@ class TimeOffRequest(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class VanInventoryItem(Base):
-    __tablename__ = "van_inventory"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    truck_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    sku: Mapped[str] = mapped_column(String(100), nullable=True)
-    name: Mapped[str] = mapped_column(String(300), nullable=False)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    min_stock: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    category: Mapped[str] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class VanInventoryLog(Base):
-    __tablename__ = "van_inventory_log"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    van_inventory_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(36), nullable=True)
-    quantity_change: Mapped[int] = mapped_column(Integer, nullable=False)
-    reason: Mapped[str] = mapped_column(String(500), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class CustomerReview(Base):
     """A customer review record (rating + text), read by the Reviews page."""
     __tablename__ = "customer_reviews"
