@@ -444,7 +444,6 @@ POST /api/qb/sync/transfers
 POST /api/quickbooks/sync/recurring-transactions
 POST /api/referrals
 POST /api/reviews
-POST /api/safety/complete
 POST /api/segments
 POST /api/service-calls
 POST /api/service-triggers

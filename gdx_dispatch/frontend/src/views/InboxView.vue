@@ -1816,7 +1816,7 @@ onMounted(async () => {
 .folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .unread-badge {
   background: var(--p-primary-color);
-  color: #fff;
+  color: var(--text-on-p-primary);
   border-radius: 10px;
   font-size: 0.7rem;
   padding: 0 0.4rem;

@@ -598,15 +598,22 @@ onMounted(async () => {
 }
 
 .qa-btn-primary {
-  border: 0;
   font: inherit;
   cursor: pointer;
-  background: var(--p-primary-color);
-  color: #fff;
 }
 
-.qa-btn-primary i {
-  color: #fff;
+/* `.qa-btn` below sets the tile's own background, colour and border; the
+   doubled class outranks it so the fill applies — with a single class it
+   lost, leaving the icon white on the white tile. `font` stays on the single
+   class above so `.qa-btn` still sets the label size. (GDXA-1763) */
+.qa-btn.qa-btn-primary {
+  border: 0;
+  background: var(--p-primary-color);
+  color: var(--text-on-p-primary);
+}
+
+.qa-btn.qa-btn-primary i {
+  color: var(--text-on-p-primary);
 }
 .qa-btn {
   display: flex;
@@ -624,7 +631,9 @@ onMounted(async () => {
   text-decoration: none;
   cursor: pointer;
 }
-.qa-btn:active { background: var(--p-content-hover-background, #f3f4f6); }
+/* Not the primary tile: a grey press fill under its --text-on-p-primary
+   label reads about 1.1:1. */
+.qa-btn:not(.qa-btn-primary):active { background: var(--p-content-hover-background, #f3f4f6); }
 .qa-btn.disabled {
   opacity: 0.4;
   pointer-events: none;
@@ -673,7 +682,7 @@ onMounted(async () => {
 }
 .tab-btn.active {
   background: var(--p-primary-color);
-  color: #fff;
+  color: var(--text-on-p-primary);
   border-color: var(--p-primary-color);
 }
 

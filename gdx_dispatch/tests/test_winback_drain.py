@@ -349,6 +349,165 @@ def test_rows_under_a_campaign_not_sending_are_left_alone(db, emails):
     assert result["claimed"] == 0
 
 
+# ── the budget hands the priority:low slot back in time ──────────────────
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """The drain's clock, moved by hand; Phone.com's latency is what a test
+    adds to it."""
+    t = {"now": utcnow()}
+    monkeypatch.setattr(winback_drain, "utcnow", lambda: t["now"])
+    return t
+
+
+def _slow(clock, seconds, response):
+    def _respond(request):
+        clock["now"] += timedelta(seconds=seconds)
+        return response
+    return _respond
+
+
+@respx.mock
+def test_a_spent_budget_claims_nothing(db, monkeypatch):
+    route = _ok(respx.post(SEND_URL))
+    monkeypatch.setattr(winback_drain, "DRAIN_BUDGET", winback_drain.WORST_SEND - timedelta(seconds=1))
+    cid = _queue(db, "sms", [_customer(db)])
+
+    result = drain(db)
+
+    assert route.call_count == 0
+    assert result["claimed"] == 0
+    assert _sends(db, cid)[0].status == "queued"
+    assert _campaign(db, cid).status == "sending"
+
+
+@respx.mock
+def test_no_row_is_claimed_once_the_budget_left_cannot_cover_one_text(db, clock, monkeypatch):
+    # Phone.com answers in 10s (inside the 15s cap): after one text, 14s of a
+    # 24s budget remain, under the 15s one more text may take.
+    monkeypatch.setattr(winback_drain, "DRAIN_BUDGET", timedelta(seconds=24))
+    route = respx.post(SEND_URL).mock(
+        side_effect=_slow(clock, 10, httpx.Response(200, json={"id": "pc-1", "status": "sent"}))
+    )
+    cid = _queue(db, "sms", [_customer(db, phone="(612) 555-0101"), _customer(db, phone="(612) 555-0102")])
+
+    result = drain(db)
+
+    assert route.call_count == 1
+    assert result["claimed"] == 1
+    assert sorted(s.status for s in _sends(db, cid)) == ["queued", "sent"]
+    assert _campaign(db, cid).status == "sending"
+
+    drain(db)  # the next minute's pass takes the rest
+
+    assert route.call_count == 2
+    assert _campaign(db, cid).status == "sent"
+
+
+@respx.mock
+def test_a_text_is_not_waited_on_past_worst_send(db, monkeypatch):
+    """httpx's timeouts are per operation, so a response that dribbles in can
+    outlast their sum; the drain's wall-clock cap is what bounds it."""
+    import threading
+    import time
+
+    monkeypatch.setattr(winback_drain, "WORST_SEND", timedelta(seconds=0.3))
+    release = threading.Event()
+
+    def _hang(request):
+        release.wait(10)
+        return httpx.Response(200, json={"id": "pc-1", "status": "sent"})
+
+    route = respx.post(SEND_URL).mock(side_effect=_hang)
+    cid = _queue(db, "sms", [_customer(db)])
+
+    t0 = time.monotonic()
+    result = drain(db)
+    took = time.monotonic() - t0
+    release.set()
+
+    assert took < 5, f"the drain waited {took:.1f}s on one text"
+    [send] = _sends(db, cid)
+    assert (send.status, send.error) == ("unknown", "sms_outcome_unknown")
+    assert db.execute(select(PhoneComMessage)).scalar_one().delivery_status == "unknown"
+    assert result["unknown"] == 1
+    for _ in range(50):  # let the abandoned call land before respx unwinds
+        if route.call_count:
+            break
+        time.sleep(0.1)
+    drain(db)
+    assert route.call_count == 1, "an unanswered text was sent again"
+
+
+@respx.mock
+def test_each_phone_com_attempt_carries_the_drain_timeout_and_no_client_retry(db):
+    route = respx.post(SEND_URL).mock(side_effect=httpx.ConnectError("refused"))
+    _queue(db, "sms", [_customer(db)])
+
+    drain(db)
+
+    assert route.call_count == 1, "the client retried inside the drain's budget"
+    assert route.calls.last.request.extensions["timeout"] == winback_drain.SEND_TIMEOUT.as_dict()
+
+
+@respx.mock
+def test_a_text_phone_com_never_got_goes_back_to_queued_and_ends_the_pass(db):
+    # A 429 is provably unsent: requeued, not failed, so the customer is still
+    # texted on a later pass; the rest of this batch waits too.
+    route = respx.post(SEND_URL).mock(
+        side_effect=[httpx.Response(429), httpx.Response(200, json={"id": "pc-1", "status": "sent"}),
+                     httpx.Response(200, json={"id": "pc-2", "status": "sent"})]
+    )
+    cid = _queue(db, "sms", [_customer(db, phone="(612) 555-0101"), _customer(db, phone="(612) 555-0102")])
+
+    result = drain(db)
+
+    assert route.call_count == 1
+    assert result["not_reached"] == 1 and result["claimed"] == 1
+    sends = _sends(db, cid)
+    assert [s.status for s in sends] == ["queued", "queued"]
+    assert any((s.error or "").startswith("sms_not_reached") for s in sends)
+    assert _campaign(db, cid).status == "sending"
+    [drained] = _audits(db, "winback_sends_drained")
+    assert drained.details["counts"] == {"not_reached": 1}
+
+    drain(db)
+
+    assert route.call_count == 3
+    assert {(s.status, s.error) for s in _sends(db, cid)} == {("sent", None)}
+    assert _campaign(db, cid).status == "sent"
+
+
+@respx.mock
+def test_phone_com_down_holds_back_texts_but_not_emails_and_gives_up_after_five_tries(db, emails):
+    sent, _ = emails
+    route = respx.post(SEND_URL).mock(side_effect=httpx.ConnectError("refused"))
+    sms_cid = _queue(db, "sms", [_customer(db)])  # queued first: head of the line
+    email_cid = _queue(db, "email", [_customer(db, email="a@example.com"), _customer(db, email="b@example.com")])
+
+    drain(db)
+
+    assert len(sent) == 2, "a text Phone.com refused held the emails back"
+    assert _campaign(db, email_cid).status == "sent"
+    [text] = _sends(db, sms_cid)
+    assert text.status == "queued"
+    assert text.error.startswith("sms_not_reached (try 1 of 5)")
+
+    for _ in range(winback_drain.NOT_REACHED_TRIES - 1):
+        drain(db)
+
+    assert route.call_count == winback_drain.NOT_REACHED_TRIES
+    [text] = _sends(db, sms_cid)
+    assert text.status == "failed"
+    assert text.error.startswith("sms_not_reached after 5 tries: ")
+    assert _campaign(db, sms_cid).status == "failed"
+    msgs = db.execute(select(PhoneComMessage)).scalars().all()
+    assert len(msgs) == 5 and {m.delivery_status for m in msgs} == {"failed"}
+    drain(db)
+    assert route.call_count == winback_drain.NOT_REACHED_TRIES
+
+
 def test_the_beat_task_is_scheduled_and_registered():
     from gdx_dispatch.core.celery_app import celery_app
     from gdx_dispatch.core.scheduler import build_beat_schedule

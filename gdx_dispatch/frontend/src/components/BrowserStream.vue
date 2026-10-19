@@ -75,6 +75,8 @@
           data-testid="browser-creds-pass"
         />
       </div>
+      <p v-if="credsError" class="browser-stream__error" role="alert"
+         data-testid="browser-creds-error">{{ credsError }}</p>
       <template #footer>
         <Button
           v-if="credsSaved"
@@ -143,6 +145,7 @@ import Password from 'primevue/password';
 import Select from 'primevue/select';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useBrowserStream } from '../composables/useBrowserStream';
+import { refusalText } from '../composables/usePluginScreen';
 
 const props = defineProps({
   pluginKey: { type: String, required: true },
@@ -212,6 +215,7 @@ const credsPassword = ref('');
 const credsUrl = `/api/plugins/_browser/credentials?key=${encodeURIComponent(props.pluginKey)}`;
 
 const credsUnknown = ref(false);
+const credsError = ref('');
 
 // "Login remembered" / "Remember login" both assert a FACT about the store. When
 // the store could not be reached, neither is true — say so rather than picking
@@ -241,6 +245,7 @@ async function loadCredsStatus() {
 
 async function onSaveCreds() {
   credsSaving.value = true;
+  credsError.value = '';
   try {
     // Blank password on an existing save keeps the stored one (the placeholder
     // says "unchanged"); Forget is the only way to clear.
@@ -257,13 +262,23 @@ async function onSaveCreds() {
     credsUnknown.value = false;
     credsPassword.value = '';
     credsOpen.value = false;
+  } catch (e) {
+    // Dialog stays open with what was typed. A rejection escaping a click
+    // handler takes the whole plugin page down via the ErrorBoundary (GDXA-1873).
+    credsError.value = refusalText(e, 'Sign-in was not saved.');
   } finally {
     credsSaving.value = false;
   }
 }
 
 async function onForgetCreds() {
-  await api.del(credsUrl);
+  credsError.value = '';
+  try {
+    await api.del(credsUrl);
+  } catch (e) {
+    credsError.value = refusalText(e, 'Sign-in was not forgotten.');
+    return;
+  }
   credsSaved.value = false;
   credsUnknown.value = false;   // the delete reached the store — we know again
   credsUsername.value = '';
@@ -280,6 +295,8 @@ async function onCapture() {
       { successMessage: 'Captured' });
     emit('captured', res);
     loadFolders();   // a brand-new folder name should appear in the picker next time
+  } catch (e) {
+    error.value = refusalText(e, 'Capture failed.');
   } finally {
     capturing.value = false;
   }

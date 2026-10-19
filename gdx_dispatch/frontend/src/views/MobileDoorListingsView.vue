@@ -439,7 +439,7 @@ onBeforeUnmount(() => shots.value.forEach((s) => URL.revokeObjectURL(s.preview))
   color: inherit; font-size: 0.95rem; font-weight: 600;
 }
 .chip--on {
-  background: var(--p-primary-color); color: #fff;
+  background: var(--p-primary-color); color: var(--text-on-p-primary);
   border-color: var(--p-primary-color);
 }
 .two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
@@ -456,7 +456,7 @@ input[type='text'], input[type='number'], textarea {
 textarea { min-height: 72px; }
 .submit {
   min-height: 52px; border: none; border-radius: 0.65rem; cursor: pointer;
-  background: var(--p-primary-color); color: #fff;
+  background: var(--p-primary-color); color: var(--text-on-p-primary);
   font-size: 1.05rem; font-weight: 700;
   display: flex; align-items: center; justify-content: center; gap: 0.5rem;
 }
