@@ -102,14 +102,14 @@ def _settings(db):
 def test_override_beats_shop_default_and_unset_is_none_not_zero(tech):
     with tech.SessionLocal() as db:
         _seed(db, shop_hours="80", tech_hours="40.5")
-        out = vacation_balances(db, _settings(db), {TECH, OTHER}, year=2026, as_of=date(2026, 6, 1))
+        out = vacation_balances(db, _settings(db), {TECH, OTHER}, on=date(2026, 6, 1), as_of=date(2026, 6, 1))
         assert (out[TECH].allowance_hours, out[TECH].allowance_source) == (Decimal("40.50"), "person")
         assert (out[OTHER].allowance_hours, out[OTHER].allowance_source) == (Decimal("80.00"), "shop")
         assert out[TECH].remaining_hours == 40.5
 
         _settings(db).vacation_allowance_hours = None
         db.commit()
-        out = vacation_balances(db, _settings(db), {OTHER}, year=2026, as_of=date(2026, 6, 1))
+        out = vacation_balances(db, _settings(db), {OTHER}, on=date(2026, 6, 1), as_of=date(2026, 6, 1))
         assert out[OTHER].allowance_hours is None and out[OTHER].allowance_source is None
         assert out[OTHER].remaining_hours is None and out[OTHER].as_dict()["remaining_hours"] is None
 
@@ -117,7 +117,7 @@ def test_override_beats_shop_default_and_unset_is_none_not_zero(tech):
 def test_a_zero_override_is_zero_hours_not_the_shop_default(tech):
     with tech.SessionLocal() as db:
         _seed(db, shop_hours="80", tech_hours="0")
-        bal = vacation_balances(db, _settings(db), {TECH}, year=2026, as_of=date(2026, 6, 1))[TECH]
+        bal = vacation_balances(db, _settings(db), {TECH}, on=date(2026, 6, 1), as_of=date(2026, 6, 1))[TECH]
         assert (bal.allowance_hours, bal.allowance_source, bal.remaining_hours) == (Decimal("0.00"), "person", 0.0)
 
 
@@ -137,10 +137,10 @@ def test_only_live_closed_vacation_in_the_shop_year_is_used(tech):
         _entry(db, clock_in="2026-01-01T07:00:00+00:00", minutes=30)
         _entry(db, tech=OTHER, clock_in="2026-03-02T14:00:00+00:00")            # someone else
         db.commit()
-        bal = vacation_balances(db, _settings(db), {TECH}, year=2026, as_of=date(2026, 12, 31))[TECH]
+        bal = vacation_balances(db, _settings(db), {TECH}, on=date(2026, 12, 31), as_of=date(2026, 12, 31))[TECH]
         assert bal.used_minutes == 480 + 240 + 60 + 30
         assert bal.used_hours == 13.5 and bal.remaining_hours == 66.5
-        last = vacation_balances(db, _settings(db), {TECH}, year=2025, as_of=date(2026, 12, 31))[TECH]
+        last = vacation_balances(db, _settings(db), {TECH}, on=date(2025, 12, 31), as_of=date(2026, 12, 31))[TECH]
         assert last.used_minutes == 480, "Dec 30 2025 only — the Jan 1 03:00Z day is 2026's"
 
 
@@ -151,7 +151,7 @@ def test_booked_days_ahead_are_used_and_shown_as_scheduled_and_overdraw_goes_neg
         _entry(db, clock_in="2026-09-14T13:00:00+00:00")
         _entry(db, clock_in="2026-09-15T13:00:00+00:00")
         db.commit()
-        bal = vacation_balances(db, _settings(db), {TECH}, year=2026, as_of=date(2026, 8, 23))[TECH]
+        bal = vacation_balances(db, _settings(db), {TECH}, on=date(2026, 8, 23), as_of=date(2026, 8, 23))[TECH]
         d = bal.as_dict()
         assert (d["used_hours"], d["taken_hours"], d["scheduled_hours"]) == (24.0, 8.0, 16.0)
         assert d["remaining_hours"] == -8.0 and d["overdrawn"] is True
@@ -164,7 +164,7 @@ def test_odd_minutes_round_to_the_cent_hour_once(tech):
         for day in (2, 3, 4):
             _entry(db, clock_in=f"2026-03-0{day}T14:00:00+00:00", minutes=35)
         db.commit()
-        bal = vacation_balances(db, _settings(db), {TECH}, year=2026, as_of=date(2026, 12, 31))[TECH]
+        bal = vacation_balances(db, _settings(db), {TECH}, on=date(2026, 12, 31), as_of=date(2026, 12, 31))[TECH]
         # 105 min = 1.75h exactly; three separately rounded 0.58h would be 1.74.
         assert bal.used_hours == 1.75 and bal.remaining_hours == 8.25
 

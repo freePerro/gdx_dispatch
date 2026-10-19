@@ -26,7 +26,6 @@ const SRC_DIR = join(__dirname, '..');
 
 // `<file relative to src/> <selector>` — keyed by selector, not line number.
 const PENDING = new Set([
-  'components/AIAssistantIntegrationCard.vue .btn-primary', // ai-mcp
   'components/PhoneComIntegrationCard.vue .btn-primary', // comms-email-phone
   'views/MobilePhoneView.vue .tab-chip.active', // comms-email-phone
   'views/MobileSmsView.vue .unread-badge', // comms-email-phone

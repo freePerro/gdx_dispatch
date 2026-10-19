@@ -72,6 +72,8 @@ from gdx_dispatch.core.time_off import (
     user_names,
     vacation_balances,
     vacation_minutes_by_person,
+    vacation_takers,
+    vacation_windows,
     workdays_between,
 )
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry, TimeOffRequest, User
@@ -323,9 +325,12 @@ def list_balances(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Vacation allowance, used and remaining hours per person for a calendar
-    year (core/time_off.vacation_balances). Omitted = me; naming someone else
-    or asking for everyone is the office's. A read, so nothing is audited."""
+    """Vacation allowance, used and remaining hours per person over each
+    person's vacation year (core/time_off.vacation_balances): the one in
+    force today, or with ``year`` the one in force on Dec 31 of that year
+    (today, when it is this year). Under ``calendar_year`` that is exactly
+    the calendar year asked for. Omitted = me; naming someone else or asking
+    for everyone is the office's. A read, so nothing is audited."""
     me = _user_id(current_user)
     others = all_technicians or (technician_id is not None and technician_id != me)
     if others and not is_dispatch_manager(current_user):
@@ -336,6 +341,7 @@ def list_balances(
         tz_name = _tz(settings)
         today = shop_today(tz_name)
         year = year or today.year
+        on = today if year == today.year else date(year, 12, 31)
         if all_technicians:
             ids = {
                 str(uid) for uid in db.execute(
@@ -345,10 +351,15 @@ def list_balances(
                     )
                 ).scalars().all()
             }
-            ids |= set(vacation_minutes_by_person(db, year, tz_name, as_of=today))
+            # Plus anyone (a departed person included) with vacation inside
+            # their own vacation year containing `on`.
+            takers = vacation_takers(db, on=on) - ids
+            if takers:
+                windows = vacation_windows(db, settings, takers, on=on)
+                ids |= set(vacation_minutes_by_person(db, windows, tz_name, as_of=today))
         else:
             ids = {technician_id or me}
-        balances = vacation_balances(db, settings, ids, year=year, as_of=today)
+        balances = vacation_balances(db, settings, ids, on=on, as_of=today)
     except SQLAlchemyError:
         # Not an empty or zero balance: "0 used" read from nothing would tell
         # someone they have hours they have already spent.

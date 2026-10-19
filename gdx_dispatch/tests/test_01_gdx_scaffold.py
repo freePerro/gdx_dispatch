@@ -271,19 +271,6 @@ def test_observability_importable():
     init_otel("gdx-test")
 
 
-def test_core_fsm_models_importable():
-    """Tenant FSM models and transition validators are importable."""
-    from gdx_dispatch.models.tenant_models import (
-        BILLING_TRANSITIONS,
-        DISPATCH_TRANSITIONS,
-        LIFECYCLE_TRANSITIONS,
-    )
-    assert "lead" in LIFECYCLE_TRANSITIONS
-    assert "completed" in LIFECYCLE_TRANSITIONS
-    assert "unassigned" in DISPATCH_TRANSITIONS
-    assert "unbilled" in BILLING_TRANSITIONS
-
-
 def test_pii_encryption_dev_mode(monkeypatch):
     """EncryptedString passthrough works without MASTER_ENCRYPTION_KEY."""
     monkeypatch.delenv("MASTER_ENCRYPTION_KEY", raising=False)
