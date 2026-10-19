@@ -181,8 +181,9 @@ def _upsert_action(db, tenant_id: str, counts: dict) -> str:
         },
         wake=True,
     )
-    if outcome != "unchanged":
-        db.commit()
+    # Unconditional: an unchanged refresh stages nothing, so this commit is
+    # empty then, and the audit-after-commit scan sees the row land on every path.
+    db.commit()
     return outcome
 
 

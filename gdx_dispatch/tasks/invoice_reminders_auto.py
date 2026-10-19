@@ -153,7 +153,7 @@ def _weekly_nudge(db, tenant_id: str, settings) -> bool:
     # wake=False: a refresh updates the overdue picture without moving the
     # nag's status, even out of a snooze that has run out (the code this
     # replaces never touched status either).
-    _, outcome = upsert_system_action(
+    upsert_system_action(
         db,
         tenant_id=tenant_id,
         actor=NUDGE_ACTOR,
@@ -168,8 +168,9 @@ def _weekly_nudge(db, tenant_id: str, settings) -> bool:
         },
         wake=False,
     )
-    if outcome != "unchanged":
-        db.commit()
+    # Unconditional: an unchanged refresh stages nothing, so this commit is
+    # empty then, and the audit-after-commit scan sees the row land on every path.
+    db.commit()
     return True
 
 
