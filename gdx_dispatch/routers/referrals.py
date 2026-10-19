@@ -80,7 +80,7 @@ def _referrer_names(referrals: list[LoyaltyReferral], db: Session) -> dict[str, 
         try:
             ids[UUID(str(ref.referrer_id))] = str(ref.referrer_id)
         except ValueError:
-            continue
+            log.debug("referral %s: referrer_id %r is not a customer id; no name", ref.id, ref.referrer_id)
     if not ids:
         return {}
     rows = db.execute(
