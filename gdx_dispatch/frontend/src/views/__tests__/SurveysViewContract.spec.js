@@ -139,7 +139,28 @@ describe('SurveysView template contract', () => {
     const wrapper = mountView();
     const m = PY.match(/kind: str = Field\(default="nps", pattern=r"\^\(([^)]*)\)\$"\)/);
     expect(m, 'kind pattern not found').toBeTruthy();
-    expect(wrapper.vm.templateTypeOptions.map((o) => o.value).sort()).toEqual(m[1].split('|').sort());
+    expect(wrapper.vm.templateKindOptions.map((o) => o.value).sort()).toEqual(m[1].split('|').sort());
+  });
+
+  it('templates table reads only keys _serialize_template returns', () => {
+    const SFC = readFileSync(join(__dirname, '..', 'SurveysView.vue'), 'utf8');
+    const table = SFC.slice(SFC.indexOf(':value="templates"'));
+    const region = table.slice(0, table.indexOf('</DataTable>'));
+    const keys = new Set([
+      ...[...region.matchAll(/field="(\w+)"/g)].map((m) => m[1]),
+      ...[...region.matchAll(/slotProps\.data\.(\w+)/g)].map((m) => m[1]),
+    ]);
+    expect(keys.size).toBeGreaterThan(0);
+    const serializer = pyFunc('_serialize_template');
+    for (const key of keys) expect(serializer, key).toContain(`"${key}":`);
+  });
+
+  it('labels the template kind and falls back to the raw value', () => {
+    routeGet();
+    const wrapper = mountView();
+    expect(wrapper.vm.kindLabel('csat')).toBe('CSAT (1–5)');
+    expect(wrapper.vm.kindLabel('legacy')).toBe('legacy');
+    expect(wrapper.vm.kindLabel(null)).toBe('—');
   });
 
   it('reads metric keys the metrics endpoint returns', async () => {

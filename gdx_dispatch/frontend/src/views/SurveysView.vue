@@ -27,7 +27,7 @@
             <EmptyState icon="pi pi-comments" title="No survey templates" message="Create a template to send NPS or post-job surveys." />
           </template>
           <Column field="name" header="Template" />
-          <Column header="Type" style="width:100px">
+          <Column header="Type" style="width:130px">
             <template #body="slotProps">{{ kindLabel(slotProps.data.kind) }}</template>
           </Column>
           <Column field="question" header="Question" />
@@ -111,7 +111,7 @@
             </Card>
             <Card class="metric-card">
               <div class="metric-label">Response Rate</div>
-              <div class="metric-value">{{ metrics.total_sent ? `${Math.round(metrics.response_rate * 100)}%` : '—' }}</div>
+              <div class="metric-value">{{ metrics.total_sent ? `${Math.round((metrics.response_rate ?? 0) * 100)}%` : '—' }}</div>
             </Card>
           </div>
         </div>
@@ -125,29 +125,40 @@
       >
         <div class="form-grid">
           <div class="form-field">
-            <label for="survey-tpl-name">Name</label>
-            <InputText id="survey-tpl-name" v-model="templateForm.name" maxlength="200" class="w-full" data-testid="survey-tpl-name" />
+            <label>Name</label>
+            <InputText v-model="templateForm.name" class="w-full" />
           </div>
           <div class="form-field">
-            <label for="survey-tpl-kind">Survey Type</label>
-            <Select id="survey-tpl-kind" v-model="templateForm.kind" :options="templateTypeOptions" optionLabel="label" optionValue="value" class="w-full" data-testid="survey-tpl-kind" />
+            <label>Survey Type</label>
+            <Select
+              v-model="templateForm.kind"
+              :options="templateKindOptions"
+              optionLabel="label"
+              optionValue="value"
+              class="w-full"
+              data-testid="survey-template-kind"
+            />
+            <small v-if="editingTemplate" class="field-hint">
+              The type cannot change once the template has responses.
+            </small>
           </div>
           <div class="form-field full-width">
-            <label for="survey-tpl-question">Question</label>
-            <Textarea id="survey-tpl-question" v-model="templateForm.question" rows="3" maxlength="500" class="w-full" data-testid="survey-tpl-question" />
+            <label>Question</label>
+            <Textarea v-model="templateForm.question" rows="3" class="w-full" data-testid="survey-template-question" />
           </div>
           <div class="form-field full-width">
-            <label for="survey-tpl-follow-up">Follow-up question (optional)</label>
-            <Textarea id="survey-tpl-follow-up" v-model="templateForm.follow_up_question" rows="2" maxlength="500" class="w-full" data-testid="survey-tpl-follow-up" />
+            <label>Follow-up question (optional)</label>
+            <Textarea v-model="templateForm.follow_up_question" rows="2" class="w-full" data-testid="survey-template-follow-up" />
           </div>
           <div class="form-field">
-            <label for="survey-tpl-active">Active</label>
-            <ToggleSwitch inputId="survey-tpl-active" v-model="templateForm.active" data-testid="survey-tpl-active" />
+            <label>Active</label>
+            <ToggleSwitch v-model="templateForm.active" data-testid="survey-template-active" />
           </div>
         </div>
+        <div v-if="templateError" class="inline-error" data-testid="survey-template-error">{{ templateError }}</div>
         <template #footer>
           <Button label="Cancel" severity="secondary" @click="templateDialogVisible = false" />
-          <Button label="Save" icon="pi pi-check" :loading="templateSaving" :disabled="!templateForm.name.trim() || !templateForm.question.trim()" data-testid="survey-tpl-save" @click="saveTemplate" />
+          <Button label="Save" icon="pi pi-check" :loading="templateSaving" data-testid="survey-template-save" @click="saveTemplate" />
         </template>
       </Dialog>
 
@@ -177,6 +188,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import EmptyState from '../components/EmptyState.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import Column from 'primevue/column';
@@ -193,6 +205,7 @@ import ToggleSwitch from 'primevue/toggleswitch';
 import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
+const { confirmAsync } = useDestructiveConfirm();
 
 const activeTab = ref('templates');
 const templates = ref([]);
@@ -208,11 +221,12 @@ const createdLink = ref('');
 const linkCopied = ref(false);
 const editingTemplate = ref(null);
 const templateSaving = ref(false);
+const templateError = ref('');
 const sendingTemplateId = ref(null);
 
-// The template fields are SurveyTemplateIn's (routers/surveys.py). Until
-// GDXA-1693 the form sent {template_type, send_channel, message}: create was a
-// 422 every time (question is required) and an edit kept only the name.
+// Keys mirror SurveyTemplateIn in routers/surveys.py, which forbids any
+// other key (GDXA-1676: the old template_type/send_channel/message keys were
+// a 422 on create and silently dropped on edit).
 const emptyTemplateForm = () => ({
   name: '',
   kind: 'nps',
@@ -223,14 +237,14 @@ const emptyTemplateForm = () => ({
 
 const templateForm = ref(emptyTemplateForm());
 
-const templateTypeOptions = [
-  { label: 'NPS', value: 'nps' },
-  { label: 'CSAT', value: 'csat' },
-  { label: 'Custom', value: 'custom' },
+const templateKindOptions = [
+  { label: 'NPS (0–10)', value: 'nps' },
+  { label: 'CSAT (1–5)', value: 'csat' },
+  { label: 'Custom (0–10)', value: 'custom' },
 ];
 
 function kindLabel(kind) {
-  return templateTypeOptions.find((o) => o.value === kind)?.label || kind || '—';
+  return templateKindOptions.find((o) => o.value === kind)?.label || kind || '—';
 }
 
 const responseFilterOptions = computed(() => [
@@ -274,14 +288,16 @@ async function loadMetrics() {
 
 function openTemplateDialog() {
   editingTemplate.value = null;
+  templateError.value = '';
   templateForm.value = emptyTemplateForm();
   templateDialogVisible.value = true;
 }
 
 function openEditTemplate(template) {
   editingTemplate.value = template;
+  templateError.value = '';
   templateForm.value = {
-    name: template.name || '',
+    name: template.name,
     kind: template.kind || 'nps',
     question: template.question || '',
     follow_up_question: template.follow_up_question || '',
@@ -291,17 +307,20 @@ function openEditTemplate(template) {
 }
 
 async function saveTemplate() {
-  const f = templateForm.value;
-  if (!f.name.trim() || !f.question.trim()) {
+  const form = templateForm.value;
+  templateError.value = '';
+  if (!form.name.trim() || !form.question.trim()) {
+    templateError.value = 'A template needs a name and a question.';
     return;
   }
   templateSaving.value = true;
   const payload = {
-    name: f.name.trim(),
-    kind: f.kind,
-    question: f.question.trim(),
-    follow_up_question: f.follow_up_question.trim() || null,
-    active: Boolean(f.active),
+    name: form.name.trim(),
+    kind: form.kind,
+    question: form.question.trim(),
+    // Empty clears the follow-up; the public page skips a null one.
+    follow_up_question: form.follow_up_question.trim() || null,
+    active: form.active,
   };
   try {
     if (editingTemplate.value) {
@@ -363,26 +382,26 @@ watch(responsesFilter, loadResponses);
 
 <style scoped>
 .form-grid {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
 }
+
 .form-field {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.35rem;
 }
-.form-field.full-width {
-  grid-column: 1 / -1;
+
+.field-hint {
+  color: var(--p-text-muted-color, #6b7280);
 }
-.form-field label {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--p-text-muted-color);
+
+.inline-error {
+  margin-top: 0.75rem;
+  color: var(--p-red-500, #ef4444);
 }
-.w-full {
-  width: 100%;
-}
+
 .survey-link-hint {
   margin-bottom: 0.75rem;
   color: var(--p-text-muted-color, #6b7280);

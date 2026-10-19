@@ -20,6 +20,7 @@ import ipaddress
 import os
 import socket
 from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, build_opener
 
 
 def webhook_allow_hosts() -> frozenset[str]:
@@ -82,3 +83,26 @@ def validate_outbound_url(url: str, allow_hosts: frozenset[str] | set[str] | Non
             raise OutboundURLBlocked(
                 f"host {host!r} resolves to disallowed address {ip}"
             )
+
+
+class ValidatingRedirectHandler(HTTPRedirectHandler):
+    """Re-run the SSRF guard on every redirect hop.
+
+    ``urlopen`` follows 301/302/303/307/308 by default, and the stock handler
+    does NOT re-validate the target — so a validated public URL that 307s to
+    ``http://plugin-host:8000/internal/...`` or ``http://169.254.169.254/...``
+    sails straight past the initial ``validate_outbound_url``. Validating each
+    hop closes that hole (adversarial audit, security-F5; GDXA-1703 found the
+    webhook test-ping still on bare ``urlopen``).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        # Re-validate each hop under the same allowlist as the initial URL.
+        validate_outbound_url(newurl, webhook_allow_hosts())  # → OutboundURLBlocked = fail closed
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+#: The one opener for urllib requests to a user-supplied URL. Validate the
+#: first URL with ``validate_outbound_url``, then open it with this — never
+#: bare ``urllib.request.urlopen``. A blocked hop raises OutboundURLBlocked.
+validating_opener = build_opener(ValidatingRedirectHandler())
