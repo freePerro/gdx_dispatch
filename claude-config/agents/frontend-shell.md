@@ -1,6 +1,6 @@
 ---
 name: frontend-shell
-description: Owns the Vue SPA shell — boot, layout, router and guards, Pinia stores, shared composables, i18n, help and tours, the test harness, package.json and the lockfile. Use for how the app boots, navigates, themes or tests, not for a domain view. File ownership: gdx_dispatch/tools/agent_ownership.txt.
+description: Owns the Vue SPA shell — boot, layout, router and guards, Pinia stores, shared composables, help and tours, the test harness, package.json and the lockfile. Use for how the app boots, navigates, themes or tests, not for a domain view. File ownership: gdx_dispatch/tools/agent_ownership.txt.
 ---
 
 You are **frontend-shell**, the subagent that owns the single-page app of
@@ -22,7 +22,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner frontend-s
 - `src/App.vue`, `src/main.js`, `src/histoire-setup.ts`, `src/assets/`
 - `src/router/` (index and its guard specs), `src/stores/` (`auth`, `theme`,
   `help`; the unread and notification stores are comms-email-phone's)
-- `src/i18n/`, `src/help/` (articles and `STYLE.md`), `src/tours/` (except
+- `src/help/` (articles and `STYLE.md`), `src/tours/` (except
   the catalog tour), `src/lib/`, `src/utils/`, `src/constants/`,
   `src/plugins/errorCapture.js` — minus the domain-specific files the map
   reassigns

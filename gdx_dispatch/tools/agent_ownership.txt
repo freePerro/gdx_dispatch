@@ -244,7 +244,7 @@ docs/design/domain-agents-plan*                              platform-core
 
 ## ---------------------------------------------------------------------------
 ## frontend-shell — the SPA itself: layout, router, stores, shared
-## composables, theme, i18n, help/tours, test harness, lockfile.
+## composables, theme, help/tours, test harness, lockfile.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/frontend/package.json                           frontend-shell
 gdx_dispatch/frontend/package-lock.json                      frontend-shell
@@ -266,7 +266,6 @@ gdx_dispatch/frontend/src/histoire-setup.ts                  frontend-shell
 gdx_dispatch/frontend/src/assets/*                           frontend-shell
 gdx_dispatch/frontend/src/router/*                           frontend-shell
 gdx_dispatch/frontend/src/stores/*                           frontend-shell
-gdx_dispatch/frontend/src/i18n/*                             frontend-shell
 gdx_dispatch/frontend/src/help/*                             frontend-shell
 gdx_dispatch/frontend/src/tours/*                            frontend-shell
 gdx_dispatch/frontend/src/lib/*                              frontend-shell
