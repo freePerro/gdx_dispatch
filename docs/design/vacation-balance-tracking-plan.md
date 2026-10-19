@@ -103,7 +103,7 @@ Adds `time_off_ledger` and the policy columns on `app_settings` and `users`. **E
 
 - Build `sick`. It makes adding it a policy row. §7 asks whether the shop's ESST is tracked by the payroll company today, which decides whether this app should own it at all.
 - Compute overtime (parent plan §2.5 stands).
-- Touch `tech_unavailability` or `routers/payroll.py` (both remain orphans on the ledger).
+- Touch `tech_unavailability` or `routers/payroll.py` (both remain orphans on the ledger). (2026-10-19: `tech_unavailability` is being retired by GDXA-1775; the board will read approved `TimeOffRequest` rows instead once GDXA-1775's scheduling child lands, see the parent plan §6.)
 - Pay out anything. A balance is hours; the payroll company prices them.
 - Read the July 6, 2026 ESST rules FAQ (§3).
 
