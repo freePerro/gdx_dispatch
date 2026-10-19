@@ -199,3 +199,23 @@ describe("MobileTodayView local day + area jobs", () => {
     expect(card.text()).toContain("Acme");
   });
 });
+
+describe("MobileTodayView day summary way in (GDXA-1726)", () => {
+  it("opens /mobile/summary from the header button", async () => {
+    const { default: MobileTodayView } = await import("../src/views/MobileTodayView.vue");
+    getMock.mockImplementation((url) => {
+      if (url.startsWith("/api/mobile/today")) {
+        return Promise.resolve({ date: "2026-07-16", tech_id: "tech-1", count: 0, jobs: [], area_jobs: [], area_count: 0 });
+      }
+      return Promise.resolve({});
+    });
+    const w = mount(MobileTodayView, { global: { stubs, directives: { tooltip: {} } } });
+    await flushPromises();
+
+    const btn = w.find('[data-testid="today-day-summary"]');
+    expect(btn.exists()).toBe(true);
+    expect(btn.attributes("aria-label")).toBe("Day summary");
+    await btn.trigger("click");
+    expect(routerPush).toHaveBeenCalledWith("/mobile/summary");
+  });
+});
