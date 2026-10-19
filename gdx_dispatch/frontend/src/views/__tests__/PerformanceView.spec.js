@@ -38,7 +38,6 @@ function user(id, name, stats = {}, unavailable = {}) {
       hours_worked: null,
       tasks_completed: 0,
       commission_earned: 0,
-      safety_checklists: 0,
       ...stats,
     },
     unavailable: {
@@ -150,10 +149,10 @@ describe('PerformanceView', () => {
   });
 
   it('does not claim "nothing recorded" when every read failed', async () => {
-    const failed = { jobs_completed: null, revenue: null, tasks_completed: null, safety_checklists: null };
+    const failed = { jobs_completed: null, revenue: null, tasks_completed: null };
     const why = {
       jobs_completed: 'read_failed', revenue: 'read_failed', hours_worked: 'read_failed',
-      tasks_completed: 'read_failed', safety_checklists: 'read_failed',
+      tasks_completed: 'read_failed',
     };
     apiGet.mockResolvedValue({ users: [user('u1', 'Alex', failed, why)] });
     const w = mountView();
