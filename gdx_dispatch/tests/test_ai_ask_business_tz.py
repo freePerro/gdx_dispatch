@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import gdx_dispatch.routers.ai as ai_mod
+from gdx_dispatch.core import pay_periods
 from gdx_dispatch.core.pay_periods import shop_tz_name_from_settings
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.ai import _business_tz, get_current_principal_for_ai, get_db_for_ai
@@ -128,11 +129,14 @@ def test_zone_read_is_cached_with_the_shared_reader(db):
     assert db.info["gdx_shop_timezone"] == "America/Chicago"
 
 
-def test_invalid_tenant_zone_falls_back_and_says_so(db, caplog):
+def test_invalid_tenant_zone_falls_back_and_says_so(db, caplog, monkeypatch):
+    # GDXA-1618: an unusable stored zone gets the shared shop default, and the
+    # shared reader is the one that says so (it warns once per process).
+    monkeypatch.setattr(pay_periods, "_WARNED", set())
     _set_tz(db, "Not/AZone")
-    with caplog.at_level("WARNING", logger=ai_mod.log.name):
-        assert str(_business_tz(db)) == "UTC"
-    assert "ai_tenant_timezone_invalid" in caplog.text
+    with caplog.at_level("WARNING", logger=pay_periods.__name__):
+        assert str(_business_tz(db)) == pay_periods.DEFAULT_SHOP_TZ
+    assert "shop_timezone_unset" in caplog.text and "Not/AZone" in caplog.text
 
 
 def test_failed_settings_read_falls_back_and_logs(caplog):

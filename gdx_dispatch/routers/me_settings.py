@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.pay_periods import shop_tz_name_from_settings
 from gdx_dispatch.core.tenant_mobile_settings import load_tenant_mobile_settings
-from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(tags=["me-settings"])
@@ -32,8 +32,7 @@ def get_my_tech_mobile_settings(
     write endpoint. `tenant_timezone` is included so the frontend can
     format times in the tenant's local zone instead of the browser's.
     """
-    row = db.query(AppSettings).first()
-    tz = (row.timezone if row and row.timezone else "America/New_York")
+    tz = shop_tz_name_from_settings(db)
     return {
         "settings": load_tenant_mobile_settings(db, request=request),
         "tenant_timezone": tz,
@@ -51,8 +50,7 @@ def get_my_timezone(
     that needs to render dates/times in the office's local zone rather than the
     browser's — e.g. the dispatch board, which must bucket a job into the
     correct office-local calendar day instead of slicing its UTC timestamp.
-    Falls back to ``America/New_York`` when unset, matching the mobile endpoint.
+    Falls back to ``DEFAULT_SHOP_TZ`` when unset, matching the mobile endpoint.
     """
-    row = db.query(AppSettings).first()
-    tz = (row.timezone if row and row.timezone else "America/New_York")
+    tz = shop_tz_name_from_settings(db)
     return {"tenant_timezone": tz}
