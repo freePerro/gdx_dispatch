@@ -1150,8 +1150,6 @@
         :customer="customerForEdit"
         @saved="onCustomerSaved"
       />
-
-      <Toast data-testid="invoice-detail-toast" />
     </section>
 </template>
 
@@ -1182,7 +1180,6 @@ import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
-import Toast from "primevue/toast";
 import LineItemEditor from "../components/LineItemEditor.vue";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";

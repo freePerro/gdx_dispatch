@@ -227,12 +227,9 @@ describe("DispatchView — crew-safe drops", () => {
     expect(wallOf(body.scheduled_at)).toEqual([OTHER_DAY, 10, 30]);
   });
 
-  it("leaves the crew alone when Reassign is confirmed on a crew member", async () => {
+  it("leaves the crew alone when a crew member is picked for their own job", async () => {
     const w = await mountBoard();
-    const s = w.vm.$.setupState;
-    s.openReassignDialog(CREW);
-    expect(s.assignDialogTechId).toBe("tech-1");
-    s.confirmAssign();
+    await w.vm.$.setupState.assignFromPicker(CREW.id, "tech-1");
     await flushAll();
     expect(patchMock).not.toHaveBeenCalled();
   });
@@ -308,13 +305,10 @@ describe("DispatchView — crew-safe drops", () => {
       expect(calls[0][1].scheduled_duration_hours).toBe(2);
     });
 
-    it("a one-tech job picked from the Assign dialog asks too, and goes to that tech", async () => {
+    it("a job with no tech asks too, and goes to the picked tech", async () => {
       boardRows = [{ ...UNDATED, assigned_to: null, assigned_tech_ids: [], technician_id: null, lead_tech_id: null }, SOLO];
       const w = await mountBoard();
-      const s = w.vm.$.setupState;
-      s.openReassignDialog(boardRows[0]);
-      s.assignDialogTechId = "tech-3";
-      s.confirmAssign();
+      pick(w, "tech-3");
       await flushAll();
       expect(dialog(w).exists()).toBe(true);
       expect(crewPicker(w).props("modelValue")).toEqual(["tech-3"]);
@@ -334,12 +328,10 @@ describe("DispatchView — crew-safe drops", () => {
       expect(w.vm.$.setupState.queuePickerKey).toBe(before + 1);
     });
 
-    it("a dated crew job reassigned from the Assign dialog still gets the crew question", async () => {
+    it("a dated crew job reassigned through the picker still gets the crew question", async () => {
       const w = await mountBoard();
-      const s = w.vm.$.setupState;
-      s.openReassignDialog(CREW);
-      s.assignDialogTechId = "tech-3";
-      s.confirmAssign();
+      // Not awaited: it waits on the crew question this test asserts on.
+      w.vm.$.setupState.assignFromPicker(CREW.id, "tech-3");
       await flushAll();
       expect(dialog(w).exists()).toBe(false);
       expect(prompt(w).exists()).toBe(true);
@@ -737,13 +729,10 @@ describe("dropping a finished or started job on a tech", () => {
     expect(wallOf(patchMock.mock.calls[0][1].scheduled_at)).toEqual([OTHER_DAY, 10, 30]);
   });
 
-  it("the Reassign dialog does not hand a job under way to another tech", async () => {
+  it("the tech picker does not hand a job under way to another tech", async () => {
     boardRows = [STARTED];
     const w = await mountBoard();
-    const s = w.vm.$.setupState;
-    s.openReassignDialog(STARTED);
-    s.assignDialogTechId = "tech-3";
-    s.confirmAssign();
+    await w.vm.$.setupState.assignFromPicker(STARTED.id, "tech-3");
     await flushAll();
     expect(prompt(w).exists()).toBe(false);
     expect(patchMock).not.toHaveBeenCalled();
