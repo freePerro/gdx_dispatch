@@ -11,7 +11,15 @@ import pytest
 
 import gdx_dispatch.core.mcp_tools.invoices_create_draft  # noqa: F401
 from gdx_dispatch.core.mcp_invoke import invoke_tool
-from gdx_dispatch.core.mcp_registry import get_tool
+from gdx_dispatch.core.mcp_registry import get_tool, repopulate_from_cache
+
+
+@pytest.fixture(autouse=True)
+def _registered():
+    # The tool registers only at import, and some sibling files (test_mcp_invoke
+    # among them) clear the registry on teardown; any ordering that runs one of
+    # them first leaves every invoke_tool call here at tool_not_found.
+    repopulate_from_cache()
 
 
 @dataclass
