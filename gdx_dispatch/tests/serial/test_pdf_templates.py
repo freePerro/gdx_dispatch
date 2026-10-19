@@ -59,10 +59,10 @@ def _make_payload(**overrides):
     return TemplateConfigIn(**defaults)
 
 
-def test_list_templates_returns_6_defaults(ctx):
+def test_list_templates_returns_5_defaults(ctx):
     db, req, user, _ = ctx
     result = list_templates(request=req, user=user, db=db)
-    assert len(result) == 6
+    assert len(result) == 5
 
 
 def test_get_template_estimate_default_color(ctx):
@@ -79,14 +79,16 @@ def test_get_template_invalid_type_400(ctx):
     assert exc.value.status_code == 400
 
 
-def test_available_types_returns_6(ctx):
+def test_available_types_returns_5(ctx):
     _, _, user, _ = ctx
     types = available_types(user=user)
-    assert len(types) == 6
+    assert len(types) == 5
     keys = {t["key"] for t in types}
     assert "estimate" in keys
     assert "invoice" in keys
     assert "work_order" in keys
+    # GDXA-1714: the safety checklist was retired with its table.
+    assert "safety_checklist" not in keys
 
 
 def test_save_template_returns_saved(ctx):

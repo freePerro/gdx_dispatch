@@ -22,7 +22,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner ai-mcp`
   `mcp_bearer_middleware`, `mcp_error_schema`, `mcp_fastmcp_bridge`,
   `mcp_invoke`, `mcp_mount`, `mcp_protocol_adapter`, `mcp_registry`,
   `mcp_tool_descriptor`, `mcp_tools/` (44 tools), `openapi_to_capabilities`,
-  `recommendation_routes` (serves `/api/next-actions`; the name predates GDXA-21), `next_action`
+  `next_action_routes` (serves `/api/next-actions`), `next_action`
 - Views: AIAssistant; `AIAssistantPanel`, `AIAssistantIntegrationCard`
 
 You own the tool contract; the domain owns the semantics. `invoices_void`

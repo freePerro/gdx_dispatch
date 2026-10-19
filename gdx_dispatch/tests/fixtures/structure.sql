@@ -4234,24 +4234,6 @@ CREATE TABLE public.role_permissions (
 
 
 --
--- Name: safety_checklists; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.safety_checklists (
-    id character varying(36) NOT NULL,
-    company_id character varying(36) NOT NULL,
-    job_id character varying(36) NOT NULL,
-    technician_id character varying(36) NOT NULL,
-    items text NOT NULL,
-    completed boolean,
-    photo_url text,
-    signed_at timestamp with time zone,
-    created_at timestamp with time zone,
-    deleted_at timestamp with time zone
-);
-
-
---
 -- Name: saved_reports; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -7177,14 +7159,6 @@ ALTER TABLE ONLY public.resources
 
 ALTER TABLE ONLY public.role_permissions
     ADD CONSTRAINT role_permissions_pkey PRIMARY KEY (role);
-
-
---
--- Name: safety_checklists safety_checklists_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.safety_checklists
-    ADD CONSTRAINT safety_checklists_pkey PRIMARY KEY (id);
 
 
 --
