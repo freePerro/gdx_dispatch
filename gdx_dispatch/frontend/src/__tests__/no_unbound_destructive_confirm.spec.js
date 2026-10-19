@@ -33,10 +33,25 @@ function* walk(dir) {
 
 // Drop HTML comments and comment-only lines. Not a JS parser on purpose: a
 // regex over `/* ... */` also matches inside strings such as accept="image/*"
-// and swallowed real bindings.
+// and swallowed real bindings. HTML comments are cut by index, not by a regex
+// replace, so no `<!--` survives a single pass (CodeQL
+// js/incomplete-multi-character-sanitization). An unterminated `<!--` is kept,
+// so a scan never hides code after it.
+function stripHtmlComments(src) {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const start = src.indexOf('<!--', i);
+    if (start === -1) return out + src.slice(i);
+    const end = src.indexOf('-->', start + 4);
+    if (end === -1) return out + src.slice(i);
+    out += src.slice(i, start);
+    i = end + 3;
+  }
+}
+
 function stripComments(src) {
-  return src
-    .replace(/<!--[\s\S]*?-->/g, '')
+  return stripHtmlComments(src)
     .split('\n')
     .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
     .join('\n');
@@ -83,5 +98,12 @@ async function del() { await confirmAsync({ message: 'x' }); }
     expect(unboundCalls(broken)).toEqual(['confirmAsync']);
     expect(unboundCalls(fixed)).toEqual([]);
     expect(unboundCalls(importOnly)).toEqual(['confirmAsync']);
+  });
+
+  it('ignores calls inside HTML comments but not after an unterminated one', () => {
+    const commented = `<template><!-- <Button @click="confirmAsync({})" /> --></template>`;
+    const unterminated = `<template><!-- <Button @click="confirmAsync({})" /></template>`;
+    expect(unboundCalls(commented)).toEqual([]);
+    expect(unboundCalls(unterminated)).toEqual(['confirmAsync']);
   });
 });
