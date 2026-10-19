@@ -1138,7 +1138,7 @@ onUnmounted(() => {
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
   background: var(--p-primary-color);
-  color: #fff;
+  color: var(--text-on-p-primary);
   font-size: 0.7rem;
   font-weight: 700;
 }
@@ -1180,7 +1180,7 @@ onUnmounted(() => {
   height: 1.85rem;
   border-radius: 50%;
   background: var(--p-primary-color);
-  color: #fff;
+  color: var(--text-on-p-primary);
   display: inline-flex;
   align-items: center;
   justify-content: center;

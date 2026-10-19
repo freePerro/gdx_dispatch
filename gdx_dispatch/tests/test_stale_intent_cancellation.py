@@ -372,7 +372,8 @@ def test_voiding_an_invoice_queues_the_sweep_with_nothing_owed(db, unpaid_invoic
     """
     from gdx_dispatch.routers.invoices import void_invoice
 
-    with patch("gdx_dispatch.routers.invoices.enqueue_stale_intent_sweep") as sweep:
+    # The void lives in core/invoice_void.py (GDXA-1848); patch where it calls.
+    with patch("gdx_dispatch.core.invoice_void.enqueue_stale_intent_sweep") as sweep:
         void_invoice(unpaid_invoice.id, _=OFFICE, db=db)
 
     sweep.assert_called_once()
@@ -1054,7 +1055,7 @@ def test_the_void_sweep_is_queued_only_after_the_void_is_durable(db, unpaid_invo
         return True
 
     with patch.object(type(db), "commit", commit_spy), \
-            patch("gdx_dispatch.routers.invoices.enqueue_stale_intent_sweep", enqueue_spy):
+            patch("gdx_dispatch.core.invoice_void.enqueue_stale_intent_sweep", enqueue_spy):
         void_invoice(unpaid_invoice.id, _=OFFICE, db=db)
 
     assert "enqueue" in order, "the void never queued a sweep"
