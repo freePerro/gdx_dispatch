@@ -13,11 +13,13 @@ Endpoints (all gated on settings.write):
 - PUT    /api/admin/customer-tags/{tag_id}
 - DELETE /api/admin/customer-tags/{tag_id}
 
-Delete behavior: removes the Tag row AND any TagAssignment rows pointing
-to it (so a deleted alert no longer shows up on customer cards). The
-delete is audit-logged with a count of cascaded assignments. There is no
-soft-delete on Tag; the table is small and tenants asked for "delete
-means delete" semantics during the 2026-05-02 design conversation.
+Delete behavior: soft-deletes the Tag (``deleted_at``, invariant #2, as
+``routers/tags.py`` does) and removes every TagAssignment pointing to it, so
+a deleted alert no longer shows up on customer cards. The delete is
+audit-logged with a snapshot and a count of cascaded assignments.
+``uq_tag_name`` still holds a deleted tag's name, so creating that name
+again revives the same row, and renaming another tag onto it is refused.
+Until GDXA-1700 (2026-10-19) the delete was a hard ``db.delete``.
 
 Renames are non-destructive — TagAssignment references the Tag by id, so
 renaming a Tag.name automatically updates every customer card on the
@@ -35,11 +37,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.models.tenant_models import Tag, TagAssignment
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.tags import revive_tag, tag_by_name
 
 log = logging.getLogger(__name__)
 
@@ -155,15 +158,23 @@ def create_customer_tag(
     tid = _tenant_id_from_request(request)
     name = _validate_name(payload.name)
     color = _validate_color(payload.color)
+    description = (payload.description or "").strip() or None
 
-    tag = Tag(
-        id=uuid4(),
-        company_id=tid,
-        name=name,
-        color=color,
-        description=(payload.description or "").strip() or None,
-    )
-    db.add(tag)
+    details: dict[str, Any] = {"name": name, "color": color}
+    existing = tag_by_name(db, name)
+    if existing is not None and existing.deleted_at is not None:
+        revive_tag(existing, color=color, description=description)
+        tag = existing
+        details["resurrected"] = True
+    else:
+        tag = Tag(
+            id=uuid4(),
+            company_id=tid,
+            name=name,
+            color=color,
+            description=description,
+        )
+        db.add(tag)
     try:
         db.flush()
     except IntegrityError as exc:
@@ -180,7 +191,7 @@ def create_customer_tag(
             action="customer_tag.created",
             entity_type="customer_tag",
             entity_id=str(tag.id),
-            details={"name": name, "color": color},
+            details=details,
             request=request,
         )
     except Exception:
@@ -212,7 +223,15 @@ def update_customer_tag(
 
     before = _serialize(tag)
     if payload.name is not None:
-        tag.name = _validate_name(payload.name)
+        new_name = _validate_name(payload.name)
+        if new_name != tag.name:
+            holder = tag_by_name(db, new_name)
+            if holder is not None and holder.deleted_at is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"tag {new_name!r} was deleted; create it again to restore it",
+                )
+        tag.name = new_name
     if payload.color is not None:
         tag.color = _validate_color(payload.color)
     if payload.description is not None:
@@ -273,7 +292,7 @@ def delete_customer_tag(
         )
         .delete(synchronize_session=False)
     )
-    db.delete(tag)
+    tag.deleted_at = utcnow()
 
     try:
         log_audit_event_sync(

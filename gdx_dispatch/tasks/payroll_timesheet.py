@@ -47,6 +47,7 @@ from gdx_dispatch.core.pay_periods import (
     previous_period,
     resolve_zone,
     settings_config,
+    shop_tz_name,
 )
 from gdx_dispatch.core.timesheet_delivery import (
     BLOCKED_FLAGGED,
@@ -180,7 +181,7 @@ def send_closed_period() -> dict:
         if not tenant_id:
             return {"skipped": "no_tenant"}
 
-        tz_name = getattr(settings, "timezone", None) or "America/New_York"
+        tz_name = shop_tz_name(settings)
         now_shop = datetime.now(UTC).astimezone(resolve_zone(tz_name))
         today = now_shop.date()
         cfg = settings_config(settings)

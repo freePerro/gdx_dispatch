@@ -103,10 +103,10 @@ def _business_tz(db: Session) -> ZoneInfo:
     Read through the shared shop-zone reader
     (``core.pay_periods.shop_tz_name_from_settings``), so the assistant agrees
     with the invoices, timeclock and pay periods that use it, including on a
-    missing row: that default lives there, not here (GDXA-1621). An unusable
-    zone or a failed read becomes UTC through ``resolve_zone``. The prompt
-    names the zone it used, and a wrong zone here is a wrong date in every
-    answer, so neither fallback is silent.
+    missing row or an unusable stored zone: that default, and its warning,
+    live there, not here (GDXA-1618, GDXA-1621). A failed read becomes UTC
+    through ``resolve_zone``. The prompt names the zone it used, and a wrong
+    zone here is a wrong date in every answer, so no fallback is silent.
     """
     try:
         # SAVEPOINT-contained: the same session carries the tool calls and
@@ -116,10 +116,7 @@ def _business_tz(db: Session) -> ZoneInfo:
     except Exception:  # noqa: BLE001
         log.exception("ai_tenant_timezone_read_failed — falling back to UTC")
         return resolve_zone(None)
-    zone = resolve_zone(tz_name)
-    if str(zone) != str(tz_name):
-        log.warning("ai_tenant_timezone_invalid tz=%r — falling back to UTC", tz_name)
-    return zone
+    return resolve_zone(tz_name)
 
 
 def get_db_for_ai(db: Session = Depends(get_db)) -> Session:

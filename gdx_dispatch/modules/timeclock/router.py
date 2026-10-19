@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.pay_periods import shop_tz_name_from_settings
 from gdx_dispatch.modules.timeclock.models import TimeClock
 from gdx_dispatch.modules.timeclock.service import clock_out, daily_labor_report
 from gdx_dispatch.routers.auth import get_current_user
@@ -29,4 +30,4 @@ def post_clock_out(timeclock_id: UUID, user: dict = Depends(get_current_user), d
 
 @router.get("/report", response_model=None)
 def get_report(date: date, _: None = Depends(require_role("owner", "admin", "dispatcher", "manager", "accounting")), __: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
-    return daily_labor_report(date, "America/New_York", db)
+    return daily_labor_report(date, shop_tz_name_from_settings(db), db)

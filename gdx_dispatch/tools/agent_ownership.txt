@@ -195,7 +195,6 @@ gdx_dispatch/core/unified_principal.py                       platform-core
 gdx_dispatch/core/user_display.py                            platform-core
 gdx_dispatch/core/validation.py                              platform-core
 gdx_dispatch/core/webhook_auth.py                            platform-core
-gdx_dispatch/core/webhook_delivery.py                        platform-core
 gdx_dispatch/core/webhook_logger.py                          platform-core
 gdx_dispatch/core/well_known_manifest.py                     platform-core
 gdx_dispatch/core/app_version.py                             platform-core
