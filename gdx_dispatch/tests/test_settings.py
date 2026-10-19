@@ -319,6 +319,61 @@ def test_patch_branding_rejects_non_http_review_url(bad: str):
         SettingsPatchIn(google_review_url=bad)
 
 
+# Every zone the Settings → Time Clock select and the onboarding wizard offer.
+_UI_TIMEZONES = [
+    "America/New_York", "America/Chicago", "America/Denver", "America/Phoenix",
+    "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu", "UTC",
+]
+
+
+@pytest.mark.parametrize("tz", _UI_TIMEZONES)
+def test_patch_settings_accepts_every_offered_timezone(tz: str):
+    assert SettingsPatchIn(timezone=tz).timezone == tz
+
+
+def test_patch_settings_strips_timezone():
+    assert SettingsPatchIn(timezone="  America/Chicago ").timezone == "America/Chicago"
+
+
+@pytest.mark.parametrize(
+    "bad", ["America/Chicgo", "america/chicago", "Central", "", "   ", "../etc/passwd", None],
+)
+def test_patch_settings_rejects_unknown_timezone(bad):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        SettingsPatchIn(timezone=bad)
+
+
+def test_patch_settings_bad_timezone_is_422_and_leaves_row(db_session: Session):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.core.auth import get_current_user
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.routers.auth import get_current_user as _routers_gcu
+
+    settings_router.patch_settings(
+        payload=SettingsPatchIn(timezone="America/Chicago"), current_user=_admin(), db=db_session,
+    )
+    app = FastAPI()
+    app.include_router(settings_router.router)
+    app.dependency_overrides[get_current_user] = _admin
+    app.dependency_overrides[_routers_gcu] = _admin
+    app.dependency_overrides[get_db] = lambda: db_session
+    client = TestClient(app)
+
+    resp = client.patch("/api/settings", json={"timezone": "America/Chicgo"})
+    assert resp.status_code == 422, resp.text
+    resp = client.patch("/api/settings", json={"timezone": None})
+    assert resp.status_code == 422, resp.text
+    db_session.expire_all()
+    assert db_session.query(AppSettings).one().timezone == "America/Chicago"
+
+    resp = client.patch("/api/settings", json={"timezone": "America/Denver"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["timezone"] == "America/Denver"
+
+
 def test_patch_branding_audit_records_what_changed(db_session: Session, monkeypatch):
     """Invariant #1: who / WHAT / when. The branding audit row used to carry
     details={} — a change to the customer-facing review link with no record
