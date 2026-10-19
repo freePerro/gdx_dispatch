@@ -114,7 +114,7 @@
      is built, not as it stood then. "not set" is not zero hours. #}
   {% if vacation_year %}
   <p class="vacation">
-    <strong>Vacation {{ vacation_year }}</strong>
+    <strong>Vacation {{ card.vacation_label or vacation_year }}</strong>
     {% if vacation_unreadable or not card.vacation %}
     &middot; balance unavailable
     {% else %}{% set v = card.vacation %}
@@ -134,7 +134,7 @@
     {% endif %}
     {% if vacation_prior_year %}
     <br /><span class="flag-note">Vacation taken in {{ vacation_prior_year }} is not counted in this balance.</span>
-    {% endif %}
+    {% endif %}{% if card.vacation_cut %}<br /><span class="flag-note">Vacation taken before {{ card.vacation_cut }} is not counted in this balance.</span>{% endif %}
   </p>
   {% endif %}
 </div>
@@ -146,7 +146,7 @@
   Worked hours are clocked time less recorded breaks. Vacation and holiday
   rows are paid time off, listed apart from worked hours.{% if time_off_statement %} {{ time_off_statement }}{% endif %}
   This sheet reports hours only — no rates and no pay are calculated here.
-  {% if vacation_year %}Vacation balances are the calendar year's allowance less
+  {% if vacation_year %}Vacation balances are {% if vacation_policy == 'hire_anniversary' %}each person's vacation-year allowance (from their hire anniversary; the calendar year without a hire date){% else %}the calendar year's allowance{% endif %} less
   vacation taken through the period's last day; holidays are not drawn from it,
   and nothing here pays out or carries over unused hours.{% endif %}
 </div>
