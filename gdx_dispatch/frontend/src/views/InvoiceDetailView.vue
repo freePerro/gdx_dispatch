@@ -1864,14 +1864,14 @@ function normalizeInvoice(payload) {
 // "+ Add email/phone/address" links on the Bill-To card).
 //
 // NEVER open the dialog on a partial record. The invoice payload carries only
-// a four-field projection of the customer (name/email/phone/address), and
-// CustomerFormDialog.submitForm PATCHes its WHOLE field set unconditionally —
-// so a save from that projection writes `notes: null`, `referral_source: null`
-// and `customer_type: "Residential"` over whatever the record held, under a
-// toast that reads "Customer Updated". A Commercial customer with notes
-// becomes a Residential one without them; `update_customer` uses
-// `exclude_unset`, which explicit nulls survive, and the audit row holds only
-// the new values, so the destroyed text is not recoverable (GDXA-5).
+// a four-field projection of the customer (name/email/phone/address). Until
+// GDXA-1824 (2026-10-19) CustomerFormDialog.submitForm PATCHed its WHOLE field
+// set, so a save from that projection wrote `notes: null`, `referral_source:
+// null` and `customer_type: "Residential"` over the record (GDXA-5). It now
+// sends only the fields that differ from what it loaded, but a partial record
+// still shows blanks for fields the customer has: typing into one, or picking
+// a type, writes over the stored value, and `update_customer` uses
+// `exclude_unset`, which explicit values survive.
 //
 // The read is quiet (suppressErrorToast — useApi toasts by default) because
 // this function owns what happens next. With no full record there is nothing
