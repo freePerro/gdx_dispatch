@@ -172,8 +172,6 @@
         />
       </template>
     </template>
-
-    <Toast />
   </div>
 </template>
 
@@ -193,7 +191,6 @@ import TabList from 'primevue/tablist';
 import TabPanel from 'primevue/tabpanel';
 import TabPanels from 'primevue/tabpanels';
 import Tabs from 'primevue/tabs';
-import Toast from 'primevue/toast';
 import ToggleSwitch from 'primevue/toggleswitch';
 import Toolbar from 'primevue/toolbar';
 
