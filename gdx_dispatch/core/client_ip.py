@@ -37,8 +37,8 @@ private address for a client on the internet. Trusting that hop handed the
 key back to the header (shown on production, 2026-10-18). Stopped there, such
 clients share one bucket, which is a cost, not a spoof.
 
-Only the client address is rewritten, not the scheme (uvicorn's
-ProxyHeadersMiddleware also rewrites X-Forwarded-Proto; that would change
+Only the client address is rewritten, not the scheme (uvicorn's own
+proxy-headers middleware also rewrites X-Forwarded-Proto; that would change
 `url_for` and `request.base_url` output, which is a different change).
 `*` is refused in both lists: trusting everyone makes the header the key.
 """
@@ -107,6 +107,11 @@ def _in(host: str, networks: Iterable[_Network]) -> bool:
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
+        # A hop that is not an address (`unknown`, an obfuscated name) is never
+        # a proxy we step through; debug only, since the client writes it.
+        log.debug("not an address, treated as untrusted: %r", host)
+        addr = None
+    if addr is None:
         return False
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
         addr = addr.ipv4_mapped
