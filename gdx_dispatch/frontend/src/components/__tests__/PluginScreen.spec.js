@@ -55,6 +55,10 @@ vi.mock('../../composables/useApiWithToast', () => ({
 }));
 
 // eslint-disable-next-line import/first
+import { h } from 'vue';
+// eslint-disable-next-line import/first
+import ErrorBoundary from '../ErrorBoundary.vue';
+// eslint-disable-next-line import/first
 import PluginScreen from '../PluginScreen.vue';
 
 const stubs = {
@@ -213,6 +217,152 @@ describe('PluginScreen.vue', () => {
     await wrapper.find('form.plugin-screen__create').trigger('submit');
     await flushPromises();
     expect(wrapper.emitted('captured')).toBeUndefined();
+  });
+
+  // GDXA-1873: a refused create POST rejected out of the submit handler, and
+  // the app's ErrorBoundary replaced the whole page with "We hit an error".
+  // Mounted inside the REAL boundary so an escaping rejection fails the test.
+  describe('refused requests stay on the page', () => {
+    const DialogStub = { props: ['visible'], template: '<div v-if="visible"><slot /></div>' };
+    // A real <input> so the test types and reads back what the user sees.
+    const InputStub = {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      template: '<input class="pf-input" :value="modelValue ?? \'\'" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    };
+    function mountInBoundary() {
+      return mount(ErrorBoundary, {
+        slots: { default: () => h(PluginScreen, { pluginKey: 'example' }) },
+        global: { stubs: { ...stubs, Dialog: DialogStub, InputText: InputStub } },
+      });
+    }
+    const refusal = (status, msg) => Object.assign(new Error(msg), { status });
+
+    // [status, server message, what the user should read]
+    it.each([
+      [422, 'Enter the month as a number', 'Enter the month as a number'],
+      [422, JSON.stringify([{ loc: ['body', 'name'], msg: 'Input should be a valid integer' }]),
+        'name: Input should be a valid integer'],
+      [403, 'Forbidden', "You don't have permission to do that."],
+    ])('a %i on create keeps the page, the typed value, and says why', async (status, serverMsg, msg) => {
+      apiMock.manifest = MANIFEST;
+      apiMock.post = vi.fn(async () => { throw refusal(status, serverMsg); });
+      const wrapper = mountInBoundary();
+      await flushPromises();
+
+      await wrapper.find('input.pf-input').setValue('Sept 2026');
+      await wrapper.find('form.plugin-screen__create').trigger('submit');
+      await flushPromises();
+
+      expect(apiMock.post).toHaveBeenCalledWith('/api/plugins/example/items', { name: 'Sept 2026' });
+      expect(wrapper.text()).not.toContain('We hit an error');
+      expect(wrapper.find('[data-testid="plugin-screen"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="plugin-create-error"]').text()).toBe(msg);
+      expect(wrapper.find('input.pf-input').element.value).toBe('Sept 2026');
+    });
+
+    it('a successful create clears the field and the previous refusal', async () => {
+      apiMock.manifest = MANIFEST;
+      apiMock.post = vi.fn()
+        .mockRejectedValueOnce(refusal(422, 'bad'))
+        .mockResolvedValueOnce({ id: 2 });
+      const wrapper = mountInBoundary();
+      await flushPromises();
+      await wrapper.find('input.pf-input').setValue('Cable');
+      const form = wrapper.find('form.plugin-screen__create');
+      await form.trigger('submit');
+      await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-create-error"]').exists()).toBe(true);
+
+      await form.trigger('submit');
+      await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-create-error"]').exists()).toBe(false);
+      expect(apiMock.post).toHaveBeenLastCalledWith('/api/plugins/example/items', { name: 'Cable' });
+      expect(wrapper.find('input.pf-input').element.value).toBe('');
+    });
+
+    it('a failed row-detail fetch says so in the dialog, not on an error page', async () => {
+      apiMock.manifest = {
+        screens: [{ ...MANIFEST.screens[0], detail_endpoint: '/api/plugins/example/items/{id}' }],
+      };
+      const get = apiMock.get;
+      apiMock.get = vi.fn(async (url) => {
+        if (url.endsWith('/items/1')) throw refusal(403, 'Not yours');
+        return get(url);
+      });
+      try {
+        const wrapper = mountInBoundary();
+        await flushPromises();
+        wrapper.findComponent({ name: 'DataTable' }).vm.$emit('row-click', { data: { id: 1 } });
+        await flushPromises();
+        expect(wrapper.text()).not.toContain('We hit an error');
+        expect(wrapper.find('[data-testid="plugin-detail-error"]').text()).toBe('Not yours');
+      } finally {
+        apiMock.get = get;
+      }
+    });
+
+    it('a refused settings save keeps the page and says why', async () => {
+      apiMock.manifest = SETTINGS_MANIFEST;
+      const put = apiMock.put;
+      apiMock.put = vi.fn(async () => { throw refusal(403, 'Owner only'); });
+      try {
+        const wrapper = mountInBoundary();
+        await flushPromises();
+        await wrapper.find('[label="Save"]').trigger('click');
+        await flushPromises();
+        expect(wrapper.text()).not.toContain('We hit an error');
+        expect(wrapper.find('[data-testid="plugin-settings-error"]').text()).toBe('Owner only');
+      } finally {
+        apiMock.put = put;
+      }
+    });
+
+    // Save PUTs the whole field list: after a failed load it would overwrite
+    // the stored settings with an empty one. It stays off until a load lands.
+    it('a failed settings load keeps the page, blocks Save, and Retry recovers', async () => {
+      apiMock.manifest = SETTINGS_MANIFEST;
+      const get = apiMock.get;
+      const put = apiMock.put;
+      let failSettings = true;
+      apiMock.get = vi.fn(async (url) => {
+        if (url.endsWith('/settings') && failSettings) throw refusal(502, 'settings down');
+        return get(url);
+      });
+      apiMock.put = vi.fn(async () => ({}));
+      const RealButton = {
+        props: ['label', 'disabled', 'loading'],
+        template: '<button :label="label" :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>',
+      };
+      try {
+        const wrapper = mount(ErrorBoundary, {
+          slots: { default: () => h(PluginScreen, { pluginKey: 'example' }) },
+          global: { stubs: { ...stubs, Button: RealButton } },
+        });
+        await flushPromises();
+        expect(wrapper.text()).not.toContain('We hit an error');
+        expect(wrapper.find('[data-testid="plugin-settings-load-error"]').text()).toContain('settings down');
+        const save = () => wrapper.find('button[label="Save"]');
+        expect(save().attributes('disabled')).toBeDefined();
+        await save().trigger('click');
+        await flushPromises();
+        expect(apiMock.put).not.toHaveBeenCalled();
+
+        failSettings = false;
+        await wrapper.find('button[label="Retry"]').trigger('click');
+        await flushPromises();
+        expect(wrapper.find('[data-testid="plugin-settings-load-error"]').exists()).toBe(false);
+        expect(save().attributes('disabled')).toBeUndefined();
+        await save().trigger('click');
+        await flushPromises();
+        expect(apiMock.put).toHaveBeenCalledWith(
+          '/api/plugins/example/settings', { fields: ['Alpha'], ordered: ['Alpha', 'Beta'] }, expect.anything(),
+        );
+      } finally {
+        apiMock.get = get;
+        apiMock.put = put;
+      }
+    });
   });
 
   // The eventlog plugin's manifest shape: neither screen declares a title.
