@@ -34,6 +34,9 @@
           <Column header="Active" style="width:90px">
             <template #body="slotProps">{{ slotProps.data.active ? 'Yes' : 'No' }}</template>
           </Column>
+          <Column header="Last Link">
+            <template #body="slotProps">{{ formatDateValue(slotProps.data.last_sent_at) }}</template>
+          </Column>
           <Column header="Actions" style="width:230px">
             <template #body="slotProps">
               <Button
@@ -69,18 +72,18 @@
       responsiveLayout="scroll" v-else :value="responses" dataKey="id" striped-rows>
           <Column header="Template">
             <template #body="slotProps">
-              {{ slotProps.data.template_name || slotProps.data.template?.name || '—' }}
+              {{ slotProps.data.template_name || '—' }}
             </template>
           </Column>
           <Column header="Respondent">
             <template #body="slotProps">
-              {{ slotProps.data.respondent_name || slotProps.data.customer_name || '—' }}
+              {{ slotProps.data.respondent_name || '—' }}
             </template>
           </Column>
           <Column field="score" header="Score" style="width:110px" />
           <Column header="Comment">
             <template #body="slotProps">
-              {{ slotProps.data.comment || slotProps.data.response || '—' }}
+              {{ slotProps.data.comment || '—' }}
             </template>
           </Column>
           <Column field="created_at" header="Received" />
@@ -251,6 +254,8 @@ const responseFilterOptions = computed(() => [
   { label: 'All Templates', value: 'all' },
   ...templates.value.map((template) => ({ label: template.name, value: template.id })),
 ]);
+
+const formatDateValue = (value) => (value ? value.split('T')[0] : '—');
 
 async function loadTemplates() {
   templatesLoading.value = true;

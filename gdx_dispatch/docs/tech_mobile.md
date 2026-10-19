@@ -40,8 +40,11 @@ on. Anything not listed here is internal and may change.
 8. **Close out** — Phase 2.2: tap "Close out" → financial summary +
    "Generate & email invoice" sends the invoice straight from the
    truck. Office reconciles payment.
-9. **End of day** — Phase 4.2: today view's last card flips to
-   "Day wrap" — jobs done, hours, parts requested, callbacks scheduled.
+9. **End of day** — Phase 4.2: the Day summary button (bar-chart icon)
+   in the Today's Route header opens `/mobile/summary` — jobs done, hours,
+   parts requested, invoiced, tomorrow's first stop, with a date picker to
+   look back. (The wrap card that used to flip in on Today went in #396,
+   2026-08-22; GDXA-1726 restored the way in.)
 
 ## Routes
 

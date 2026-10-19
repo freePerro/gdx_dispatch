@@ -33,7 +33,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -108,6 +108,8 @@ def _serialize(tag: Tag) -> dict[str, Any]:
 
 
 class TagCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., min_length=1, max_length=80)
     # Color length is enforced by _validate_color (regex on hex shape) so
     # all malformed-color rejections funnel to a single 400 with a
@@ -118,6 +120,8 @@ class TagCreate(BaseModel):
 
 
 class TagUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, max_length=80)
     color: str | None = Field(default=None, max_length=20)
     description: str | None = Field(default=None, max_length=500)

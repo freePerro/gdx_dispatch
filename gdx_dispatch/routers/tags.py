@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -49,18 +49,24 @@ from gdx_dispatch.models.tenant_models import Tag, TagAssignment  # noqa: E402
 
 
 class TagIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=80)
     color: str = Field(default="#6366f1", pattern=r"^#[0-9a-fA-F]{6}$")
     description: str | None = Field(default=None, max_length=500)
 
 
 class TagPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=80)
     color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     description: str | None = Field(default=None, max_length=500)
 
 
 class AssignTagIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tag_id: str = Field(min_length=1, max_length=64)
 
 

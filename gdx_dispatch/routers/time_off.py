@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.modules import require_module, require_role
-from gdx_dispatch.core.pay_periods import shop_today
+from gdx_dispatch.core.pay_periods import shop_today, shop_tz_name
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.roles import (
     ACCOUNTING,
@@ -167,7 +167,7 @@ def _settings(db: Session, *, strict: bool = False) -> AppSettings | None:
 
 
 def _tz(settings: AppSettings | None) -> str:
-    return getattr(settings, "timezone", None) or "America/New_York"
+    return shop_tz_name(settings)
 
 
 def _default_minutes(settings: AppSettings | None) -> int:

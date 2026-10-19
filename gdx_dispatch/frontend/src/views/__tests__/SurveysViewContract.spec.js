@@ -142,7 +142,7 @@ describe('SurveysView template contract', () => {
     expect(wrapper.vm.templateKindOptions.map((o) => o.value).sort()).toEqual(m[1].split('|').sort());
   });
 
-  it('templates table reads only keys _serialize_template returns', () => {
+  it('templates table reads only keys the templates list returns', () => {
     const SFC = readFileSync(join(__dirname, '..', 'SurveysView.vue'), 'utf8');
     const table = SFC.slice(SFC.indexOf(':value="templates"'));
     const region = table.slice(0, table.indexOf('</DataTable>'));
@@ -151,8 +151,13 @@ describe('SurveysView template contract', () => {
       ...[...region.matchAll(/slotProps\.data\.(\w+)/g)].map((m) => m[1]),
     ]);
     expect(keys.size).toBeGreaterThan(0);
+    // list_templates sends _serialize_template plus the keys it sets on top
+    // (last_sent_at, GDXA-1709).
     const serializer = pyFunc('_serialize_template');
-    for (const key of keys) expect(serializer, key).toContain(`"${key}":`);
+    const added = [...pyFunc('list_templates').matchAll(/data\["(\w+)"\] =/g)].map((m) => m[1]);
+    for (const key of keys) {
+      expect(serializer.includes(`"${key}":`) || added.includes(key), key).toBe(true);
+    }
   });
 
   it('labels the template kind and falls back to the raw value', () => {

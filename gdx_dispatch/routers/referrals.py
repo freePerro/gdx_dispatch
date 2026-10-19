@@ -24,7 +24,7 @@ ALLOWED_STATUSES = {"pending", "converted", "rewarded"}
 
 
 class ReferralCreateIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     referrer_id: str = Field(min_length=1, max_length=64)
     referee_name: str = Field(min_length=1, max_length=120)
