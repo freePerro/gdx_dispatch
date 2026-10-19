@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase, utcnow
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import Customer
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.surveys import (
     SurveySend,
@@ -413,3 +415,53 @@ def test_update_audit_names_only_changed_fields_with_old_and_new(client: TestCli
     assert details["changes"] == {
         "question": {"old": "How satisfied were you with the repair?", "new": "How was the repair?"}
     }
+
+
+# ---------------------------------------------------------------------------
+# GDXA-1709 — list fields the SurveysView columns read
+# ---------------------------------------------------------------------------
+
+
+def _answer(client: TestClient, tpl_id: str, **send_fields) -> None:
+    send = client.post("/api/surveys/send", json={"template_id": tpl_id, **send_fields}).json()
+    r = client.post(f"/api/surveys/public/{send['token']}", json={"score": 9})
+    assert r.status_code == 201, r.text
+
+
+def test_responses_carry_respondent_name(client: TestClient):
+    cust_id = uuid4()
+    Session = client._session  # type: ignore[attr-defined]
+    with Session() as s:
+        s.add(Customer(id=cust_id, company_id="tenant-test", name="Pat Example"))
+        s.commit()
+
+    tpl = client.post(
+        "/api/surveys/templates", json={"name": "NPS", "kind": "nps", "question": "q"}
+    ).json()
+    _answer(client, tpl["id"], customer_id=str(cust_id), recipient_email="pat@example.com")
+    _answer(client, tpl["id"], recipient_email="walkin@example.com")
+    _answer(client, tpl["id"], recipient_phone="+15555550100")
+    _answer(client, tpl["id"])
+
+    names = sorted(
+        (row["respondent_name"] or "") for row in client.get("/api/surveys/responses").json()
+    )
+    # Customer name wins over the address; then email, then phone; else null.
+    assert names == ["", "+15555550100", "Pat Example", "walkin@example.com"]
+
+
+def test_templates_carry_last_sent_at(client: TestClient):
+    sent = client.post(
+        "/api/surveys/templates", json={"name": "Sent", "kind": "nps", "question": "q"}
+    ).json()
+    unsent = client.post(
+        "/api/surveys/templates", json={"name": "Unsent", "kind": "nps", "question": "q"}
+    ).json()
+    client.post("/api/surveys/send", json={"template_id": sent["id"]})
+    last = client.post("/api/surveys/send", json={"template_id": sent["id"]}).json()
+
+    by_id = {t["id"]: t for t in client.get("/api/surveys/templates").json()}
+    assert by_id[unsent["id"]]["last_sent_at"] is None
+    with client._session() as s:  # type: ignore[attr-defined]
+        newest = s.get(SurveySend, UUID(last["send_id"])).sent_at
+    assert by_id[sent["id"]]["last_sent_at"] == newest.isoformat()
