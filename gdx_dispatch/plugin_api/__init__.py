@@ -14,6 +14,7 @@ comes from ``plugin_api.context``: ``get_plugin_db`` in a route,
 from gdx_dispatch.plugin_api.discovery import (
     ENTRY_POINT_GROUP,
     discover_plugins,
+    host_version,
     is_compatible,
     load_manifests,
 )
@@ -24,5 +25,6 @@ __all__ = [
     "discover_plugins",
     "load_manifests",
     "is_compatible",
+    "host_version",
     "ENTRY_POINT_GROUP",
 ]

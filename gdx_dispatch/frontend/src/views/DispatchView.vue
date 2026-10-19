@@ -918,31 +918,6 @@
         </template>
       </Dialog>
 
-      <!-- Assignment Dialog -->
-      <Dialog
-        v-model:visible="assignDialogVisible"
-        header="Assign Job"
-        :modal="true"
-        :closable="true"
-        class="assign-dialog"
-        data-testid="assign-dialog"
-      >
-        <p>Assign <strong>{{ assignDialogJob?.customer_name }}</strong><span v-if="assignDialogJob?.title"> — {{ assignDialogJob.title }}</span> to a technician:</p>
-        <Select
-          v-model="assignDialogTechId"
-          :options="assignableTechnicians"
-          optionLabel="name"
-          optionValue="id"
-          placeholder="Select technician"
-          class="w-full"
-          data-testid="assign-dialog-dropdown"
-        />
-        <template #footer>
-          <Button label="Cancel" severity="secondary" @click="assignDialogVisible = false" />
-          <Button label="Assign" icon="pi pi-check" @click="confirmAssign" :disabled="!assignDialogTechId" />
-        </template>
-      </Dialog>
-
       <!-- Phase 2 / C4 — closeout sheet, opened by the drawer's Close out. -->
       <MobileJobCloseoutDialog
         v-model:visible="closeoutOpen"
@@ -1434,11 +1409,6 @@ const showMap = ref(false);
 const mapLocations = ref([]);
 const mapLoading = ref(false);
 const optimizerLoading = ref(false);
-
-// Assignment dialog
-const assignDialogVisible = ref(false);
-const assignDialogJob = ref(null);
-const assignDialogTechId = ref(null);
 
 // Sprint dispatch-capacity (2026-05-20) — when a card without an
 // estimated duration lands in a tech column, prompt the scheduler for
@@ -2044,12 +2014,6 @@ function openJobDrawer(job) {
 function closeJobDrawer() {
   jobDrawerVisible.value = false;
   drawerJob.value = null;
-}
-
-function openReassignDialog(job) {
-  assignDialogJob.value = job;
-  assignDialogTechId.value = job?.technician_id || null;
-  assignDialogVisible.value = true;
 }
 
 function toggleMap() {
@@ -2917,7 +2881,7 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null, fit = null) 
   //   (a) caller passed an explicit ISO (timeline drop on a specific slot)
   //       → use it verbatim. The block is now anchored to that time.
   //   (b) job already has a scheduled_at → leave it alone. A pure tech
-  //       reassignment (dropdown, Reassign dialog) shouldn't move time.
+  //       reassignment (the card's dropdown) shouldn't move time.
   //   (c) no scheduled_at on either source or lane → land it on midnight
   //       of the selected date so it shows up in this day's tray. The
   //       old hard-coded 9:00am fallback masked "this hasn't actually
@@ -3067,7 +3031,7 @@ async function onTimelinePlaceTray({ jobId, techId }) {
 
 const queuePickerKey = ref(0);
 
-// A tech picked from a dropdown (queue card or Assign dialog). An undated job
+// A tech picked from the queue card's dropdown. An undated job
 // is being booked onto the selected day, so it asks hours and crew like a
 // drop does; a dated crew job goes through placeCrewJob.
 async function assignFromPicker(jobId, techId) {
@@ -3089,15 +3053,6 @@ async function assignFromPicker(jobId, techId) {
     // cancelled pick doesn't leave a tech's name on a card nobody has.
     queuePickerKey.value += 1;
   }
-}
-
-function confirmAssign() {
-  if (assignDialogJob.value && assignDialogTechId.value) {
-    assignFromPicker(assignDialogJob.value.id, assignDialogTechId.value);
-  }
-  assignDialogVisible.value = false;
-  assignDialogJob.value = null;
-  assignDialogTechId.value = null;
 }
 
 // --- API ---
@@ -4497,10 +4452,6 @@ defineExpose({
   gap: 0.5rem;
 }
 .tech-columns-grid.is-compact :deep(.p-card-body) { padding: 0.6rem; gap: 0.4rem; }
-
-.assign-dialog {
-  width: 400px;
-}
 
 .add-area-form {
   display: flex;

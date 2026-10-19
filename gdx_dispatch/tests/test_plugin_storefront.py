@@ -449,3 +449,78 @@ def test_running_and_installed_are_reported_separately():
     assert item["installed_version"] == "0.2.0"
     assert item["running_version"] == "0.1.0"
     assert item["state"] == "pending_restart"
+
+
+# ── host-version gate (GDXA-1742) ────────────────────────────────────────────
+#
+# plugin-host's boot gate (`discovery.load_manifests`) skips a plugin whose
+# `requires` the host does not meet, with one log line. The store must refuse
+# the same plugins, or an install answers "pending_restart" for a plugin that
+# never loads.
+
+_GATE_CASES = [
+    ("", "0"),
+    ("", "1.2.0"),
+    ("gdx>=1.2", "1.2.0"),
+    ("gdx>=1.2", "1.10.0"),
+    ("gdx >= 1.2.3", "1.2.3"),
+    ("gdx>=1.2", "1.1.9"),
+    ("gdx>=2.0", "1.200.0"),
+    ("gdx>=1.0", "latest"),
+    ("gdx>=1.0", "dev"),
+    ("gdx>=1.0", "0"),
+    ("gdx~=1.2", "9.9.9"),
+    ("gdx<2", "1.0.0"),
+    ("gdx>=1.0, <2", "1.5.0"),
+]
+
+
+@pytest.mark.parametrize("requires,host", _GATE_CASES)
+def test_the_store_and_the_boot_gate_agree(requires, host):
+    """The class guard: for every pair, the store refuses exactly what the boot
+    gate skips. Uses the REAL load_manifests, not a restatement of its rule."""
+    from gdx_dispatch.plugin_api import PluginManifest, load_manifests
+
+    class _EP:
+        name = "probe"
+
+        def load(self):
+            return PluginManifest(key="probe", name="Probe", requires=requires)
+
+    loads = bool(load_manifests([_EP()], host))
+    assert (store.incompatibility(requires, host) is None) == loads
+
+
+def test_a_compatible_entry_is_flagged_compatible():
+    [item] = store.merge_install_state([_entry(requires="gdx>=1.2")], {}, {}, host="1.3.0")
+    assert item["compatible"] is True
+    assert item["incompatible_reason"] is None
+
+
+def test_an_entry_needing_a_newer_host_is_flagged_with_the_reason():
+    [item] = store.merge_install_state([_entry(requires="gdx>=2.0")], {}, {}, host="1.9.0")
+    assert item["compatible"] is False
+    assert "gdx>=2.0" in item["incompatible_reason"]
+    assert "1.9.0" in item["incompatible_reason"]
+
+
+def test_an_unpinned_host_says_to_pin_rather_than_to_update():
+    """`latest` reads as version 0 at boot. Telling that owner to "update GDX"
+    would send them to do something they have already done."""
+    reason = store.incompatibility("gdx>=1.0", "latest")
+    assert reason and "APP_VERSION" in reason and "Pin" in reason
+
+
+def test_an_unknown_constraint_fails_closed_and_says_so():
+    reason = store.incompatibility("gdx~=1.2", "9.9.9")
+    assert reason and "does not understand" in reason
+
+
+def test_merge_reads_the_same_host_version_as_plugin_host(monkeypatch):
+    """No host passed: the merge reads APP_VERSION through the one helper the
+    boot gate uses, not core.app_version (which also falls back to
+    GDX_IMAGE_VERSION, a variable plugin-host never reads)."""
+    monkeypatch.setenv("APP_VERSION", "latest")
+    monkeypatch.setenv("GDX_IMAGE_VERSION", "9.9.9")
+    [item] = store.merge_install_state([_entry(requires="gdx>=1.0")], {}, {})
+    assert item["compatible"] is False

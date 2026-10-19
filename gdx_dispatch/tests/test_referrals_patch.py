@@ -9,8 +9,40 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.models.tenant_models import LoyaltyReferral
-from gdx_dispatch.routers.referrals import ReferralPatchIn, patch_referral
+from gdx_dispatch.models.tenant_models import Customer, LoyaltyReferral
+from gdx_dispatch.routers.referrals import ReferralPatchIn, list_referrals, patch_referral
+
+
+def test_list_referrals_names_live_referrers_in_one_query_without_audit_rows():
+    """GDXA-1693: the page fetched GET /api/customers/{id} per referrer, which
+    logs data_accessed for each. The list now carries referrer_name itself."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    db = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    live, gone = uuid4(), uuid4()
+    db.add(Customer(id=live, company_id="t1", name="Alex Advocate"))
+    db.add(Customer(id=gone, company_id="t1", name="Gone Customer", deleted_at=datetime.now(UTC)))
+    for rid, referrer in (("r1", str(live)), ("r2", str(gone)), ("r3", "not-a-uuid")):
+        db.add(LoyaltyReferral(
+            id=rid, company_id="t1", referrer_id=referrer,
+            referee_name=f"Pat {rid}", referee_phone="555-0101", status="pending",
+        ))
+    db.commit()
+
+    items = {r["id"]: r for r in list_referrals(_={"sub": "user-1"}, db=db)["items"]}
+
+    # Dashed text id matches SQLite's dashless Uuid storage.
+    assert items["r1"]["referrer_name"] == "Alex Advocate"
+    assert items["r2"]["referrer_name"] is None
+    assert items["r3"]["referrer_name"] is None
+    assert db.execute(text("SELECT COUNT(*) FROM audit_logs")).scalar() == 0
+    db.close()
+    engine.dispose()
 
 
 def test_patch_referral_audit_records_prior_status():

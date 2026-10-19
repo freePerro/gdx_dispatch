@@ -31,6 +31,10 @@ def _ver_tuple(v: str) -> tuple[int, ...]:
     return tuple(int(n) for n in nums[:3])
 
 
+#: The whole v0 `requires` grammar besides "": "gdx>=X.Y[.Z]".
+REQUIRES_RE = re.compile(r"^gdx\s*>=\s*([0-9][0-9.]*)$")
+
+
 def is_compatible(requires: str, current: str) -> bool:
     """Does host version `current` satisfy a plugin's `requires` constraint?
 
@@ -41,11 +45,24 @@ def is_compatible(requires: str, current: str) -> bool:
     requires = (requires or "").strip()
     if not requires:
         return True
-    m = re.match(r"^gdx\s*>=\s*([0-9][0-9.]*)$", requires)
+    m = REQUIRES_RE.match(requires)
     if not m:
         log.warning("plugin requires constraint not understood, failing closed: %r", requires)
         return False
     return _ver_tuple(current) >= _ver_tuple(m.group(1))
+
+
+def host_version() -> str:
+    """The host version the `requires` gate compares against.
+
+    One source for every caller: plugin-host's boot gate below, and core's
+    storefront install check (`core/plugin_storefront.py`), which must refuse
+    exactly what this gate would skip. Deliberately `APP_VERSION` only, not
+    `core.app_version.installed_version()`: plugin-host reads this variable,
+    and an install check that knew more than the boot gate would accept a
+    plugin the boot then skips. Unpinned ("latest", "dev") reads as version 0.
+    """
+    return os.getenv("APP_VERSION", "0")
 
 
 def load_manifests(entry_points: Iterable, current_version: str) -> list[PluginManifest]:
@@ -80,7 +97,7 @@ def discover_plugins(current_version: str | None = None) -> list[PluginManifest]
     """Find all installed, compatible plugins via the gdx.modules entry-point group."""
     from importlib.metadata import entry_points
 
-    cv: str = current_version or os.getenv("APP_VERSION", "0")
+    cv: str = current_version or host_version()
     eps = entry_points(group=ENTRY_POINT_GROUP)
     return load_manifests(eps, cv)
 
@@ -95,7 +112,7 @@ def discover_with_dists(
     so the same skip-on-bad/compat rules apply."""
     from importlib.metadata import entry_points
 
-    cv: str = current_version or os.getenv("APP_VERSION", "0")
+    cv: str = current_version or host_version()
     out: list[tuple[PluginManifest, str | None, str | None]] = []
     for ep in entry_points(group=ENTRY_POINT_GROUP):
         manifests = load_manifests([ep], cv)
