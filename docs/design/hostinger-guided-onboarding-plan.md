@@ -15,6 +15,10 @@ surviving. README self-host section now leads with this path (same PR).
 → preloaded Docker Manager deploy) and items 5-8 — the handover-guide
 template, the landing page with the Deploy button, the first paying customer,
 and the Partner Program application.
+**Continued by** `one-layout-all-in-one-plan.md` (PLAN, 2026-10-19): the customer
+compose becomes the only compose (prod included), the app's four processes
+move into one container, and a one-line `install.sh` replaces the README's
+three commands. The funnel items 4-8 here are unaffected.
 **North star (Doug, 2026-08-17): ADOPTION, not revenue.** Monetization gets
 figured out later; every decision below optimizes for the lowest-friction path
 to a stranger running GDX Dispatch. Referral code stays on the button (it's a
