@@ -216,7 +216,7 @@ def test_service_closeout_autodrafts_priced_invoice(db) -> None:
     # the rebuild dies silently. Asserted by running the builder, not by
     # grepping its source.
     assert {line.source for line in lines} == {"autodraft"}, (
-        f"unstamped autodraft lines: {[(l.description, l.source) for l in lines]}"
+        f"unstamped autodraft lines: {[(line.description, line.source) for line in lines]}"
     )
     assert float(inv.total) == pytest.approx(245.00)
     assert float(inv.balance_due) == pytest.approx(245.00)
