@@ -1668,7 +1668,7 @@ def test_s122_15_sync_all_customers_continues_on_permanent_error(db_session, mon
     async def fake_get_client(*a, **kw):
         return _StubQB()
 
-    monkeypatch.setattr(qb_tasks, "push_customer", fake_push)
+    monkeypatch.setattr(qb_tasks._sync, "push_customer", fake_push)
     monkeypatch.setattr(qb_tasks, "get_qb_client", fake_get_client)
     monkeypatch.setattr(qb_tasks, "_tenant_session", lambda tid: _NoopCtx(db_session))
 
@@ -1886,7 +1886,7 @@ def test_s122_17_sync_all_customers_only_pushes_dirty(db_session, monkeypatch):
 
     async def fake_get_client(*a, **kw): return _StubQB()  # noqa: E704
 
-    monkeypatch.setattr(qb_tasks, "push_customer", fake_push)
+    monkeypatch.setattr(qb_tasks._sync, "push_customer", fake_push)
     monkeypatch.setattr(qb_tasks, "get_qb_client", fake_get_client)
     monkeypatch.setattr(qb_tasks, "_tenant_session", lambda tid: _NoopCtx(db_session))
 
@@ -1944,7 +1944,7 @@ def test_s122_16_sync_all_customers_uses_single_qbclient_across_loop(db_session,
         return {"customer_id": customer_id, "qb_customer_id": "fake"}
 
     monkeypatch.setattr(qb_tasks, "get_qb_client", fake_get_client)
-    monkeypatch.setattr(qb_tasks, "push_customer", fake_push)
+    monkeypatch.setattr(qb_tasks._sync, "push_customer", fake_push)
     monkeypatch.setattr(qb_tasks, "_tenant_session", lambda tid: _NoopCtx(db_session))
 
     result = qb_tasks.sync_all_customers_task.run("tenant-s16")

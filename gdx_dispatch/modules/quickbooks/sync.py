@@ -36,6 +36,14 @@ from gdx_dispatch.models.tenant_models import (
 from gdx_dispatch.modules.quickbooks.banking import qbo_date_where
 from gdx_dispatch.modules.quickbooks.client import QBAPIError, QBClient
 
+# The errors live in a leaf so quickbooks/tasks.py can import them while this
+# module is half-built (GDXA-1922); re-exported here for existing callers.
+from gdx_dispatch.modules.quickbooks.errors import (
+    QBPullDisabledError,
+    QBRateLimitError,  # noqa: F401
+    QBSyncError,
+)
+
 log = logging.getLogger(__name__)
 
 # QuickBooks Line objects come in several DetailType flavors. We want ONLY the
@@ -56,25 +64,6 @@ _ITEM_LINE_TYPES = {
 }
 
 
-# Re-export for backward compat with tasks.py
-class QBSyncError(Exception):
-    pass
-
-
-class QBRateLimitError(QBSyncError):
-    pass
-
-
-class QBPullDisabledError(QBSyncError):
-    """A money-mutating QB pull was attempted while ledger posting is on.
-
-    GL S9 (spec §5.4): once ``ledger_posting_enabled`` the GDX ledger is the
-    book of record — pulls that mutate Invoice/Payment rows would write money
-    around the posting chokepoint, so they fail loudly instead. Read-only
-    mirror pulls (accounts, bank transactions) and non-money entity pulls
-    (customers, items, vendors) are unaffected. QBO-side corrections flow
-    forward from GDX (credit memo / void / adjustment → push), never back.
-    """
 
 
 def money_pulls_disabled(db: Session, tenant_id: str) -> bool:

@@ -4,24 +4,20 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-_task_log = logging.getLogger(__name__)
-
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.models.tenant_models import Customer, Invoice
+
+# sync is bound as a module and its functions looked up at call time:
+# celery_app imports this file while models are still loading, often with
+# sync half-built above it, so a name import from sync fails there and
+# core/webhooks swallows the ImportError, nulling its tasks (GDXA-1922).
+from gdx_dispatch.modules.quickbooks import sync as _sync
 from gdx_dispatch.modules.quickbooks.client import QBAPIError
+from gdx_dispatch.modules.quickbooks.errors import QBRateLimitError
 from gdx_dispatch.modules.quickbooks.oauth import connection_healthy, get_qb_client
-from gdx_dispatch.modules.quickbooks.sync import (
-    QBRateLimitError,
-    pull_accounts,
-    pull_customers,
-    pull_invoices,
-    pull_items,
-    pull_payments,
-    pull_vendors,
-    push_customer,
-    push_invoice,
-)
+
+_task_log = logging.getLogger(__name__)
 
 
 # ─── S122-15: error classification for Celery retry decisions ────────────────
@@ -72,7 +68,7 @@ async def _push_customer_async(tenant_id: str, customer_id: str, db) -> None:
     """
     qb = await get_qb_client(tenant_id, db)
     try:
-        await push_customer(tenant_id, customer_id, db, qb)
+        await _sync.push_customer(tenant_id, customer_id, db, qb)
     finally:
         await qb.close()
 
@@ -81,7 +77,7 @@ async def _push_invoice_async(tenant_id: str, invoice_id: str, db) -> None:
     """Legacy single-row push — same caveats as _push_customer_async."""
     qb = await get_qb_client(tenant_id, db)
     try:
-        await push_invoice(tenant_id, invoice_id, db, qb)
+        await _sync.push_invoice(tenant_id, invoice_id, db, qb)
     finally:
         await qb.close()
 
@@ -132,7 +128,7 @@ async def _run_push_loop(
 async def _pull_payments_async(tenant_id: str, db) -> dict:
     qb = await get_qb_client(tenant_id, db)
     try:
-        return await pull_payments(tenant_id, db, qb)
+        return await _sync.pull_payments(tenant_id, db, qb)
     finally:
         await qb.close()
 
@@ -173,7 +169,7 @@ def sync_all_customers_task(self, tenant_id: str) -> dict:
         ]
         try:
             succeeded, failed = asyncio.run(_run_push_loop(
-                tenant_id, db, row_ids, push_customer, entity_label="customer",
+                tenant_id, db, row_ids, _sync.push_customer, entity_label="customer",
             ))
         except Exception as exc:
             if _is_transient(exc):
@@ -204,7 +200,7 @@ def sync_all_invoices_task(self, tenant_id: str) -> dict:
         ]
         try:
             succeeded, failed = asyncio.run(_run_push_loop(
-                tenant_id, db, row_ids, push_invoice, entity_label="invoice",
+                tenant_id, db, row_ids, _sync.push_invoice, entity_label="invoice",
             ))
         except Exception as exc:
             if _is_transient(exc):
@@ -252,7 +248,7 @@ def pull_payments_task(self, tenant_id: str) -> dict:
 async def _pull_customers_async(tenant_id: str, db) -> dict:
     qb = await get_qb_client(tenant_id, db)
     try:
-        return await pull_customers(tenant_id, db, qb)
+        return await _sync.pull_customers(tenant_id, db, qb)
     finally:
         await qb.close()
 
@@ -260,7 +256,7 @@ async def _pull_customers_async(tenant_id: str, db) -> dict:
 async def _pull_invoices_async(tenant_id: str, db) -> dict:
     qb = await get_qb_client(tenant_id, db)
     try:
-        return await pull_invoices(tenant_id, db, qb)
+        return await _sync.pull_invoices(tenant_id, db, qb)
     finally:
         await qb.close()
 
@@ -268,7 +264,7 @@ async def _pull_invoices_async(tenant_id: str, db) -> dict:
 async def _pull_items_async(tenant_id: str, db) -> dict:
     qb = await get_qb_client(tenant_id, db)
     try:
-        return await pull_items(tenant_id, db, qb)
+        return await _sync.pull_items(tenant_id, db, qb)
     finally:
         await qb.close()
 
@@ -276,7 +272,7 @@ async def _pull_items_async(tenant_id: str, db) -> dict:
 async def _pull_vendors_async(tenant_id: str, db) -> dict:
     qb = await get_qb_client(tenant_id, db)
     try:
-        return await pull_vendors(tenant_id, db, qb)
+        return await _sync.pull_vendors(tenant_id, db, qb)
     finally:
         await qb.close()
 
@@ -284,7 +280,7 @@ async def _pull_vendors_async(tenant_id: str, db) -> dict:
 async def _pull_accounts_async(tenant_id: str, db) -> dict:
     qb = await get_qb_client(tenant_id, db)
     try:
-        return await pull_accounts(tenant_id, db, qb)
+        return await _sync.pull_accounts(tenant_id, db, qb)
     finally:
         await qb.close()
 
