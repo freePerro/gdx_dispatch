@@ -42,7 +42,6 @@ const PENDING = new Set([
   'views/MobileJobDetailView.vue .chip-on', // mobile-tech
   'views/MobilePlannerView.vue .head-add', // mobile-tech
   'views/MobilePlannerView.vue .msg.mine', // mobile-tech
-  'views/PlannerView.vue .msg.mine', // jobs-dispatch
   'views/ServerErrorsView.vue .filter-tabs button.active', // platform-core
   // Aura's --p-primary-contrast-color, #fff on the light emerald fill.
   'views/PlannerAppView.vue .pa-fab', // mobile-tech

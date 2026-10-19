@@ -605,7 +605,7 @@ onMounted(() => { loadTasks(); loadUsers(); loadJobsAndCustomers(); });
 /* Messages */
 .messages-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem; padding: 0.5rem; min-height: 300px; }
 .msg { max-width: 80%; padding: 0.5rem 0.75rem; border-radius: 12px; background: var(--p-content-hover-background); border: 1px solid var(--p-content-border-color); }
-.msg.mine { align-self: flex-end; background: var(--p-primary-color); color: white; border-color: transparent; }
+.msg.mine { align-self: flex-end; background: var(--p-primary-color); color: var(--text-on-p-primary); border-color: transparent; }
 .msg-sender { font-size: 0.7rem; font-weight: 700; opacity: 0.7; }
 .msg-text { font-size: 0.9rem; }
 .msg-time { font-size: 0.65rem; opacity: 0.5; text-align: right; }
