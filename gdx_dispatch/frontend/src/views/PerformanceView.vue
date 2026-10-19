@@ -77,9 +77,6 @@
         <Column field="tasks_completed" header="Tasks Done" sortable>
           <template #body="{ data }"><span :title="why(data, 'tasks_completed')">{{ show(data.tasks_completed) }}</span></template>
         </Column>
-        <Column field="safety_checklists" header="Safety Checklists" sortable>
-          <template #body="{ data }"><span :title="why(data, 'safety_checklists')">{{ show(data.safety_checklists) }}</span></template>
-        </Column>
       </DataTable>
       <p class="legend" data-testid="perf-legend">
         — means the figure is not available for {{ monthLabel }}: usually nothing is recorded yet. Hover it for the reason.
@@ -160,7 +157,7 @@ const hasActivity = computed(() =>
   rows.value.some(
     (r) => r.jobs_completed > 0 || r.revenue > 0 || (r.hours_worked !== null && r.hours_worked !== undefined)
       // A reader who may not see hours cannot be told there are none.
-      || [...UNKNOWN_HOURS, "restricted"].includes(r.unavailable?.hours_worked) || r.tasks_completed > 0 || r.safety_checklists > 0,
+      || [...UNKNOWN_HOURS, "restricted"].includes(r.unavailable?.hours_worked) || r.tasks_completed > 0,
   ),
 );
 const hasReadFailure = computed(() =>

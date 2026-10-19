@@ -915,7 +915,7 @@ onUnmounted(() => {
   padding: 0.45rem 0.8rem;
   border-radius: 0.5rem;
   background: var(--p-primary-color);
-  color: #fff;
+  color: var(--text-on-p-primary);
   border: 0;
   font-weight: 600;
   font-size: 0.9rem;
@@ -1239,7 +1239,7 @@ onUnmounted(() => {
 .msg.mine {
   align-self: flex-end;
   background: var(--p-primary-color);
-  color: #fff;
+  color: var(--text-on-p-primary);
   border-color: transparent;
 }
 

@@ -632,7 +632,6 @@
       </Dialog>
 
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 mounts one globally. -->
-      <Toast data-testid="billing-toast" />
     </section>
 </template>
 
@@ -657,7 +656,6 @@ import Select from "primevue/select";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
-import Toast from "primevue/toast";
 import EmptyState from "../components/EmptyState.vue";
 import OutstandingAgingDialog from "../components/OutstandingAgingDialog.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';

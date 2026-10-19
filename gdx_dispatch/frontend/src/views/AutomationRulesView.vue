@@ -115,7 +115,6 @@
         </Column>
       </DataTable>
     </Dialog>
-    <Toast />
   </section>
 </template>
 
@@ -130,7 +129,6 @@ import Message from "primevue/message";
 import Select from "primevue/select";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
-import Toast from "primevue/toast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatDateTime } from "../composables/useFormatters";
 import { useAuthStore } from "../stores/auth";

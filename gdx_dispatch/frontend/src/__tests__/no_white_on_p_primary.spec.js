@@ -32,22 +32,7 @@ const SRC_DIR = join(__dirname, '..');
 // `<file relative to src/> <selector>` — keyed by selector, not line number.
 const PENDING = new Set([
   'views/InboxView.vue .unread-badge', // comms-email-phone
-  'views/MobileCustomerDetailView.vue .qa-btn-primary', // mobile-tech
-  'views/MobileCustomerDetailView.vue .tab-btn.active', // mobile-tech
-  'views/MobileCustomersView.vue .head-add', // mobile-tech
-  'views/MobileDispatchView.vue .bd-count', // mobile-tech
-  'views/MobileDispatchView.vue .tech-avatar', // mobile-tech
-  'views/MobileDoorListingsView.vue .chip--on', // mobile-tech
-  'views/MobileDoorListingsView.vue .submit', // mobile-tech
-  'views/MobileJobDetailView.vue .chip-on', // mobile-tech
-  'views/MobilePlannerView.vue .head-add', // mobile-tech
-  'views/MobilePlannerView.vue .msg.mine', // mobile-tech
   'views/PlannerView.vue .msg.mine', // jobs-dispatch
-  'views/ServerErrorsView.vue .filter-tabs button.active', // platform-core
-  // Aura's --p-primary-contrast-color. Only the span fails today (2.54:1 in
-  // light); the other two are buttons, whose fill base.css darkens.
-  'views/ReportsView.vue .tax-chip-total', // back-office-books
-  'views/PlannerAppView.vue .pa-fab', // mobile-tech
   'views/SegmentsView.vue .segment-chip.active', // customers-crm
 ]);
 
