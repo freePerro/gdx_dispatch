@@ -127,7 +127,7 @@ def suggest_estimate(
         lines = _keyword_suggest(body.job_description)
         source = "catalog"
 
-    total = sum(l["quantity"] * l["unit_price"] for l in lines)
+    total = sum(line["quantity"] * line["unit_price"] for line in lines)
 
     try:
         log_audit_event_sync(

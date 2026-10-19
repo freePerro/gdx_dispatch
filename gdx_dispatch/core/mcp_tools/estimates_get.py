@@ -46,7 +46,7 @@ async def handler(
     if estimate is None or estimate.deleted_at is not None:
         return {"error": "estimate not found"}
 
-    lines = sorted(estimate.lines, key=lambda l: (l.sort_order or 0, l.created_at or 0))
+    lines = sorted(estimate.lines, key=lambda ln: (ln.sort_order or 0, ln.created_at or 0))
 
     return {
         "estimate": {
@@ -65,14 +65,14 @@ async def handler(
             "valid_until": estimate.valid_until.isoformat() if estimate.valid_until else None,
             "lines": [
                 {
-                    "id": str(l.id),
-                    "description": l.description,
-                    "quantity": int(l.quantity),
-                    "unit_price": float(l.unit_price),
-                    "line_total": float(l.line_total),
-                    "sort_order": l.sort_order,
+                    "id": str(ln.id),
+                    "description": ln.description,
+                    "quantity": int(ln.quantity),
+                    "unit_price": float(ln.unit_price),
+                    "line_total": float(ln.line_total),
+                    "sort_order": ln.sort_order,
                 }
-                for l in lines
+                for ln in lines
             ],
         }
     }

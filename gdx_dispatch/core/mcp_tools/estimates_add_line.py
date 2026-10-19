@@ -87,7 +87,7 @@ async def handler(
         }
 
     next_sort = (
-        max((l.sort_order or 0 for l in estimate.lines), default=0) + 1
+        max((ln.sort_order or 0 for ln in estimate.lines), default=0) + 1
         if estimate.lines
         else 1
     )
