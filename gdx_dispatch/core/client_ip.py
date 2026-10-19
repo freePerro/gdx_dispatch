@@ -81,7 +81,7 @@ CLOUDFLARE_RANGES = (
 def parse_networks(raw: str | None, *, name: str) -> tuple[_Network, ...]:
     """Parse a comma-separated list of addresses, CIDRs and `cloudflare`."""
     networks: list[_Network] = []
-    for item in (raw or "").split(","):
+    for position, item in enumerate((raw or "").split(","), start=1):
         item = item.strip()
         if not item:
             continue
@@ -94,7 +94,9 @@ def parse_networks(raw: str | None, *, name: str) -> tuple[_Network, ...]:
         try:
             networks.append(ipaddress.ip_network(item, strict=False))
         except ValueError:
-            log.error("%s: %r is not an address or network; ignored", name, item)
+            # The position, not the value: it comes from the environment, and
+            # a mistyped entry can be a secret pasted into the wrong variable.
+            log.error("%s: entry %d is not an address or network; ignored", name, position)
     return tuple(networks)
 
 

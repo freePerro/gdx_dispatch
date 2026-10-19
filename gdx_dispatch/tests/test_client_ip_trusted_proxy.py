@@ -11,6 +11,7 @@ test_slowapi_e2e_bypass_579.py), so the fixture resets and restores them.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
@@ -135,3 +136,11 @@ def test_a_wildcard_is_refused_and_junk_is_skipped() -> None:
     assert [str(n) for n in parse_networks("*, nonsense, 10.1.2.3", name="test")] == ["10.1.2.3/32"]
     # Nothing trusted: the header is never read.
     assert resolve_client_host(NGINX, "198.51.100.1", parse_trusted_proxies("*")) == NGINX
+
+
+def test_a_rejected_entry_is_logged_by_position_not_value(caplog: pytest.LogCaptureFixture) -> None:
+    """The value comes from the environment and may be a misplaced secret."""
+    with caplog.at_level(logging.ERROR, logger="gdx_dispatch.core.client_ip"):
+        parse_networks("10.1.2.3, sk_live_not_an_address", name="GDX_TRUSTED_PROXIES")
+    assert "sk_live_not_an_address" not in caplog.text
+    assert "GDX_TRUSTED_PROXIES: entry 2 is not an address or network" in caplog.text
