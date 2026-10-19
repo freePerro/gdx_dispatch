@@ -36,8 +36,10 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner estimates-
 
 - **The Midland operator/parts multiplier is an open question with the
   distributor. Do not invent one.** If a change needs it, stop and say so.
-- **Commission is plugin-bound and out of core.** Never compute or fix
-  commission here; `routers/commission.py` (people-time) is only the boundary.
+- **Commission is leaving core** (not yet a plugin; plan
+  `commission-as-a-plugin-plan` under `docs/design/`). Never compute, repair or
+  extend commission here; the commission code still in core
+  (`routers/commission.py`, people-time's) is frozen.
 - **Proprietary pricing plugins are git-ignored on purpose** (`plugins/gdx-plugin-chi-pricing`
   is one). Never commit, push or merge them, and never copy their rules into
   core.

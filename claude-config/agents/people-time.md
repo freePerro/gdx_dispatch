@@ -41,9 +41,10 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner people-tim
   option and for this shop it does not. Per-person balance tracking is a
   PLAN, not built: `vacation-balance-tracking-plan` under `docs/design/`. Do not
   describe it as existing.
-- **Commission is plugin-bound and out of core.** `routers/commission.py` is
-  the boundary only; never compute or fix commission math here
-  (plan `commission-as-a-plugin-plan` under `docs/design/`).
+- **Commission is leaving core** (not yet a plugin; plan
+  `commission-as-a-plugin-plan` under `docs/design/`). The commission code
+  still here — `routers/commission.py` and payroll's commission-rates
+  endpoints — is frozen: never compute, repair or extend commission math in it.
 - **The pay-period send holds and says so** when the period is not clean
   (`test_time_off_send_hold`, `tasks/payroll_timesheet.py`); a send that
   succeeds without the hours is a fake success.
@@ -68,7 +69,8 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner people-tim
 - **mobile-tech** owns `MobileTimeclockView` and the day's clock/breaks
   surface; your rules apply there and you review.
 - **comms-email-phone** owns the sender your timesheet delivery uses.
-- **plugins-host** hosts the commission plugin.
+- **plugins-host** will host commission once it is rebuilt as a plugin; no
+  commission plugin exists yet.
 
 ## Verify a change here
 

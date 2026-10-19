@@ -226,7 +226,11 @@ buttons wired to stubs. Before calling anything done:
 - QuickBooks is being phased out: never schedule new QB syncs; backfills go
   into this system, not QB.
   QB API reads are metered, writes are free.
-- **Commission is plugin-bound and out of core** — never fix it in core.
+- **Commission is leaving core** (not yet a plugin; plan
+  `commission-as-a-plugin-plan` under `docs/design/`). The commission code
+  still in core — `routers/commission.py` and payroll's commission-rates
+  endpoints — is frozen: do not compute, repair or extend it. Never fix
+  commission in core.
 - The Midland operator/parts multiplier is an open question with the
   distributor; do not invent one.
 
