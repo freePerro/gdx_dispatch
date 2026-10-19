@@ -699,7 +699,7 @@ onMounted(async () => {
   padding: 0 0.3rem;
   border-radius: 0.625rem;
   background: var(--interactive-primary, #2563eb);
-  color: #fff;
+  color: var(--text-on-interactive-primary);
   font-size: 0.7rem;
   font-weight: 700;
   display: inline-flex;

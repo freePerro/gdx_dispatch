@@ -102,6 +102,11 @@ export function useViewMode() {
     // The width problem is real; a redirect is the wrong cure. The right fix is
     // to card-stack those tables at phone width, which keeps every capability.
     //
+    // '/inbox' is NOT mapped either, for the same reason (GDXA-1751/1753,
+    // 2026-10-19). MobileInboxView lacks folders, move, link-to-customer/job,
+    // mark-all-read, empty-folder and save-draft. InboxView instead collapses to
+    // one pane at a time at phone width (folders behind a header toggle).
+    //
     // NOTE: '/profile' not mapped — the responsive CSS clamp in MH-5
     // makes the desktop view fit at 390px without a separate companion.
   };
