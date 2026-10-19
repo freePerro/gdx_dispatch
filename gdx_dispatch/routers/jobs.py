@@ -148,6 +148,10 @@ class JobUpdate(BaseModel):
     holding_area_id: str | None = None
     scheduled_duration_hours: Decimal | None = Field(default=None, ge=0, le=240)
     location_id: str | None = Field(default=None, max_length=36)
+    # The length of a visit this save books, when it is not the job's hours:
+    # the board's first day of a job split over several days (Doug,
+    # 2026-10-18). Not stored on the job; the visit and its audit row keep it.
+    visit_duration_minutes: int | None = Field(default=None, ge=15, le=24 * 60)
 
 def jsonable_response(content: Any, status_code: int = 200) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=jsonable_encoder(content))
@@ -1377,10 +1381,15 @@ def update_job(
         # audit log untouched. A date equal to the stored one to the minute is
         # no date edit (E1) and is not rewritten. A cancel never reaches here:
         # the stage guard above sends it to /cancel, which plans X1 itself.
-        from gdx_dispatch.services.visit_sync import UNSET, plan_for_job, visit_fields
+        from gdx_dispatch.services.visit_sync import UNSET, default_duration, plan_for_job, visit_fields
 
+        # A visit this save books is as long as the hours it writes (or the
+        # job's saved ones), unless the board names the first day's length.
         visit_plan = plan_for_job(
             db, job,
+            duration_minutes=data.get("visit_duration_minutes") or default_duration(
+                db, job, updates["scheduled_duration_hours"] if "scheduled_duration_hours" in updates else UNSET,
+            ),
             scheduled_at=updates.get("scheduled_at", UNSET),
             crew_after=tuple(desired_tech_ids) if apply_assignments else None,
             fields=visit_fields(
