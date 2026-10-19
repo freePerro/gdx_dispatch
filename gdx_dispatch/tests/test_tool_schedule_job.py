@@ -70,4 +70,9 @@ async def test_confirm_proceeds():
         {"job_id": jid, "technician_id": "tech-a", "scheduled_at": "2026-05-01T09:00:00Z"},
         principal=p, db=db, approval_ref="tok",
     )
-    assert r.error_type != "approval_required"
+    # On confirm the handler runs and REFUSES (GDXA-1849): nothing backs this
+    # tool yet, so it must not come back looking like a success.
+    assert r.ok is False
+    assert r.error_type == "execution_error"
+    assert "not wired" in r.audit_row["error_detail"]
+    assert not db.commit.called

@@ -21,6 +21,22 @@ def coerce_uuid(raw: str | None) -> UUID | None:
         return None
 
 
+def acting_user_id(principal: Any) -> str | None:
+    """The person a tool's write is recorded against, or None if there is none.
+
+    A human principal (the login session) acts as itself. An ``ai_worker``
+    acts for ``delegated_by_user_id``, the person whose ``/api/ai/ask`` turn
+    minted it (``routers/ai.py``). An MCP bearer is an ``ai_worker`` too, but
+    its ``identity_id`` is a UUID5 of the token (``mcp_fastmcp_bridge``) and
+    names nobody, so it gets None and a money tool refuses it.
+    """
+    if getattr(principal, "actor_type", "human") == "ai_worker":
+        delegated = getattr(principal, "delegated_by_user_id", None)
+        return str(delegated) if delegated else None
+    identity = getattr(principal, "identity_id", None)
+    return str(identity) if identity else None
+
+
 def live_job(db: Any, job_id: str) -> Any:
     """Load the ``Job`` for ``job_id`` or raise; a soft-deleted job is not found.
 

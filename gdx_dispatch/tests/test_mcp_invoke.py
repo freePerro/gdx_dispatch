@@ -208,6 +208,75 @@ def test_approval_ref_lets_second_call_execute():
     assert r.result == {"rotated": True}
 
 
+def _approval_aware_tool() -> list[Any]:
+    """A red tool that, like invoices.void, branches on approval_ref."""
+    seen: list[Any] = []
+
+    async def _h(msg: str, approval_ref: str | None = None, **_):
+        seen.append(approval_ref)
+        return {"applied": bool(approval_ref)}
+
+    register_tool(_descriptor(
+        name="t.apply",
+        blast_radius="red",
+        approval_required=True,
+        capabilities_required=[("write", "thing")],
+        input_schema={
+            "type": "object",
+            "required": ["msg"],
+            "properties": {"msg": {"type": "string"}, "approval_ref": {"type": "string"}},
+        },
+    ), _h)
+    return seen
+
+
+_WRITER = Principal(capabilities=[
+    {"action": "write", "resource_type": "thing"}, {"action": "admin", "resource_type": "*"},
+])
+
+
+def test_payload_approval_ref_never_reaches_the_staging_call():
+    """GDXA-1849: a model writing approval_ref into its own tool arguments
+    must not apply a red tool before anyone confirms."""
+    seen = _approval_aware_tool()
+    r = _run(invoke_tool("t.apply", {"msg": "x", "approval_ref": "self-made"}, principal=_WRITER))
+    assert r.error_type == ERROR_APPROVAL_REQUIRED
+    assert seen == [None]
+    assert r.error_body["result"] == {"applied": False}
+
+
+def test_kwarg_approval_ref_reaches_a_handler_that_declares_it():
+    """GDXA-1849: the kwarg approval reaches a red handler that declares it
+    (invoke_tool plumbing only; no shipped UI mints the token today)."""
+    seen = _approval_aware_tool()
+    r = _run(invoke_tool("t.apply", {"msg": "x"}, principal=_WRITER, approval_ref="tok"))
+    assert r.ok
+    assert r.result == {"applied": True}
+    assert seen == ["tok"]
+
+
+def test_a_yellow_tool_still_reads_its_payload_approval_ref():
+    """Pinned on purpose (GDXA-1849): yellow semantics are unchanged until the
+    maintainer rules on self-asserted approvals; this goes red when they do."""
+    seen: list[Any] = []
+
+    async def _h(msg: str, approval_ref: str | None = None, **_):
+        seen.append(approval_ref)
+        return {"applied": bool(approval_ref)}
+
+    register_tool(_descriptor(
+        name="t.yellow", blast_radius="yellow", approval_required=True,
+        capabilities_required=[("write", "thing")],
+        input_schema={
+            "type": "object", "required": ["msg"],
+            "properties": {"msg": {"type": "string"}, "approval_ref": {"type": "string"}},
+        },
+    ), _h)
+    r = _run(invoke_tool("t.yellow", {"msg": "x", "approval_ref": "p"}, principal=_WRITER))
+    assert r.error_type == ERROR_APPROVAL_REQUIRED
+    assert seen == ["p"]
+
+
 # ── Execution errors ──────────────────────────────────────────────────────
 
 

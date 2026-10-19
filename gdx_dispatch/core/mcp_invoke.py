@@ -290,7 +290,11 @@ async def invoke_tool(
     approval_ref
         Set by the transport layer on a second call for an
         approval-gated tool. When present AND the descriptor is
-        ``approval_required``, the handler runs normally.
+        ``approval_required``, the handler runs normally. For a red tool it
+        is the only way an approval reaches the handler: an ``approval_ref``
+        key inside ``payload`` is dropped, and a red tool that declares
+        ``approval_ref`` in its input schema receives this value on the
+        approved execute only.
     log_fn
         Audit row writer; defaults to the stub.
     trace_id
@@ -325,6 +329,15 @@ async def invoke_tool(
             ok=False, trace_id=tid, error_type=ERROR_TOOL_NOT_FOUND, error_body=body
         )
     descriptor, handler = resolved
+
+    # GDXA-1849. For a red (money) tool the approval is the caller's kwarg,
+    # never the payload's: the handler also runs on the unapproved staging
+    # call below, so a model writing "approval_ref" into its own tool
+    # arguments would void an invoice before anyone confirmed. Yellow tools
+    # still read a payload approval_ref; see the comment at step 5.
+    gated_by_kwarg = descriptor.blast_radius == "red"
+    if gated_by_kwarg and isinstance(payload, dict) and "approval_ref" in payload:
+        payload = {k: v for k, v in payload.items() if k != "approval_ref"}
 
     # 2. Validate input — BEFORE capability check, by spec.
     errors = _validate_input(descriptor.input_schema, payload)
@@ -476,6 +489,18 @@ async def invoke_tool(
     # 5. Execute. 0.9-s R2: filter to schema properties so undeclared
     # keys from the request body never reach handlers via **kwargs.
     filtered = _filter_payload_to_schema(descriptor.input_schema, payload)
+    # Yellow tools are left as they were (GDXA-1849): the panel's Apply sends
+    # pending_action.approval_token, which no tool mints, so in-app a yellow
+    # tool applies only when the model itself echoes an approval_ref. Closing
+    # that for yellow too would switch every yellow tool off; that is the
+    # maintainer's call, not a side effect of the void fix.
+    if (
+        gated_by_kwarg
+        and approval_ref
+        and isinstance(filtered, dict)
+        and "approval_ref" in (descriptor.input_schema.get("properties") or {})
+    ):
+        filtered = {**filtered, "approval_ref": approval_ref}
     try:
         result = await handler(
             principal=principal,

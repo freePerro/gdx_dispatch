@@ -1,24 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
 
-
-@dataclass
-class Job:
-    """Mock Job class for type hinting/db.get usage."""
-    id: str
-    title: str
-    customer_id: str
-    lifecycle_stage: str
-    deleted_at: Any = None
-
-
 DESCRIPTOR = ToolDescriptor(
     name="invoices.create_draft",
-    description="Draft invoice from a completed job. Yellow.",
+    description=(
+        "Not wired yet: refuses every call and creates nothing. Bill a "
+        "completed job from its closeout or from Ready for Billing."
+    ),
     blast_radius="yellow",
     approval_required=True,
     sensitivity_class="internal",
@@ -49,29 +40,20 @@ DESCRIPTOR = ToolDescriptor(
 
 
 async def handler(
-    principal: Any, db: Any, job_id: str, **_
+    principal: Any, db: Any, job_id: str, **_: Any
 ) -> dict[str, Any]:
-    """
-    Handler for creating an invoice draft.
-    Note: invoke_tool handles the approval_ref gate and capability checks.
-    """
-    # In a real app, Job would be imported from the domain model.
-    # Here we use the local definition or assume db.get returns an object with these attrs.
-    job = db.get(Job, job_id)
-    if job is None:
-        return {"error": "job not found"}
+    """Refuse: no invoice-drafting write backs this tool yet (GDXA-1849).
 
-    # Build a draft preview.
-    # For v1, we return the preview shape. Actual DB insert logic is deferred.
-    draft = {
-        "job_id": str(job.id),
-        "customer_id": str(job.customer_id),
-        "title": f"Draft for {job.title}",
-        "line_items": [],
-        "total": 0.0,
-    }
-
-    return {"draft": draft}
+    It looked the job up through a local placeholder dataclass, which raises
+    on a real Session, and on a mock it returned a ``draft`` with no lines
+    and a zero total while inserting nothing. Drafting a bill applies
+    billing's line, tax and claim rules; this tool gets them when
+    money-billing exposes a shared function.
+    """
+    raise NotImplementedError(
+        "invoices.create_draft is not wired to billing yet; no invoice was "
+        "created. Bill the job from its closeout or Ready for Billing."
+    )
 
 
 register_tool(DESCRIPTOR, handler)
