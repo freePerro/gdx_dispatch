@@ -2396,14 +2396,21 @@ async function onWeekCellDrop(event, techId, dayStr) {
   const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
   if (source && onCrew) {
     // An undated job dropped in a tech's row was booked above, hours asked
-    // there (GDXA-1261). What reaches here is a dated job's move, or the
-    // "No tech" row, which only dates: it has no capacity to count, as
-    // _needsDurationPrompt exempts techId=null.
+    // there (GDXA-1261). What reaches here is a dated job's move, which is
+    // checked against that tech's shift, or the "No tech" row, which only
+    // dates: it has no capacity to count, as _needsDurationPrompt exempts
+    // techId=null.
+    const crewNow = crewOf(source);
+    const fit = await fitDatedPlacement(source, techId, iso, crewNow, crewNow[0]);
+    if (!fit) return; // cancelled: nothing moves
     await withBoardWrite(async () => {
+      let moved = false;
       try {
         // The "No tech" row only dates: a parked job with no tech stays parked.
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso, ...(techId ? leaveLanePatch(source) : {}) });
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso, ...(techId ? leaveLanePatch(source) : {}), ...fit.patch });
+        moved = true;
       } catch { /* api composable already toasts */ }
+      if (moved && fit.booking) await bookLaterDays(jobId, source, fit.booking);
       await fetchJobs();
     });
     return;
@@ -2541,6 +2548,37 @@ async function fitBookingInDay(job, answer, techId, scheduledAt) {
   };
 }
 
+// A job that already has a date, put in a tech's day, gets the same check
+// (Doug, 2026-10-18): an 8 h block moved to 3:45 PM used to land "+6.75h
+// over" with nothing asked. `when` is the new start, else the job's own;
+// techIds and lead are the crew the write leaves, and hours any the caller
+// is about to write. Resolves { patch, booking } — what to add to the
+// caller's PATCH, and the split for bookLaterDays (null for one day) — or
+// null on Cancel, when the caller writes nothing. Day one's length goes as
+// visit_duration_minutes, which the server sets on the job's first-day
+// visits (E7): a moved visit otherwise keeps its old length. A job under
+// way keeps its crew and the dialog could change it, so it is not asked.
+async function fitDatedPlacement(job, techId, when, techIds, lead, hours = null) {
+  const none = { patch: {}, booking: null };
+  const start = when || job?.scheduled_at;
+  if (!job || !techId || !start || jobStage(job) === 'in_progress') return none;
+  const asked = { tech_ids: techIds.map(String), lead: String(lead ?? techIds[0]), hours };
+  const booking = await fitBookingInDay(job, asked, techId, start);
+  if (!booking) return null;
+  if (booking.answer === asked) return none; // it fits: nothing was asked
+  const { answer, days } = booking;
+  const patch = {};
+  if (answer.tech_ids.join() !== asked.tech_ids.join() || String(answer.lead) !== asked.lead) {
+    Object.assign(patch, crewPatch(answer));
+  }
+  if (answer.hours != null) patch.scheduled_duration_hours = answer.hours;
+  // A visit is 15 min to one day (the PATCH's bounds); hours kept on one
+  // day outside them leave the visit its own length rather than fail the save.
+  const firstDay = Math.round((days ? days[0].hours : answer.hours) * 60);
+  if (firstDay >= 15 && firstDay <= 24 * 60) patch.visit_duration_minutes = firstDay;
+  return { patch, booking: days ? booking : null };
+}
+
 // The days after the first of a split booking, through the job's Visits
 // route: each starts at shift start, for the whole crew. Days of the same
 // length go in one request. A refusal is the server's own sentence; the
@@ -2632,10 +2670,16 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
       if (hours === null) return true;
       if (hours > 0) datePatch.scheduled_duration_hours = hours;
     }
+    const fit = await fitDatedPlacement(job, techId, scheduledAt, crew, crew[0], datePatch.scheduled_duration_hours ?? null);
+    if (!fit) return true; // cancelled: nothing moves
+    Object.assign(datePatch, fit.patch);
     await withBoardWrite(async () => {
+      let moved = false;
       try {
         await api.patch(`/api/jobs/${jobId}`, datePatch);
+        moved = true;
       } catch { /* api composable already toasts */ }
+      if (moved && fit.booking) await bookLaterDays(jobId, job, fit.booking);
       await fetchJobs();
     });
     return true;
@@ -2653,10 +2697,18 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
     if (hours === null) return true;
     if (hours > 0) patch.scheduled_duration_hours = hours;
   }
+  const fit = await fitDatedPlacement(
+    job, techId, scheduledAt, choice.tech_ids, choice.lead, patch.scheduled_duration_hours ?? null,
+  );
+  if (!fit) return true; // cancelled: nothing moves
+  Object.assign(patch, fit.patch);
   await withBoardWrite(async () => {
+    let placed = false;
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
+      placed = true;
     } catch { /* api composable already toasts */ }
+    if (placed && fit.booking) await bookLaterDays(jobId, job, fit.booking);
     await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
   });
   return true;
@@ -2783,11 +2835,16 @@ async function confirmDurationPrompt(skip = false) {
   const hours = Number(durationPromptHours.value);
   durationPromptOpen.value = false;
   if (!jobId || !techId) return;
+  const picked = !skip && Number.isFinite(hours) && hours > 0;
+  // The hours just typed are measured against the tech's day before either
+  // PATCH, so Cancel on the overflow question writes nothing at all.
+  const fit = picked ? await fitOneTech(jobId, techId, scheduledAt, hours) : { patch: {}, booking: null };
+  if (!fit) return;
   // Skip = assign without recording a duration (card stays "?h"). Confirm =
   // PATCH duration first so the column total reflects it; the assignment
   // PATCH follows. Pass {skipPrompt:true} so we don't re-enter the prompt.
   await withBoardWrite(async () => {
-    if (!skip && Number.isFinite(hours) && hours > 0) {
+    if (picked) {
       try {
         await api.patch(`/api/jobs/${jobId}`, { scheduled_duration_hours: hours });
       } catch (_e) {
@@ -2796,7 +2853,7 @@ async function confirmDurationPrompt(skip = false) {
     }
     // _doAssignJob nests withBoardWrite (counter, so nesting is fine) — keeps
     // the veto held across the duration PATCH + the assign PATCH as one unit.
-    await _doAssignJob(jobId, techId, scheduledAt);
+    await _doAssignJob(jobId, techId, scheduledAt, fit);
   });
 }
 
@@ -2827,16 +2884,31 @@ async function assignJob(jobId, techId, scheduledAt = null) {
     prefillDurationFromEstimate(jobId, 1);
     return;
   }
-  await _doAssignJob(jobId, techId, scheduledAt);
+  const fit = await fitOneTech(jobId, techId, scheduledAt);
+  if (!fit) return; // cancelled: nothing moves
+  await _doAssignJob(jobId, techId, scheduledAt, fit);
 }
 
-async function _doAssignJob(jobId, techId, scheduledAt = null) {
+// The overflow check for a one-tech assignment of a dated job. A pick of
+// the tech it already has at the time it already has re-saves nothing, so
+// it is not asked; an undated job lands in the tray (the whole shift).
+async function fitOneTech(jobId, techId, scheduledAt, hours = null) {
+  const job = findBoardJob(jobId);
+  if (!job) return { patch: {}, booking: null };
+  const sameTech = String(job.technician_id ?? job.assigned_to ?? '') === String(techId);
+  if (sameTech && !scheduledAt && hours == null) return { patch: {}, booking: null };
+  return fitDatedPlacement(job, techId, scheduledAt || job.scheduled_at || boardDayStartIso(), [techId], techId, hours);
+}
+
+async function _doAssignJob(jobId, techId, scheduledAt = null, fit = null) {
   // Hold the poll veto for the entire optimistic-write + PATCH lifecycle so a
   // background refresh can't overwrite the move before the server confirms.
-  return withBoardWrite(() => _doAssignJobInner(jobId, techId, scheduledAt));
+  return withBoardWrite(() => _doAssignJobInner(jobId, techId, scheduledAt, fit));
 }
 
-async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
+// `fit` is fitDatedPlacement's answer: its fields join the PATCH, and a
+// split books its later days once the PATCH lands.
+async function _doAssignJobInner(jobId, techId, scheduledAt = null, fit = null) {
   const jobIndex = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   const sourceJob = jobIndex >= 0 ? jobs.value[jobIndex] : null;
   const laneJob = scheduledUnassigned.value.find((j) => String(j.id) === String(jobId));
@@ -2865,6 +2937,8 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
   if (techId && (patch.scheduled_at || String(laneSource?.technician_id ?? '') !== String(techId))) {
     Object.assign(patch, leaveLanePatch(laneSource));
   }
+  Object.assign(patch, fit?.patch || {});
+  const bookRest = fit?.booking ? () => bookLaterDays(jobId, laneSource, fit.booking) : null;
 
   // Job not in the per-day list (e.g., dragged from the lane which holds
   // any-date jobs) — PATCH and refresh both lists, then toast so the user
@@ -2873,6 +2947,7 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
     const techName = (technicians.value.find((t) => String(t.id) === String(techId)) || {}).name || 'tech';
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
+      if (bookRest) await bookRest();
       await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
       const when = patch.scheduled_at
         ? formatScheduled(patch.scheduled_at)
@@ -2899,9 +2974,10 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
 
   try {
     await api.patch(`/api/jobs/${jobId}`, { ...patch, technician_id: techId });
-    // Refresh if we wrote a date so the row's scheduled_at reflects it
-    // (and the timeline re-renders the block at the new position).
-    if (patch.scheduled_at) await fetchJobs();
+    if (bookRest) await bookRest();
+    // Refresh if we wrote a date or a crew so the row reflects it (and the
+    // timeline re-renders the block at the new position).
+    if (patch.scheduled_at || bookRest || patch.assigned_tech_ids) await fetchJobs();
   } catch {
     jobs.value[jobIndex] = {
       ...jobs.value[jobIndex],
@@ -2943,6 +3019,9 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     && (Number(job.scheduled_duration_hours) > 0
         || Number(job.effective_duration_hours) > 0);
   if (sameTech && hasDuration) {
+    // The move is measured against what is left of the tech's day first.
+    const fit = await fitDatedPlacement(job, techId, startISO, [techId], techId);
+    if (!fit) return; // cancelled: nothing moves
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     const prev = jobs.value[idx].scheduled_at;
     const prevArea = jobs.value[idx].holding_area_id;
@@ -2950,10 +3029,13 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     await withBoardWrite(async () => {
       jobs.value[idx] = { ...jobs.value[idx], scheduled_at: startISO, ...lane };
       try {
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO, ...lane });
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO, ...lane, ...fit.patch });
       } catch {
         jobs.value[idx] = { ...jobs.value[idx], scheduled_at: prev, holding_area_id: prevArea };
+        return;
       }
+      if (fit.booking) await bookLaterDays(jobId, job, fit.booking);
+      if (fit.booking || Object.keys(fit.patch).length) await fetchJobs();
     });
     return;
   }
