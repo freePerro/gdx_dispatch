@@ -111,9 +111,10 @@ def test_the_rule_lives_only_in_core_and_core_imports_no_router() -> None:
         (ANNIVERSARY, date(2020, 2, 29), date(2026, 3, 1), (date(2026, 2, 28), date(2027, 2, 27))),
         (ANNIVERSARY, date(2020, 2, 29), date(2027, 6, 1), (date(2027, 2, 28), date(2028, 2, 28))),
         (ANNIVERSARY, date(2020, 2, 29), date(2028, 3, 1), (date(2028, 2, 29), date(2029, 2, 27))),
-        # No hire date, and one still ahead, read the calendar year.
+        # No hire date, and one in a later year, read the whole calendar year
+        # (a hire date later this year: test_the_pre_hire_window_ends_...).
         (ANNIVERSARY, None, date(2026, 8, 23), (date(2026, 1, 1), date(2026, 12, 31))),
-        (ANNIVERSARY, date(2026, 11, 1), date(2026, 8, 23), (date(2026, 1, 1), date(2026, 12, 31))),
+        (ANNIVERSARY, date(2027, 3, 1), date(2026, 8, 23), (date(2026, 1, 1), date(2026, 12, 31))),
         # Hired today: the first vacation year starts today.
         (ANNIVERSARY, date(2026, 8, 23), date(2026, 8, 23), (date(2026, 8, 23), date(2027, 8, 22))),
     ],
@@ -175,7 +176,40 @@ def test_a_hire_date_still_ahead_reads_the_calendar_year(tech):
         base._entry(db, clock_in="2026-03-02T14:00:00+00:00")
         db.commit()
         bal = vacation_balances(db, base._settings(db), {TECH}, on=date(2026, 8, 23), as_of=date(2026, 8, 23))[TECH]
-        assert bal.window == (date(2026, 1, 1), date(2026, 12, 31)) and bal.used_hours == 8.0
+        assert bal.window == (date(2026, 1, 1), date(2026, 10, 31)) and bal.used_hours == 8.0
+
+
+@pytest.mark.parametrize("hire", [date(2026, 11, 1), date(2026, 1, 2), date(2026, 12, 31), date(2028, 2, 29)])
+def test_the_pre_hire_window_ends_the_day_before_the_first_anniversary_year(hire) -> None:
+    """GDXA-1927: the calendar-year fallback before a hire date later in the
+    same year must stop the day before it, or a day in between is counted in
+    both the pre-hire read and the first anniversary year's."""
+    before = vacation_window(ANNIVERSARY, hire, date(hire.year, 1, 1))
+    after = vacation_window(ANNIVERSARY, hire, hire)
+    assert before == (date(hire.year, 1, 1), hire - timedelta(days=1))
+    assert after[0] == hire
+    assert before[1] < after[0] and before[1] + timedelta(days=1) == after[0]   # disjoint, adjacent
+    # Every day from Jan 1 through the end of the first anniversary year is in
+    # exactly one of the windows the readers would use for it.
+    day = before[0]
+    while day <= after[1]:
+        w = vacation_window(ANNIVERSARY, hire, day)
+        assert w == (before if day < hire else after), day
+        day += timedelta(days=1)
+
+
+def test_a_vacation_day_before_the_hire_date_is_not_counted_again_after_it(tech):
+    with tech.SessionLocal() as db:
+        base._seed(db)
+        _policy(db, ANNIVERSARY)
+        _hire(db, TECH, date(2026, 11, 1))
+        base._entry(db, clock_in="2026-10-20T14:00:00+00:00")    # before the hire date
+        base._entry(db, clock_in="2026-11-20T14:00:00+00:00")    # first anniversary year
+        db.commit()
+        pre = vacation_balances(db, base._settings(db), {TECH}, on=date(2026, 10, 1), as_of=date(2026, 12, 31))[TECH]
+        first = vacation_balances(db, base._settings(db), {TECH}, on=date(2026, 12, 31), as_of=date(2026, 12, 31))[TECH]
+        assert pre.window == (date(2026, 1, 1), date(2026, 10, 31)) and pre.used_hours == 8.0
+        assert first.window == (date(2026, 11, 1), date(2027, 10, 31)) and first.used_hours == 8.0
 
 
 # ── the pay-period files ─────────────────────────────────────────────────────

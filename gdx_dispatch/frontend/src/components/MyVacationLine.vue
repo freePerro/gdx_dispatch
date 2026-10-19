@@ -1,11 +1,7 @@
 <!--
   MyVacationLine — "Vacation <window>: Xh used of Yh · Zh left" on the tech's
-  own clock pages (GDXA-1902). Built to be the one component under the
-  desktop Time off card and the mobile Clock tab, as TimeOffRequestPanel is;
-  only the desktop card uses it so far. MobileTimeclockView still renders its
-  own copy with the start year until the mobile-tech follow-up adopts this
-  (its spec's `data-test="mt-vacation-*"` selectors become the
-  `data-testid="my-vacation-*"` ones below).
+  own clock pages (GDXA-1902). The one component under the desktop Time off
+  card and the mobile Clock tab (GDXA-1903), as TimeOffRequestPanel is.
 
   Reads GET /api/timeclock/time-off/balances with no technician named, so the
   server answers for the caller (core/time_off.vacation_balances): every booked

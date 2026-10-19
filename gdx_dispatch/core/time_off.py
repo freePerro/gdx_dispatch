@@ -750,10 +750,20 @@ def vacation_window(policy: str | None, hire_date: date | None, on: date) -> tup
     The last day is the day before the next year starts: Dec 31 for a
     calendar year, the day before the next anniversary otherwise. A hire date
     after ``on`` means no anniversary has passed, so ``on`` is counted in the
-    calendar year (the same fallback as no hire date)."""
+    calendar year (the same fallback as no hire date) until the day before
+    the hire date when that falls in the same year: the first anniversary
+    year starts on the hire date, and a day in both would count twice
+    (GDXA-1927)."""
     start = vacation_year_start(policy, hire_date, on)
     if not _counts_from_anniversary(policy, hire_date, on):
-        return start, date(on.year, 12, 31)
+        end = date(on.year, 12, 31)
+        if (
+            vacation_year_policy_out(policy) == VACATION_YEAR_ANNIVERSARY
+            and hire_date is not None
+            and hire_date.year == on.year
+        ):
+            end = hire_date - timedelta(days=1)
+        return start, end
     return start, _anniversary(hire_date, start.year + 1) - timedelta(days=1)
 
 
