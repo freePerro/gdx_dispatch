@@ -112,6 +112,14 @@ describe('PdfTemplateEditorView — line-item options', () => {
     expect(wrapper.findAll('.block-item')).toHaveLength(8);
   });
 
+  it('offers only the template types a renderer reads (GDXA-1909)', async () => {
+    const wrapper = await mountEditor();
+    const values = wrapper
+      .findAll('[data-testid="template-type-select"] option')
+      .map((o) => o.element.value);
+    expect(values).toEqual(['estimate', 'invoice']);
+  });
+
   it('defaults the new line-item keys on legacy saved templates', async () => {
     // legacy era settings only — no show_category/category_display keys
     const wrapper = await mountEditor({ show_unit_price: true, show_tax: true });

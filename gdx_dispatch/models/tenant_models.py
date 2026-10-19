@@ -2323,20 +2323,6 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
 
 
-class SafetyChecklist(Base):
-    __tablename__ = "safety_checklists"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    technician_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    items: Mapped[str] = mapped_column(Text, nullable=False)
-    completed: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
-    photo_url: Mapped[str] = mapped_column(Text, nullable=True)
-    signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class PdfTemplate(Base):
     __tablename__ = "pdf_templates"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -3000,32 +2986,6 @@ class TimeOffRequest(Base):
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class VanInventoryItem(Base):
-    __tablename__ = "van_inventory"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    truck_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    sku: Mapped[str] = mapped_column(String(100), nullable=True)
-    name: Mapped[str] = mapped_column(String(300), nullable=False)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    min_stock: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    category: Mapped[str] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class VanInventoryLog(Base):
-    __tablename__ = "van_inventory_log"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    van_inventory_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(36), nullable=True)
-    quantity_change: Mapped[int] = mapped_column(Integer, nullable=False)
-    reason: Mapped[str] = mapped_column(String(500), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CustomerReview(Base):

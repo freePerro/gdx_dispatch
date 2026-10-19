@@ -58,7 +58,8 @@ async def handler(
     **_: Any,
 ) -> dict[str, Any]:
     """List invoices with optional filters."""
-    stmt = select(Invoice)
+    # Soft-deleted invoices are gone to every reader (invariant #2).
+    stmt = select(Invoice).where(Invoice.deleted_at.is_(None))
 
     if status == "paid":
         stmt = stmt.where(Invoice.status == "paid")

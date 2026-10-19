@@ -327,16 +327,19 @@
         </template>
       </Card>
 
-      <!-- Vacation balances (core/time_off.vacation_balances): the year's
-           allowance against every vacation day booked, approved days still
-           ahead included, as of today. The CSV's TOTAL rows state a different
-           cut on purpose: used and remaining through the period's last day,
-           with the days booked after it in their own column. -->
+      <!-- Vacation balances (core/time_off.vacation_balances): each person's
+           allowance against every vacation day booked in THEIR vacation year,
+           approved days still ahead included, as of today. Under
+           hire_anniversary those years differ person to person, so each row
+           names its own window and the title names none (GDXA-1902). The
+           CSV's TOTAL rows state a different cut on purpose: used and
+           remaining through the period's last day, with the days booked
+           after it in their own column. -->
       <Card v-if="!vacation.forbidden" class="time-off-card" data-testid="vacation-balances">
         <template #title>
           <div class="time-off-head">
             <i class="pi pi-sun" aria-hidden="true" />
-            <span class="time-off-title">Vacation {{ vacationYear }}</span>
+            <span class="time-off-title">Vacation balances</span>
             <span v-if="vacation.data" class="muted vacation-asof">as of {{ vacation.data.as_of }}</span>
           </div>
         </template>
@@ -352,6 +355,9 @@
               :data-testid="`vacation-balance-${b.technician_id}`"
             >
               <strong>{{ b.technician_name || 'Unknown' }}</strong>
+              <span class="muted" :data-testid="`vacation-window-${b.technician_id}`">
+                {{ vacationWindowLabel(b) }} ·
+              </span>
               <span class="muted">
                 {{ formatHours(b.used_hours) }}h used<template v-if="b.scheduled_hours > 0">
                   ({{ formatHours(b.scheduled_hours) }}h of it still ahead)</template>
@@ -628,6 +634,7 @@ import { useApi } from '../composables/useApi';
 import { downloadAuthedFile } from '../composables/useAuthedFile';
 import { formatDate, formatTime, localDateString, parseLocalDateString } from '../composables/useFormatters';
 import { dateKeyInZone, useTenantTimezone } from '../composables/useTenantTimezone';
+import { vacationWindowLabel } from '../utils/vacationWindow';
 import {
   isTimeOffType, timeOffStatusSeverity, timeclockEntryLabel, timeclockEntrySeverity,
 } from '../utils/statusSeverity';
@@ -695,7 +702,9 @@ const revoking = ref('');     // request id awaiting a second click
 const ruling = ref('');       // request id with a call in flight
 const holidays = ref([]);
 const timeOffOptions = ref(null);
-// Vacation balances for the year the selected range ends in. `error` is set
+// Vacation balances asked for by the year the selected range ends in: the
+// server answers each person over their vacation year in force on Dec 31 of
+// it (today, for this year), and every row names that window. `error` is set
 // when the read failed, so the card says so instead of showing nobody.
 // `forbidden` is a 403: everyone's balances are the dispatcher/admin tier's
 // (a tenant can grant scheduling.write to another role), so the card hides

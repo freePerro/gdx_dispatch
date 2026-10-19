@@ -715,7 +715,7 @@ their place:
 | TECH-01 | List technicians | GET /api/technicians returns tech list with name, skills, availability |
 | TECH-02 | Technician detail | GET /{id} returns full profile |
 | TECH-03 | Add skills | POST /{id}/skills adds skill tags |
-| TECH-04 | Set unavailability | POST /{id}/unavailability blocks time slots |
+| TECH-04 | Time off blocks the schedule | Retired route POST /{id}/unavailability removed 2026-10-19 (GDXA-1828). Time off is a request on /api/timeclock/time-off; an approved one blocks slots once GDXA-1775's scheduling child lands |
 | TECH-05 | Delete technician | Soft delete, removed from dropdown lists |
 | TECH-06 | Technician dashboard | GET /dashboard returns tech's job stats |
 

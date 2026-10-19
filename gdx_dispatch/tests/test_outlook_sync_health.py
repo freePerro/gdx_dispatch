@@ -11,7 +11,9 @@ pin the alarm that ends that failure mode:
 * full stall — no folder has synced in >26h;
 * account error — reconnect-required style failures;
 * never-synced skip folders (Junk, Deleted, …) must NOT alarm;
-* the NextAction is a self-clearing singleton and respects a live snooze.
+* the NextAction is a self-clearing singleton and respects a live snooze;
+* every create, refresh and clear of it writes an AuditLog row under the
+  system actor in the same commit (GDXA-1862, invariant #1).
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.next_action import NextAction
 from gdx_dispatch.modules.outlook.models import (
     OutlookAccount,
@@ -32,6 +35,7 @@ from gdx_dispatch.modules.outlook.models import (
 )
 from gdx_dispatch.modules.outlook.tasks import (
     EMAIL_SYNC_ACTION_TYPE,
+    EMAIL_SYNC_ACTOR,
     EMAIL_SYNC_REFERENCE_ID,
     _compute_sync_health,
     _upsert_sync_health_action,
@@ -55,6 +59,7 @@ def tdb():
         OutlookFolder.__table__,
         OutlookFolderSyncState.__table__,
         NextAction.__table__,
+        AuditLog.__table__,
     ]:
         tbl.create(bind=engine, checkfirst=True)
     session = Session()
@@ -176,6 +181,17 @@ def _open_action(tdb):
     ).scalar_one_or_none()
 
 
+def _audits(tdb):
+    """next_action audit rows, read through a fresh query after the commit."""
+    return list(
+        tdb.execute(
+            select(AuditLog)
+            .where(AuditLog.entity_type == "next_action")
+            .order_by(AuditLog.created_at, AuditLog.id)
+        ).scalars()
+    )
+
+
 def test_unhealthy_creates_one_action_then_updates_in_place(tdb):
     assert _upsert_sync_health_action(tdb, TENANT, ["Inbox frozen"]) == "created"
     first = _open_action(tdb)
@@ -186,6 +202,26 @@ def test_unhealthy_creates_one_action_then_updates_in_place(tdb):
     again = _open_action(tdb)
     assert again.id == first.id  # singleton, not a pile of dupes
     assert "worse now" in again.description
+
+
+def test_every_write_is_audited_under_the_system_actor(tdb):
+    """GDXA-1862: the beat task wrote and mutated this row with no audit
+    row. Create, refresh and clear each land one committed AuditLog row;
+    a tick that changes nothing writes none."""
+    assert _upsert_sync_health_action(tdb, TENANT, ["Inbox frozen"]) == "created"
+    row_id = str(_open_action(tdb).id)
+    assert _upsert_sync_health_action(tdb, TENANT, ["Inbox frozen"]) == "unchanged"
+    assert _upsert_sync_health_action(tdb, TENANT, ["worse now"]) == "updated"
+    assert _upsert_sync_health_action(tdb, TENANT, []) == "cleared"
+    tdb.rollback()  # nothing left pending: every write above was committed
+    audits = _audits(tdb)
+    assert [a.action for a in audits] == [
+        "next_action.create", "next_action.update", "next_action.complete",
+    ]
+    assert {a.user_id for a in audits} == {EMAIL_SYNC_ACTOR}
+    assert {a.entity_id for a in audits} == {row_id}
+    assert all(a.tenant_id == TENANT for a in audits)
+    assert "worse now" in audits[1].details["changed"]["description"]["to"]
 
 
 def test_healthy_clears_open_action(tdb):
@@ -220,6 +256,7 @@ def test_task_alarms_on_partial_freeze(tdb, caplog):
         result = sync_health_check.run()
     assert result["status"] == "unhealthy"
     assert result["action"] == "created"
+    assert [a.action for a in _audits(tdb)] == ["next_action.create"]
     assert any(
         "outlook_sync_unhealthy" in r.getMessage() and r.levelname == "ERROR"
         for r in caplog.records
