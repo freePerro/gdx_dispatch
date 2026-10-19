@@ -1073,10 +1073,16 @@ def _close_open_time_entry(
             " END"
         )
         params["note"] = f"{MOBILE_STOP_LABOR_NOTE}; elapsed {elapsed_minutes} min, not attested"
-    db.execute(
-        _text(f"UPDATE time_entries SET {', '.join(sets)} WHERE id = :id"),  # noqa: S608 — `sets` are literal clauses; values bind as :params
+    # The write repeats the open-row predicate: the row came from a SELECT
+    # above, and the shift-end sweep (tasks/job_timer_sweep.py) or a job
+    # cancel can stop it in between. Without the guard Stop would re-stamp
+    # clock_out, append a second Stop note and audit a stop it did not make.
+    result = db.execute(
+        _text(f"UPDATE time_entries SET {', '.join(sets)} WHERE id = :id AND clock_out IS NULL"),  # noqa: S608 — `sets` are literal clauses; values bind as :params
         params,
     )
+    if result.rowcount != 1:
+        return None, now, 0
     return row, now, elapsed_minutes
 
 

@@ -959,7 +959,7 @@
           <p v-if="drawerJob.technician_id" class="job-drawer-line">
             <strong>Technician:</strong> {{ techName(drawerJob.technician_id) }}
           </p>
-          <p class="job-drawer-line"><strong>Scheduled:</strong> {{ drawerJob.scheduled_at || 'Not scheduled' }}</p>
+          <p class="job-drawer-line"><strong>Scheduled:</strong> {{ drawerJob.scheduled_at ? formatScheduled(drawerJob.scheduled_at) : 'Not scheduled' }}</p>
           <p v-if="visitDayLabel(drawerJob)" class="job-drawer-line" data-testid="dispatch-job-drawer-day">
             <strong>Visit:</strong> {{ visitDayLabel(drawerJob) }}
           </p>
@@ -3316,7 +3316,7 @@ async function moveToHoldingArea(event, areaId) {
 // Park a job in a holding area. A drop and the Move to… menu both land
 // here; the tech comes off, the date stays.
 function refuseOffScreenPark(job) {
-  const day = job.scheduled_at ? new Date(job.scheduled_at).toLocaleDateString() : 'another day';
+  const day = job.scheduled_at ? formatBoardDay(job.scheduled_at) : 'another day';
   toast.add({
     severity: 'warn',
     summary: 'Nothing was moved',

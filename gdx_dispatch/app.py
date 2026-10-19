@@ -349,8 +349,6 @@ variance_report_router = _load_router("gdx_dispatch.routers", "variance_report")
 
 warranty_claims_router = _load_router("gdx_dispatch.routers", "warranty_claims")
 
-safety_checklist_router = _load_router("gdx_dispatch.routers", "safety_checklist")
-
 # estimate_nurture removed 2026-09-19 (silent-success sweep): its /run
 # endpoint counted "sent" nurture emails while sending nothing, and no UI,
 # beat schedule or task ever called any of its four routes. The
@@ -1274,7 +1272,6 @@ def create_app() -> FastAPI:
     app.include_router(service_triggers_router.router if hasattr(service_triggers_router, "router") else service_triggers_router)
     app.include_router(variance_report_router.router if hasattr(variance_report_router, "router") else variance_report_router)
     app.include_router(warranty_claims_router.router if hasattr(warranty_claims_router, "router") else warranty_claims_router)
-    app.include_router(safety_checklist_router.router if hasattr(safety_checklist_router, "router") else safety_checklist_router)
     app.include_router(user_performance_router.router if hasattr(user_performance_router, "router") else user_performance_router)
     app.include_router(email_settings_router.router if hasattr(email_settings_router, "router") else email_settings_router)
     app.include_router(parts_needed_router.router if hasattr(parts_needed_router, "router") else parts_needed_router)

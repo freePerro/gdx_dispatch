@@ -535,9 +535,6 @@ GET /api/role-permissions/permissions/catalog
 GET /api/role-permissions/roles
 GET /api/role-permissions/roles/{role_id}
 GET /api/role-permissions/users/{user_id}/roles
-GET /api/safety/incomplete
-GET /api/safety/job/{job_id}
-GET /api/safety/template
 GET /api/schedule/conflicts
 GET /api/search
 GET /api/segments
@@ -1154,7 +1151,6 @@ POST /api/role-permissions/migration-banner/ack
 POST /api/role-permissions/roles
 POST /api/role-permissions/roles/{role_id}/reset
 POST /api/role-permissions/users/{user_id}/roles
-POST /api/safety/complete
 POST /api/segments
 POST /api/service-agreements
 POST /api/service-agreements/templates

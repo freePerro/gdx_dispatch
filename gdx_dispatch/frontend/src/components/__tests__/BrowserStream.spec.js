@@ -148,6 +148,51 @@ describe('BrowserStream.vue remembered login', () => {
     expect(w.vm.credsSaved).toBe(false);
     expect(w.vm.credsUsername).toBe('');
   });
+
+  // GDXA-1873: a rejection escaping a click handler takes the whole plugin
+  // page down through the ErrorBoundary. A refused save/forget resolves, keeps
+  // the dialog open with what was typed, and says why inside it.
+  it('a refused save keeps the dialog, the typed values, and says why', async () => {
+    apiPost.mockRejectedValueOnce(Object.assign(new Error('Owner only'), { status: 403 }));
+    const w = mountStream();
+    await flushPromises();
+    await w.find('[data-testid="browser-creds-btn"]').trigger('click');
+    w.vm.credsUsername = 'doug@x.com';
+    w.vm.credsPassword = 'pw-1';
+    await expect(w.vm.onSaveCreds()).resolves.toBeUndefined();
+    await flushPromises();
+    expect(w.vm.credsOpen).toBe(true);
+    expect(w.vm.credsPassword).toBe('pw-1');
+    expect(w.vm.credsSaved).toBe(false);
+    expect(w.find('[data-testid="browser-creds-error"]').text()).toBe('Owner only');
+  });
+
+  it('a refused forget keeps the remembered state and says why', async () => {
+    apiState.saved = true;
+    apiState.username = 'doug@x.com';
+    apiDel.mockRejectedValueOnce(new Error('store down'));
+    const w = mountStream();
+    await flushPromises();
+    await w.find('[data-testid="browser-creds-btn"]').trigger('click');
+    await expect(w.vm.onForgetCreds()).resolves.toBeUndefined();
+    await flushPromises();
+    expect(w.vm.credsSaved).toBe(true);
+    expect(w.find('[data-testid="browser-creds-error"]').text()).toBe('store down');
+  });
+
+  it('a refused capture resolves, emits nothing, and reports the error', async () => {
+    const w = mount(BrowserStream, {
+      props: { pluginKey: 'chipricing', url: 'https://portal.example.invalid/', captureEndpoint: '/api/plugins/chipricing/capture' },
+      global: { stubs },
+    });
+    await flushPromises();
+    w.vm.capturePage.mockResolvedValueOnce({ url: 'u', text: 't', image: null });
+    apiPost.mockRejectedValueOnce(Object.assign(new Error('Not allowed'), { status: 403 }));
+    await expect(w.vm.onCapture()).resolves.toBeUndefined();
+    expect(w.emitted('captured')).toBeUndefined();
+    expect(w.vm.error.value).toBe('Not allowed');
+    expect(w.vm.capturing).toBe(false);
+  });
 });
 
 describe('recording badge', () => {

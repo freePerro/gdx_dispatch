@@ -14,6 +14,8 @@
  *  2. A completed / cancelled job's drawer does not offer it.
  *  3. When the sheet reports closed-out, the sheet AND the drawer close, and
  *     the board refetches.
+ *  4. The drawer's Scheduled line and the park-refusal toast print the date in
+ *     the shop's timezone, not the raw ISO string or the browser's day (GDXA-1874).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -24,12 +26,13 @@ const getMock = vi.fn();
 const postMock = vi.fn();
 const patchMock = vi.fn();
 const pushMock = vi.fn();
+const toastAdd = vi.fn();
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: pushMock, replace: vi.fn() }),
   useRoute: () => ({ query: {}, path: "/dispatch" }),
 }));
-vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: vi.fn() }) }));
+vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: toastAdd }) }));
 vi.mock("primevue/useconfirm", () => ({ useConfirm: () => ({ require: vi.fn() }) }));
 vi.mock("../../composables/useApiWithToast", () => ({
   useApiWithToast: () => ({ get: getMock, post: postMock, patch: patchMock, del: vi.fn() }),
@@ -108,6 +111,7 @@ describe("DispatchView — job drawer Close out (#526)", () => {
     postMock.mockReset();
     patchMock.mockReset();
     pushMock.mockReset();
+    toastAdd.mockReset();
   });
 
   it("a live job's drawer offers Close out; clicking it opens the sheet for that job and the BOARD sends nothing (the sheet POSTs on submit)", async () => {
@@ -184,5 +188,26 @@ describe("DispatchView — job drawer Close out (#526)", () => {
     expect(w.find('[data-testid="dispatch-job-drawer"]').exists()).toBe(false);
     const jobsCallsAfter = getMock.mock.calls.filter((c) => String(c[0]).includes("/api/jobs")).length;
     expect(jobsCallsAfter).toBeGreaterThan(jobsCallsBefore);
+  });
+
+  // GDXA-1874: the drawer printed scheduled_at as the API sent it.
+  it("the drawer's Scheduled line is in the shop's timezone, not the raw ISO string", async () => {
+    const iso = "2026-09-14T15:00:00+00:00";
+    const w = await mountBoard(job({ scheduled_at: iso }));
+    w.vm.$.setupState.tenantTimezone = "America/Chicago";
+    await flushAll();
+    const text = w.find('[data-testid="dispatch-job-drawer"]').text();
+    expect(text).not.toContain(iso);
+    expect(text).not.toContain("T15:00");
+    expect(text).toMatch(/Scheduled:\s*Sep 14, 10:00\sAM/);
+  });
+
+  it("the park refusal names the shop's day, not the browser's, near midnight", async () => {
+    // 03:00 UTC on the 15th is 10 PM on the 14th in Chicago.
+    const w = await mountBoard(job());
+    w.vm.$.setupState.tenantTimezone = "America/Chicago";
+    w.vm.$.setupState.refuseOffScreenPark(job({ scheduled_at: "2026-09-15T03:00:00Z" }));
+    expect(toastAdd).toHaveBeenCalledTimes(1);
+    expect(toastAdd.mock.calls[0][0].detail).toContain("is dated Mon, Sep 14,");
   });
 });
