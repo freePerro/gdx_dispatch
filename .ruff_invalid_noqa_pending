@@ -13,4 +13,3 @@
 1 gdx_dispatch/routers/install_sheet.py
 1 gdx_dispatch/routers/invoices.py
 1 gdx_dispatch/routers/mobile_invoicing.py
-2 gdx_dispatch/routers/tags.py
