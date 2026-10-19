@@ -33,8 +33,8 @@
 #   STRIPE_SECRET_KEY / GOOGLE_MAPS_API_KEY / QB_CLIENT_ID … integration
 #                     credentials; all optional, features disable when blank.
 #
-# Data lives in named volumes (gdx_db_data, gdx_uploads, gdx_backups,
-# gdx_secrets) — `docker compose down` without `-v` never touches them.
+# Data lives in named volumes (gdx_db_data, gdx_uploads, gdx_recordings,
+# gdx_backups, gdx_secrets) — `docker compose down` without `-v` never touches them.
 # License: AGPL-3.0 with plugin exception. https://github.com/freePerro/gdx_dispatch
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -193,6 +193,11 @@ services:
       GDX_ADMIN_PASSWORD: ${GDX_ADMIN_PASSWORD:-}
     volumes:
       - gdx_uploads:/app/uploads
+      # Session recordings. Their OWN volume, not a subdirectory of uploads,
+      # for the reason given in docker-compose.yml. Without a mount they landed
+      # in the container's writable layer and every pull_policy: always
+      # recreate discarded them.
+      - gdx_recordings:/app/recordings
       - gdx_secrets:/secrets:ro
     depends_on:
       secrets-init:
@@ -486,6 +491,9 @@ volumes:
   gdx_db_data:
   gdx_redis_data:
   gdx_uploads:
+  # Plugin browser-stream session recordings (unredacted). Not mounted on the
+  # backup service, so they never ride along in an off-box backup.
+  gdx_recordings:
   gdx_plugins:
   gdx_secrets:
   gdx_backups:
