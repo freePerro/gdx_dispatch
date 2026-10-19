@@ -5,7 +5,7 @@ from typing import Any
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid, estimate_line_dict
 
 DESCRIPTOR = ToolDescriptor(
     name="estimates.get",
@@ -63,17 +63,7 @@ async def handler(
             "created_at": estimate.created_at.isoformat() if estimate.created_at else None,
             "sent_at": estimate.sent_at.isoformat() if estimate.sent_at else None,
             "valid_until": estimate.valid_until.isoformat() if estimate.valid_until else None,
-            "lines": [
-                {
-                    "id": str(ln.id),
-                    "description": ln.description,
-                    "quantity": int(ln.quantity),
-                    "unit_price": float(ln.unit_price),
-                    "line_total": float(ln.line_total),
-                    "sort_order": ln.sort_order,
-                }
-                for ln in lines
-            ],
+            "lines": [estimate_line_dict(ln, with_sort_order=True) for ln in lines],
         }
     }
 

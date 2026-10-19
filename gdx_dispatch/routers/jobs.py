@@ -1395,6 +1395,7 @@ def update_job(
                 db, job, updates.get("scheduled_duration_hours", UNSET),
             ),
             scheduled_at=updates.get("scheduled_at", UNSET),
+            first_day_minutes=data.get("visit_duration_minutes"),
             crew_after=tuple(desired_tech_ids) if apply_assignments else None,
             fields=visit_fields(
                 db, updates.get("title", job.title), updates.get("customer_id", job.customer_id),

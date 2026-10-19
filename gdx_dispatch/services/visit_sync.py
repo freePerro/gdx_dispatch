@@ -171,6 +171,9 @@ class VisitEdit:
     reopen_day: date | None = None
     rebook_closed_day: bool | None = None
     duration_minutes: int = 60
+    # The board's split or shortened booking names day one's length: the
+    # job's OPEN visits left on its first day are set to it (E7).
+    first_day_minutes: int | None = None
 
 
 @dataclass
@@ -505,7 +508,21 @@ def _plan(work: _Work, edit: VisitEdit, fields: dict, plan: VisitPlan) -> None:
     else:
         plan.scheduled_at = UNSET  # unchanged to the minute: E1, the date is not rewritten
 
+    if edit.first_day_minutes:
+        _set_first_day_length(work, timedelta(minutes=edit.first_day_minutes))  # E7
     _copy_fields(work, fields)
+
+
+def _set_first_day_length(work: _Work, length: timedelta) -> None:
+    """E7: the OPEN visits on the job's first day take the length the board
+    named. A visit moved there (E2) keeps its own length otherwise, so a
+    dated 8 h job split at 3:45 PM would still run 8 h into the night."""
+    first = current_day(work.live_rows(), work.tz)
+    if first is None:
+        return
+    for v in work.on(first, states=(OPEN,)):
+        if _length(v, 0) != length:
+            work.move(v, v.start_at, _as_utc(v.start_at) + length, "length_set")
 
 
 def _book(work: _Work, crew: list, target: datetime, fields: dict, edit: VisitEdit, *, reopen: bool) -> None:

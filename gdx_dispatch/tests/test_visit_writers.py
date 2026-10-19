@@ -368,6 +368,50 @@ def test_a_tech_added_after_a_split_joins_day_one_at_its_length(env, save, hours
     assert _lengths(env.db, job.id) == [timedelta(hours=9), timedelta(hours=9)]
 
 
+def test_a_dated_job_moved_with_a_day_one_length_is_resized_to_it(env):
+    """E7: the board moves a dated 8 h job to 3:45 PM and books the rest on
+    later days. The moved visit ends at shift end, not 8 h later; the job
+    keeps its hours and the move is audited."""
+    from decimal import Decimal
+
+    job = _job(env, crew=(T1,), scheduled_duration_hours=Decimal("8"))
+    _visit(env, job, DAY1)
+    late = DAY1 + timedelta(hours=6, minutes=45)  # 3:45 PM Chicago
+    before = _audit_ids(env.db)
+    r = env.client.patch(f"/api/jobs/{job.id}", json={
+        "scheduled_at": late.isoformat(), "visit_duration_minutes": 75,
+    })
+    assert r.status_code == 200, r.text
+    assert _layout(env.db, job.id) == [(T1, late, "scheduled")]
+    assert _lengths(env.db, job.id) == [timedelta(minutes=75)]
+    assert float(env.db.get(Job, job.id).scheduled_duration_hours) == 8.0
+    _assert_invariant_i(env.db, job.id)
+    moved = [a for a in _new_audit(env.db, before, job.id) if a.action == "visit_moved"]
+    assert [a.details["reason"] for a in moved] == ["date_moved", "length_set"]
+    assert moved[-1].details["end_to"] == (late + timedelta(minutes=75)).isoformat()
+
+
+def test_a_day_one_length_resizes_a_kept_visit_and_leaves_later_days(env):
+    """A crew change with a length and no date change: day one's OPEN visits
+    take it; a later day is not day one and keeps its own length."""
+    job = _job(env, crew=(T1,))
+    _visit(env, job, DAY1)
+    _visit(env, job, DAY2, hours=3)
+    r = env.client.patch(f"/api/jobs/{job.id}", json={
+        "assigned_tech_ids": [T1], "visit_duration_minutes": 300,
+    })
+    assert r.status_code == 200, r.text
+    assert _lengths(env.db, job.id) == [timedelta(hours=5), timedelta(hours=3)]
+
+
+def test_no_day_one_length_leaves_a_moved_visit_its_own_length(env):
+    job = _job(env, crew=(T1,))
+    _visit(env, job, DAY1)
+    r = env.client.patch(f"/api/jobs/{job.id}", json={"scheduled_at": DAY2.isoformat()})
+    assert r.status_code == 200, r.text
+    assert _lengths(env.db, job.id) == [timedelta(hours=8)]
+
+
 @pytest.mark.parametrize("minutes", [10, 24 * 60 + 1])
 def test_a_visit_length_out_of_range_is_refused_and_writes_nothing(env, minutes):
     job = _job(env, scheduled_at=None, assigned_to=None)
