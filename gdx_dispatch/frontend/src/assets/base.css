@@ -228,6 +228,19 @@ a {
    view can still override it. (GDXA-885) */
 :where(:root:not([data-theme="dark"])) :where(a, button, label) {
   --p-primary-color: var(--link-color);
+  --text-on-p-primary: #fff;
+}
+
+/* Text on a solid --p-primary-color fill. White fails wherever the fill is
+   emerald: 1.92:1 on dark #34d399, 2.54:1 on light #10b981 (a badge, an
+   avatar, a chat bubble — anything not inside a link, button or label).
+   Aura's dark contrast colour, zinc-900, reads 9.22:1 and 6.98:1 on those; the
+   rule above sets white (5.48:1) on the elements whose fill it darkens, so
+   fill and text always change together. Not Aura's
+   --p-primary-contrast-color: it stays #fff on light emerald. Guarded by
+   no_white_on_p_primary.spec.js. (GDXA-1761) */
+:root {
+  --text-on-p-primary: #18181b;
 }
 
 /* PrimeVue's `<Button link>` reads --p-button-link-*, which Aura resolves
