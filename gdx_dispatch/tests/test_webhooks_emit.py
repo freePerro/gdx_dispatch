@@ -26,9 +26,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import utcnow
-from gdx_dispatch.core.ssrf_guard import OutboundURLBlocked
+from gdx_dispatch.core.ssrf_guard import OutboundURLBlocked, ValidatingRedirectHandler
 from gdx_dispatch.core.webhooks import tasks as tasks_mod
-from gdx_dispatch.core.webhooks.delivery import _ValidatingRedirectHandler, deliver_webhook
+from gdx_dispatch.core.webhooks.delivery import deliver_webhook
 from gdx_dispatch.core.webhooks.emit import emit_domain_event, install_webhook_dispatch_hook
 from gdx_dispatch.core.webhooks.models import AIAction, WebhookDelivery, WebhookEndpoint
 from gdx_dispatch.routers.webhooks import WebhookDeliveryLog, WebhookSubscription
@@ -584,7 +584,7 @@ def test_retry_sweep_rescues_stranded_null_next_retry():
 # ---------------------------------------------------------------------------
 
 def test_redirect_handler_revalidates_target():
-    handler = _ValidatingRedirectHandler()
+    handler = ValidatingRedirectHandler()
     with pytest.raises(OutboundURLBlocked):
         # a redirect pointing at an internal host must be refused
         handler.redirect_request(None, None, 307, "x", {}, "http://127.0.0.1:8000/internal/events")
