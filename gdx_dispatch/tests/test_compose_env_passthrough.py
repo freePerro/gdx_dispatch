@@ -25,6 +25,8 @@ OPERATOR_ENV = [
     ("GDX_PLUGIN_CATALOG_URL", "the plugin storefront's catalog URL"),
     ("GDX_INTERNAL_TOKEN", "the plugin-host /internal/* shared secret"),
     ("PLUGIN_BROWSER_ALLOWED_HOSTS", "the browser-stream host allowlist"),
+    ("GDX_TRUSTED_PROXIES", "the socket peers whose X-Forwarded-For names the client"),
+    ("GDX_TRUSTED_UPSTREAM_PROXIES", "the proxies (Cloudflare) stepped through in X-Forwarded-For"),
 ]
 
 #: Compose files that stand up the app for a real deployment.
@@ -113,6 +115,8 @@ def test_the_app_container_receives_operator_env(filename, var, what):
 FALLS_BACK_WHEN_EMPTY = [
     ("GDX_PLUGIN_CATALOG_URL", "the plugin storefront's catalog URL"),
     ("PLUGIN_BROWSER_ALLOWED_HOSTS", "the browser-stream host allowlist"),
+    ("GDX_TRUSTED_PROXIES", "the socket peers whose X-Forwarded-For names the client"),
+    ("GDX_TRUSTED_UPSTREAM_PROXIES", "the proxies (Cloudflare) stepped through in X-Forwarded-For"),
 ]
 
 

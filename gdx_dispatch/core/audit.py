@@ -117,17 +117,11 @@ def _payload_json(payload: dict[str, Any] | None) -> str:
 
 
 def _extract_ip(request: Any) -> str | None:
+    # Not X-Forwarded-For: its first hop is whatever the client wrote, so it
+    # put any address it liked in the audit trail. ClientAddressMiddleware has
+    # already resolved the real client into request.client (GDXA-1597).
     if request is None:
         return None
-    headers = getattr(request, "headers", {}) or {}
-    xff = None
-    get_header = getattr(headers, "get", None)
-    if callable(get_header):
-        xff = get_header("x-forwarded-for") or get_header("X-Forwarded-For")
-    elif isinstance(headers, dict):
-        xff = headers.get("x-forwarded-for") or headers.get("X-Forwarded-For")
-    if xff:
-        return str(xff).split(",", 1)[0].strip()
     return getattr(getattr(request, "client", None), "host", None) or getattr(request, "remote_addr", None)
 
 

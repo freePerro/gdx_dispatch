@@ -101,11 +101,14 @@ def test_anonymous_falls_back_to_per_ip() -> None:
     assert limit == DEFAULT_LIMITS["general"]
 
 
-def test_x_forwarded_for_first_hop_is_used() -> None:
+def test_x_forwarded_for_is_not_read_here() -> None:
+    """The client writes the first hop, so rotating it used to buy a fresh
+    login bucket per request. ClientAddressMiddleware resolves the real client
+    into request.client from the trusted proxy's hops (GDXA-1597)."""
     mw = _mw()
-    req = _req("/api/jobs", {"x-forwarded-for": "9.9.9.9, 10.0.0.1"}, host="10.0.0.1")
+    req = _req("/auth/login", {"x-forwarded-for": "9.9.9.9, 10.0.0.1"}, host="198.51.100.4")
     key, _ = mw._key_and_limit(req)
-    assert key == "ip:9.9.9.9"  # real client, not the proxy hop
+    assert key == "auth-ip:198.51.100.4"
 
 
 def test_raw_secret_never_appears_in_key() -> None:

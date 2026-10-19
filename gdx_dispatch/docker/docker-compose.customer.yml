@@ -76,6 +76,14 @@ x-app-env: &app-env
   # merge this file cannot drift.
   PLUGIN_BROWSER_ALLOWED_HOSTS: ${PLUGIN_BROWSER_ALLOWED_HOSTS:-}
   GDX_PUBLIC_BASE_URL: ${GDX_PUBLIC_BASE_URL:-}
+  # Finding the client address behind the proxy (core/client_ip.py, GDXA-1597).
+  # GDX_TRUSTED_PROXIES: which socket peers may speak for the client; blank =
+  # loopback + private ranges. GDX_TRUSTED_UPSTREAM_PROXIES: proxies in front
+  # of nginx, stepped through in X-Forwarded-For; blank = none. Behind
+  # Cloudflare without nginx real_ip, set it to `cloudflare`, or every client
+  # is its Cloudflare edge address. Never "*" in either.
+  GDX_TRUSTED_PROXIES: ${GDX_TRUSTED_PROXIES:-}
+  GDX_TRUSTED_UPSTREAM_PROXIES: ${GDX_TRUSTED_UPSTREAM_PROXIES:-}
   GDX_BASE_URL: ${GDX_BASE_URL:-}
   RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
   RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}

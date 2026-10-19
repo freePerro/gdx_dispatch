@@ -14,9 +14,8 @@ from gdx_dispatch.core.database import SessionLocal as _AppSessionLocal
 
 
 def _client_ip(request: Request) -> str | None:
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",", 1)[0].strip()
+    # Not X-Forwarded-For: its first hop is whatever the client wrote.
+    # ClientAddressMiddleware has already resolved the real client (GDXA-1597).
     return request.client.host if request.client else None
 
 

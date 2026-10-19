@@ -2098,7 +2098,7 @@ def close_job_without_work(
                     if flags.get(k)
                 ],
             },
-            request=request,  # audit derives the IP, X-Forwarded-For first
+            request=request,  # audit derives the IP from request.client
         )
         db.commit()
         return jsonable_response(_completed_result(job))
