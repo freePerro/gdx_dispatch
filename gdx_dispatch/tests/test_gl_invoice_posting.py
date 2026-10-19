@@ -182,9 +182,9 @@ def test_mapped_category_credits_configured_account(db):
     assert by_code["4100"] == -150_000       # mapped
     assert by_code["4000"] == -50_000        # unmapped → fallback, memo-flagged
     memos = [
-        l.memo
-        for l in db.scalars(select(GlJournalLine))
-        if l.memo and "unmapped category" in l.memo
+        line.memo
+        for line in db.scalars(select(GlJournalLine))
+        if line.memo and "unmapped category" in line.memo
     ]
     assert any("Weird Category" in m for m in memos)
 
@@ -313,8 +313,8 @@ def test_void_draft_posts_nothing(db):
 def test_clean_content_produces_no_residual_line(db):
     inv = _invoice(db, total="123.45", tax="7.89", lines=[("A", "100.00", None), ("B", "15.56", None)])
     lines = build_issuance_lines(db, inv)
-    assert sum(l.amount_cents for l in lines) == 0
-    assert all(l.role != "ROUNDING" for l in lines), "clean content must not need 6990"
+    assert sum(line.amount_cents for line in lines) == 0
+    assert all(line.role != "ROUNDING" for line in lines), "clean content must not need 6990"
 
 
 def test_soft_deleted_lines_do_not_credit_revenue(db):

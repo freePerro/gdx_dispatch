@@ -199,7 +199,7 @@ def test_apply_full_initialization_and_idempotency(world):
     # Opening entry: debit the bank account, credit Opening Balance Equity.
     entry = db.scalars(select(GlJournalEntry).where(
         GlJournalEntry.source_type == "bank_account")).one()
-    lines = {l.account_id: int(l.amount_cents) for l in db.scalars(
+    lines = {line.account_id: int(line.amount_cents) for line in db.scalars(
         select(GlJournalLine).where(GlJournalLine.entry_id == entry.id)).all()}
     assert lines[gl.id] == 448893
     equity = db.scalars(select(GlAccount).where(
@@ -267,7 +267,7 @@ def test_corrected_archive_reapply_reverses_stale_opening(world):
     assert len(live) == 1
     lines = db.scalars(select(GlJournalLine).where(
         GlJournalLine.entry_id == live[0].id)).all()
-    assert max(int(l.amount_cents) for l in lines) == 500000
+    assert max(int(line.amount_cents) for line in lines) == 500000
 
 
 def test_checking_claims_operating_bank_before_savings(tenant_db):
