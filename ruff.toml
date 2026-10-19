@@ -57,7 +57,15 @@ ignore = [
 [lint.isort]
 # First-party packages. Without this, ruff groups `gdx_dispatch.*`
 # alphabetically with third-party imports (fastapi, pydantic).
-known-first-party = ["gdx_dispatch"]
+# "conftest" and "tools" are the repo-root modules that code under
+# gdx_dispatch/ imports (`from conftest import ...`, `from tools.<mod> import
+# ...`; scripts/ and plugins/ are not imported from there). Ruff treats them as
+# first-party only by finding them on disk, so a partial tree (a Docker build
+# context, a sparse checkout, an export of gdx_dispatch/ alone) classified them
+# as third-party and reported 15 extra I001 (GDXA-1628). Naming them here keeps
+# the count the same on any tree. A new root-level module imported from
+# gdx_dispatch/ belongs on this list.
+known-first-party = ["gdx_dispatch", "conftest", "tools"]
 
 [lint.per-file-ignores]
 "dispatch/tests/**" = ["S101", "S106", "B011"]
