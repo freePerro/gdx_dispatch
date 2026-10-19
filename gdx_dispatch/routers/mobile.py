@@ -759,7 +759,7 @@ def _find_open_time_entry(
             WHERE {' AND '.join(where)}
             ORDER BY clock_in DESC
             LIMIT 1
-            """
+            """  # noqa: S608 — `where` holds only literal clauses picked by column presence; values bind as :params
         ),
         params,
     ).mappings().first()
@@ -799,7 +799,7 @@ def _create_time_entry(
             f"""
             INSERT INTO time_entries ({', '.join(names)})
             VALUES ({', '.join([f':{n}' for n in names])})
-            """
+            """  # noqa: S608 — `names` are the literal keys of insert_values above; values bind as :params
         ),
         insert_values,
     )
@@ -1074,7 +1074,7 @@ def _close_open_time_entry(
         )
         params["note"] = f"{MOBILE_STOP_LABOR_NOTE}; elapsed {elapsed_minutes} min, not attested"
     db.execute(
-        _text(f"UPDATE time_entries SET {', '.join(sets)} WHERE id = :id"),
+        _text(f"UPDATE time_entries SET {', '.join(sets)} WHERE id = :id"),  # noqa: S608 — `sets` are literal clauses; values bind as :params
         params,
     )
     return row, now, elapsed_minutes
@@ -1875,7 +1875,7 @@ def mobile_all_my_jobs(
               AND ({where_mine})
             ORDER BY {order_by}
             LIMIT {limit}
-            """
+            """  # noqa: S608 — join/where/order/limit are literals chosen by the validated `scope`; values bind as :params
         ),
         params,
     ).mappings().all()

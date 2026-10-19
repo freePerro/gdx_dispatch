@@ -301,11 +301,13 @@ def build_column_index(engine, text_fn) -> dict[str, set[str]]:
 def check_population(engine, text_fn, table: str, column: str) -> tuple[int, int]:
     """Return (total_rows, populated_rows) for table.column."""
     with engine.connect() as conn:
-        total = conn.execute(text_fn(f'SELECT COUNT(*) FROM "{table}"')).scalar() or 0
+        # table and column are names read back from information_schema by
+        # build_column_index (audit() only passes names present in it), not input.
+        total = conn.execute(text_fn(f'SELECT COUNT(*) FROM "{table}"')).scalar() or 0  # noqa: S608 — information_schema names
         if total == 0:
             return 0, 0
         populated = conn.execute(
-            text_fn(f'SELECT COUNT("{column}") FROM "{table}"')
+            text_fn(f'SELECT COUNT("{column}") FROM "{table}"')  # noqa: S608 — information_schema names
         ).scalar() or 0
     return int(total), int(populated)
 
