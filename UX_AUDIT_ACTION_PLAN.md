@@ -158,7 +158,8 @@ wave — treat as a consolidation backlog, not a bug list. Batchable, mechanical
   preview grays.
 - [x] *(Deprioritized — deliberate)* i18n: zero callers of the homegrown `useI18n`, not
   wired in main.js, ~1,164 hard-coded strings. Single-tenant US shop → leave dormant or
-  delete the scaffold.
+  delete the scaffold. *Scaffold deleted 2026-10-18 (GDXA-1606); Doug ruled no Spanish
+  UI is planned (GDXA-1600).*
 
 ---
 
