@@ -193,6 +193,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import EmptyState from '../components/EmptyState.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import Column from 'primevue/column';
@@ -209,6 +210,7 @@ import ToggleSwitch from 'primevue/toggleswitch';
 import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
+const { confirmAsync } = useDestructiveConfirm();
 
 const activeTab = ref('templates');
 const templates = ref([]);
