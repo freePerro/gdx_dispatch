@@ -234,6 +234,7 @@ def _run_auth_middleware(
     status_code: int,
     request_id: str,
     forwarded_for: str | None = None,
+    client_host: str = "127.0.0.1",
 ) -> None:
     from gdx_dispatch.core.audit_middleware import AuditMiddleware
 
@@ -255,7 +256,7 @@ def _run_auth_middleware(
         "raw_path": path.encode("utf-8"),
         "query_string": b"",
         "headers": headers,
-        "client": ("127.0.0.1", 12345),
+        "client": (client_host, 12345),
         "server": ("testserver", 80),
     }
 
@@ -278,11 +279,14 @@ def test_login_audit_logged(db_session):
         path="/auth/login",
         status_code=200,
         request_id="req-login",
-        forwarded_for="203.0.113.7",
+        client_host="203.0.113.7",
+        forwarded_for="198.51.100.66",
     )
     row = db_session.query(AuditLog).filter_by(action="login").order_by(AuditLog.created_at.desc()).first()
     assert row is not None
     assert row.request_id == "req-login"
+    # request.client, which ClientAddressMiddleware has already resolved; the
+    # header's first hop is the client's own claim (GDXA-1597).
     assert row.ip_address == "203.0.113.7"
 
 

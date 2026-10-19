@@ -154,6 +154,7 @@ gdx_dispatch/core/auth_revoke.py                             platform-core
 gdx_dispatch/core/cache.py                                   platform-core
 gdx_dispatch/core/celery_app.py                              platform-core
 gdx_dispatch/core/circuit_breaker.py                         platform-core
+gdx_dispatch/core/client_ip.py                               platform-core
 gdx_dispatch/core/custom_fields.py                           platform-core
 gdx_dispatch/core/data_access_logger.py                      platform-core
 gdx_dispatch/core/database.py                                platform-core

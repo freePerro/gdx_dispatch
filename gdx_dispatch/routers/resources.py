@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.auth import get_current_user
+from gdx_dispatch.core.client_ip import request_client_host
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
@@ -78,13 +79,9 @@ def _tenant_id(request: Request | None) -> str:
     return str(tenant.get("id") or "")
 
 
-def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for") if hasattr(request, "headers") else None
-    if xff:
-        return str(xff).split(",", 1)[0].strip()
-    return request.client.host if request.client else None
+# request.client, not X-Forwarded-For's first hop, which the client writes
+# (GDXA-1597).
+_client_ip = request_client_host
 
 
 def _require_admin(user: dict[str, Any]) -> None:
