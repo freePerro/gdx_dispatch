@@ -30,6 +30,7 @@ respected by anyone changing the schema later:
    on ``create_all()`` to add a column to already-deployed databases — it
    won't, and silent ``UndefinedColumn`` errors are the result.
 """
+import re
 from pathlib import Path
 
 from alembic import op
@@ -56,15 +57,64 @@ _BASELINE_TABLES = [
 ]
 
 
+def _sqlite_statements(sql: str) -> list[str]:
+    """Rewrite the Postgres dump into statements SQLite accepts.
+
+    The ``.sql`` file stays the one source of the baseline schema; this only
+    strips what SQLite cannot parse (``public.``, ``::type`` casts, ``now()``,
+    ``USING btree``), types ``uuid`` as SQLAlchemy does, and folds each ``ALTER TABLE ONLY … ADD CONSTRAINT`` into
+    its ``CREATE TABLE``, because SQLite has no ADD CONSTRAINT.
+    """
+    sql = sql.replace("public.", "")
+    sql = re.sub(r"::[a-z][a-z ]*[a-z]", "", sql)
+    sql = sql.replace("DEFAULT now()", "DEFAULT CURRENT_TIMESTAMP")
+    sql = sql.replace(" USING btree", "")
+    # SQLAlchemy's Uuid is CHAR(32) on SQLite. A bare ``uuid`` column gets
+    # NUMERIC affinity, which turns an all-digit hex id into an integer.
+    sql = re.sub(r"^(\s+\w+) uuid\b", r"\1 CHAR(32)", sql, flags=re.M)
+    creates: dict[str, str] = {}
+    constraints: dict[str, list[str]] = {}
+    others: list[str] = []
+    for stmt in (s.strip() for s in sql.split(";\n")):
+        stmt = stmt.rstrip(";").strip()
+        if not stmt:
+            continue
+        create = re.match(r"CREATE TABLE (\w+) \(", stmt)
+        alter = re.match(r"ALTER TABLE ONLY (\w+)\s+ADD (CONSTRAINT .+)", stmt, re.S)
+        if create:
+            creates[create.group(1)] = stmt
+        elif alter:
+            constraints.setdefault(alter.group(1), []).append(" ".join(alter.group(2).split()))
+        else:
+            others.append(stmt)
+    out = []
+    for table, stmt in creates.items():
+        body = stmt[: stmt.rindex(")")].rstrip()
+        extra = "".join(f",\n    {c}" for c in constraints.pop(table, []))
+        out.append(f"{body}{extra}\n)")
+    if constraints:
+        raise RuntimeError(f"baseline constraints for unknown tables: {sorted(constraints)}")
+    return out + others
+
+
 def upgrade() -> None:
     sql = _SQL_PATH.read_text()
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        for stmt in _sqlite_statements(sql):
+            bind.exec_driver_sql(stmt)
+        return
     # psycopg2 executes the whole multi-statement script in order
     # (CREATE TABLE → PK/index → FK → function).
-    op.get_bind().exec_driver_sql(sql)
+    bind.exec_driver_sql(sql)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        for table in _BASELINE_TABLES:
+            bind.exec_driver_sql(f"DROP TABLE IF EXISTS {table}")
+        return
     bind.exec_driver_sql("DROP FUNCTION IF EXISTS public.tenant_login_lookup(text);")
     for table in _BASELINE_TABLES:
         bind.exec_driver_sql(f"DROP TABLE IF EXISTS public.{table} CASCADE;")

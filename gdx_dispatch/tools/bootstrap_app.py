@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
@@ -140,11 +140,15 @@ def main() -> int:
 
     tenant = single_tenant()
     tenant_id = str(tenant["id"])
+    # tenants.id is a Uuid column, which binds only a UUID (SQLite stores it
+    # as dashless hex). companies.id and every company_id/tenant_id column
+    # this file writes are strings, so they keep the dashed str.
+    tenant_uuid = UUID(tenant_id)
 
     with SessionLocal() as db:
         # ── 2. The one tenant row (FK target for audit_logs) ──
-        if db.get(Tenant, tenant_id) is None:
-            db.add(Tenant(id=tenant_id, slug=str(tenant["slug"]), name=str(tenant["name"])))
+        if db.get(Tenant, tenant_uuid) is None:
+            db.add(Tenant(id=tenant_uuid, slug=str(tenant["slug"]), name=str(tenant["name"])))
             db.flush()
             log.info("Seeded tenant row id=%s slug=%s", tenant_id, tenant["slug"])
         else:
@@ -191,7 +195,7 @@ def main() -> int:
             else:
                 db.add(
                     User(
-                        id=str(uuid4()),
+                        id=uuid4(),
                         email=admin_email,
                         username="admin",
                         full_name="Administrator",
