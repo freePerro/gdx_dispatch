@@ -31,12 +31,15 @@ fortnight.
 """
 from __future__ import annotations
 
+import logging
 import re
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
+
+log = logging.getLogger(__name__)
 
 CADENCE_WEEKLY_MON = "weekly_mon"
 CADENCE_WEEKLY_SUN = "weekly_sun"
@@ -320,6 +323,55 @@ def shop_today(tz_name: Any, *, now: datetime | None = None) -> date:
 
 _SHOP_TZ_SESSION_KEY = "gdx_shop_timezone"
 
+#: The shop zone when ``AppSettings`` has no row or a blank zone — the one
+#: place that default lives (GDXA-1618). It is the column default on purpose:
+#: Settings creates the missing row with that default, so a fallback that
+#: differed would move the shop's calendar the first time anyone opened
+#: Settings. ``test_shop_timezone_single_reader`` pins the two together and
+#: rejects any other reader of the setting.
+DEFAULT_SHOP_TZ = "America/New_York"
+
+
+def shop_tz_name(settings: Any) -> str:
+    """The shop's IANA zone name off an ``AppSettings`` row already in hand.
+
+    For callers that loaded the row for other fields too; a caller holding
+    only a session uses ``shop_tz_name_from_settings``. ``None``, a blank zone
+    or a name ZoneInfo cannot load gives ``DEFAULT_SHOP_TZ``, and says so in
+    the log.
+    """
+    if settings is None:
+        return _default_shop_tz("no settings row")
+    return _usable_shop_tz(getattr(settings, "timezone", None))
+
+
+def _usable_shop_tz(tz_name: Any, *, blank: str = "blank zone") -> str:
+    """``tz_name`` if ZoneInfo can load it, else ``DEFAULT_SHOP_TZ``.
+
+    Settings has refused a non-IANA name only since GDXA-1640, so a row saved
+    before then can hold one; a caller handing it to bare ``ZoneInfo`` would
+    raise, and ``resolve_zone`` would quietly turn it into UTC.
+    """
+    if not tz_name:
+        return _default_shop_tz(blank)
+    try:
+        ZoneInfo(str(tz_name))
+    except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, ValueError, OSError
+        return _default_shop_tz(f"unusable zone {tz_name!r}")
+    return str(tz_name)
+
+
+_WARNED: set[str] = set()
+
+
+def _default_shop_tz(why: str) -> str:
+    # A missing row is a standing state, not an event: warn once per process
+    # per reason, then keep quiet, or every time-off page repeats it five times.
+    if why not in _WARNED:
+        _WARNED.add(why)
+        log.warning("shop_timezone_unset (%s); using %s", why, DEFAULT_SHOP_TZ)
+    return DEFAULT_SHOP_TZ
+
 
 def shop_today_from_settings(db: Any, *, now: datetime | None = None) -> date:
     """Today in the shop's own zone (``AppSettings.timezone``).
@@ -331,8 +383,7 @@ def shop_today_from_settings(db: Any, *, now: datetime | None = None) -> date:
     an overdue check left on the UTC day marks a due-on-receipt invoice
     written that evening overdue the moment it exists.
 
-    A missing row or zone falls back to America/New_York, the column default
-    and the fallback the timeclock and bank-feed readers already use. The zone
+    A missing row or zone falls back to ``DEFAULT_SHOP_TZ``. The zone
     name is kept in ``Session.info`` for the life of the session (a request),
     so serializing a page of invoices costs one query, not one per row.
     """
@@ -344,14 +395,18 @@ def shop_tz_name_from_settings(db: Any) -> str:
 
     Same fallback and ``Session.info`` cache as ``shop_today_from_settings``,
     for callers that need the zone itself — a shop-local day boundary as an
-    instant, not just today's date.
+    instant, not just today's date. This is the only query of
+    ``AppSettings.timezone`` in the app.
     """
     info = getattr(db, "info", None)
     tz_name = info.get(_SHOP_TZ_SESSION_KEY) if isinstance(info, dict) else None
     if tz_name is None:
         from gdx_dispatch.models.tenant_models import AppSettings  # noqa: PLC0415
 
-        tz_name = db.query(AppSettings.timezone).limit(1).scalar() or "America/New_York"
+        tz_name = _usable_shop_tz(
+            db.query(AppSettings.timezone).limit(1).scalar(),
+            blank="no settings row or blank zone",
+        )
         if isinstance(info, dict):
             info[_SHOP_TZ_SESSION_KEY] = tz_name
     return tz_name
@@ -360,12 +415,12 @@ def shop_tz_name_from_settings(db: Any) -> str:
 def shop_today_for(instance: Any, *, now: datetime | None = None) -> date:
     """``shop_today_from_settings`` for code holding an ORM row but no session
     (a serializer). A row with no session — never persisted, or detached —
-    falls back to the same America/New_York default."""
+    falls back to ``DEFAULT_SHOP_TZ``."""
     from sqlalchemy.orm import object_session  # noqa: PLC0415
 
     session = object_session(instance)
     if session is None:
-        return shop_today("America/New_York", now=now)
+        return shop_today(DEFAULT_SHOP_TZ, now=now)
     return shop_today_from_settings(session, now=now)
 
 
