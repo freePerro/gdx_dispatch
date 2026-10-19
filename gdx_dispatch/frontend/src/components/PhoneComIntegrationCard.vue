@@ -973,7 +973,7 @@ onMounted(loadCard)
 
 .btn-primary {
   background: var(--interactive-primary);
-  color: #fff;
+  color: var(--text-on-interactive-primary);
   border: none;
   border-radius: 6px;
   padding: 0.45rem 0.9rem;

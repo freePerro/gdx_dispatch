@@ -599,7 +599,7 @@ onUnmounted(() => {
 .unread-badge {
   flex: 0 0 auto;
   background: var(--interactive-primary);
-  color: #fff;
+  color: var(--text-on-interactive-primary);
   border-radius: 999px;
   min-width: 1.25rem;
   padding: 0.05rem 0.4rem;
@@ -654,7 +654,7 @@ onUnmounted(() => {
 .msg-out {
   align-self: flex-end;
   background: var(--interactive-primary);
-  color: #fff;
+  color: var(--text-on-interactive-primary);
 }
 .msg-meta {
   margin-top: 0.25rem;

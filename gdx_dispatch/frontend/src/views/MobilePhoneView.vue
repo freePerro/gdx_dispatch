@@ -478,7 +478,7 @@ onUnmounted(() => {
 .tab-chip.active {
   background: var(--interactive-primary);
   border-color: var(--interactive-primary);
-  color: #fff;
+  color: var(--text-on-interactive-primary);
 }
 
 .state-msg {
