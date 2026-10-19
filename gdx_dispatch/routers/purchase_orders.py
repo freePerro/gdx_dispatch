@@ -142,7 +142,7 @@ def _serialize_po(po: PurchaseOrder) -> dict[str, Any]:
         "total": float(po.total or 0),
         "created_by": po.created_by,
         "created_at": po.created_at.isoformat() if po.created_at else None,
-        "lines": [_serialize_line(l) for l in po.lines],
+        "lines": [_serialize_line(line) for line in po.lines],
     }
 
 
@@ -192,7 +192,7 @@ def _po_receiving(db: Session, po: PurchaseOrder) -> dict[str, Any]:
 
 
 def _calculate_totals(po: PurchaseOrder) -> None:
-    subtotal = sum(float(l.unit_cost or 0) * int(l.quantity_ordered or 0) for l in po.lines)
+    subtotal = sum(float(line.unit_cost or 0) * int(line.quantity_ordered or 0) for line in po.lines)
     po.subtotal = Decimal(str(subtotal))
     po.total = Decimal(str(subtotal + float(po.tax or 0) + float(po.shipping or 0)))
     for line in po.lines:
