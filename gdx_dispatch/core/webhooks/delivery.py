@@ -72,7 +72,7 @@ def _resolve_target(delivery: WebhookDelivery, db: Session):
 
     A subscription-id (the live customer path, `webhook_subscriptions`) takes
     precedence; otherwise fall back to the legacy `webhook_endpoints` row so the
-    existing public-API/register_endpoint path keeps working unchanged.
+    public API's `register_webhook` path keeps working unchanged.
     """
     if delivery.subscription_id:
         # Imported lazily: the model lives in the router module; importing it at
