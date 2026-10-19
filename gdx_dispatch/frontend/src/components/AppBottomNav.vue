@@ -647,7 +647,7 @@ function handleTab(item) {
   border-radius: 50%;
   border: none;
   background: var(--interactive-primary);
-  color: #fff;
+  color: var(--text-on-interactive-primary);
   display: grid;
   place-items: center;
   font-size: 1.4rem;
