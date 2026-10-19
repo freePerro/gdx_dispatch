@@ -59,7 +59,6 @@ gdx_dispatch/modules/quickbooks/client.py|X2|c3078afc74219724
 gdx_dispatch/modules/quickbooks/router.py|D1|e9d084c0175dcf34
 gdx_dispatch/plugin_api/manifest.py|D1|b21c9ffc34dc4c40
 gdx_dispatch/plugin_host/browser_stream.py|D1|fe5378f58f088c01
-gdx_dispatch/routers/appointments.py|X2|251924828b0e7c7d
 gdx_dispatch/routers/auth/core.py|D1|8917236d8c7d5755
 gdx_dispatch/routers/inventory.py|X2|6ffd90f1e2a9433e
 gdx_dispatch/routers/invoices.py|D1|ae98295540250018

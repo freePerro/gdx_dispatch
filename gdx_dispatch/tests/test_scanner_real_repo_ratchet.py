@@ -31,7 +31,8 @@ BASELINE_CEILING = {
     # 93 -> 92: GDXA-1188 drops dispatch_ws.py's own JWT decode (log + None).
     # 92 -> 91: GDXA-1560 deletes payroll.py's `_fetch_active_rate` (log + None).
     "silent_failure_scanner": 91,
-    "comment_drift_scan": 71,
+    # 71 -> 70: GDXA-1730 drops appointments.py's pointer to deleted routers/booking.py.
+    "comment_drift_scan": 70,
     # 4 -> 2: GDXA-1129 drops SettingsView's phantom `result.quickbooks` read.
     "frontend_contract_scan": 2,
 }
