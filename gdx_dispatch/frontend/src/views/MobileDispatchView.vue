@@ -17,12 +17,14 @@ import InputText from 'primevue/inputtext'
 import DatePicker from 'primevue/datepicker'
 import Tag from 'primevue/tag'
 import { useApi } from '../composables/useApi'
-import { useTenantTimezone } from '../composables/useTenantTimezone'
+import { toShopWallClock, useTenantTimezone } from '../composables/useTenantTimezone'
 import { useToast } from 'primevue/usetoast'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
 import CrewChangeDialog from '../components/CrewChangeDialog.vue'
+import DayOverflowDialog from '../components/DayOverflowDialog.vue'
 import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange'
+import { hoursLeftInDay, scheduleDropPatch, shiftHours, useDayOverflowPrompt } from '../composables/useScheduleDrop'
 
 const api = useApi()
 const toast = useToast()
@@ -31,7 +33,7 @@ const route = useRoute()
 const router = useRouter()
 // Office display timezone — the board buckets jobs into the selected day in
 // THIS zone (same basis as the desktop board), not UTC/browser time.
-const { zonedDateKey } = useTenantTimezone()
+const { tenantTimezone, zonedDateKey } = useTenantTimezone()
 
 const TABS = [
   { label: 'Board', value: 'board' },
@@ -62,7 +64,7 @@ const customerOptions = ref([])
 const customersLoading = ref(false)
 
 function emptyJobForm() {
-  return { customer_id: null, title: '', scheduled_at: new Date(), assigned_tech_id: null }
+  return { customer_id: null, title: '', scheduled_at: new Date(), assigned_tech_id: null, hours: '' }
 }
 
 const selectedDateStr = computed(() => {
@@ -222,7 +224,14 @@ async function fetchTechnicians() {
     const rows = Array.isArray(data) ? data : data?.items || data?.data || []
     technicians.value = rows
       .filter((r) => r.active !== false)
-      .map((r) => ({ id: r.id, name: r.name || r.full_name || r.username || r.email || 'Tech' }))
+      .map((r) => ({
+        id: r.id,
+        name: r.name || r.full_name || r.username || r.email || 'Tech',
+        // The shift a booking is measured against (fitInTechDay).
+        effective_shift_start: r.effective_shift_start || null,
+        effective_shift_end: r.effective_shift_end || null,
+        effective_workdays: Number.isInteger(r.effective_workdays) ? r.effective_workdays : 31,
+      }))
   } catch {
     technicians.value = []
   }
@@ -256,6 +265,77 @@ const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewCh
   (id) => (technicians.value.find((t) => String(t.id) === String(id)) || {}).name || 'Tech',
 )
 
+const { prompt: overflowPrompt, ask: askOverflow, answer: answerOverflowPrompt } = useDayOverflowPrompt()
+
+// A booking longer than what is left of the tech's shift asks first, with
+// the desktop board's DayOverflowDialog (Doug, 2026-10-18; GDXA-1686): add a
+// tech, book the rest on the tech's next workdays, or keep it on the day.
+// Resolves { choice, shift } — choice null when it fits or there is nothing
+// to measure (no hours, or a tech with no shift) — or null on Cancel.
+// `techIds` is the crew after this booking, lead first.
+async function fitInTechDay({ label, hours, techId, techIds, scheduledAt }) {
+  const tech = technicians.value.find((t) => String(t.id) === String(techId))
+  const shift = tech ? shiftHours(tech.effective_shift_start, tech.effective_shift_end) : null
+  const wall = toShopWallClock(scheduledAt, tenantTimezone?.value)
+  const left = wall ? hoursLeftInDay(wall.getHours() + wall.getMinutes() / 60, shift) : null
+  const need = Number(hours)
+  if (!(need > 0) || left == null || need <= left) return { choice: null, shift }
+  const pad = (n) => String(n).padStart(2, '0')
+  const choice = await askOverflow({
+    jobLabel: label,
+    techName: tech.name,
+    day: `${wall.getFullYear()}-${pad(wall.getMonth() + 1)}-${pad(wall.getDate())}`,
+    shift,
+    mask: tech.effective_workdays,
+    hours: need,
+    hoursLeft: left,
+    techIds: techIds.map(String),
+    leadId: String(techIds[0]),
+    droppedId: String(techId),
+  })
+  if (!choice) return null
+  // The hours go out only when a bigger crew changed them.
+  return { choice: { ...choice, hours: choice.hours !== need ? choice.hours : null }, shift }
+}
+
+// The body for a booking the overflow prompt answered: date, crew, lead and
+// changed hours through the same builder the desktop board uses; a split
+// books only the first day's hours as this visit.
+function bookingPatch({ choice }, scheduledAt) {
+  const patch = scheduleDropPatch(choice, scheduledAt)
+  if (choice.days) patch.visit_duration_minutes = Math.round(choice.days[0].hours * 60)
+  return patch
+}
+
+// The days after the first of a split booking, through the job's Visits
+// route, from shift start for the whole crew; days of one length in one
+// request. A refusal leaves the first day booked and says where the rest go.
+async function bookLaterDays(jobId, label, { choice, shift }) {
+  const byLength = new Map()
+  for (const d of choice.days.slice(1)) {
+    byLength.set(d.hours, [...(byLength.get(d.hours) || []), d.day])
+  }
+  const startMin = Math.round(shift.start * 60)
+  const startTime = `${String(Math.floor(startMin / 60)).padStart(2, '0')}:${String(startMin % 60).padStart(2, '0')}`
+  try {
+    for (const [hours, days] of byLength) {
+      await api.post(`/api/jobs/${jobId}/visits`, {
+        days,
+        start_time: startTime,
+        duration_minutes: Math.round(hours * 60),
+        tech_ids: choice.tech_ids,
+      }, { suppressErrorToast: true })
+    }
+  } catch (e) {
+    toast.add({
+      severity: 'warn',
+      summary: `Only part of ${label} was booked`,
+      detail: `${e?.message || 'The other days could not be booked.'} Add them from the Visits card on the job page.`,
+      life: 9000,
+    })
+  }
+}
+
 function closeAssignDialog() {
   assignDialogVisible.value = false
   assignDialogJob.value = null
@@ -274,6 +354,7 @@ async function confirmAssign() {
   // else is a swap or an add, asked here; Cancel changes nothing.
   const crew = crewOf(job)
   let patch = { assigned_tech_id: techId, assigned_to: techId, technician_id: techId }
+  let crewAfter = [techId] // lead first, as the overflow prompt wants it
   if (crew.length >= 2) {
     if (techId === crew[0]) {
       closeAssignDialog()
@@ -281,6 +362,7 @@ async function confirmAssign() {
     }
     if (crew.includes(techId)) {
       patch = { assigned_tech_ids: crew, lead_tech_id: techId }
+      crewAfter = [techId, ...crew.filter((id) => id !== techId)]
     } else {
       assignDialogVisible.value = false
       const choice = await askCrew({ crew, techId, jobLabel: displayCustomer(job) })
@@ -289,16 +371,44 @@ async function confirmAssign() {
         return
       }
       patch = crewPatch(choice)
+      crewAfter = choice.tech_ids.map(String)
     }
+  }
+  // An undated job is being booked into the tech's day, at 09:00 on the
+  // board day: one longer than the tech has left asks first, with the
+  // desktop drop's overflow dialog (GDXA-1686); Cancel writes nothing. Unlike
+  // the desktop drop it does not ask for hours, so a job with none books
+  // unmeasured. A dated job keeps its time and is not measured, on either
+  // board; a job under way keeps its crew and lane (GDXA-1370/1377).
+  let booking = { choice: null }
+  // The list sends the label ("In Progress"); normalized as the desktop's jobStage.
+  const underWay = String(job.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_') === 'in_progress'
+  if (!job.scheduled_at) {
+    const d = new Date(selectedDate.value)
+    d.setHours(9, 0, 0, 0)
+    patch.scheduled_at = d.toISOString()
+  }
+  if (!job.scheduled_at && !underWay) {
+    booking = await fitInTechDay({
+      label: displayCustomer(job),
+      hours: job.scheduled_duration_hours,
+      techId,
+      techIds: crewAfter,
+      scheduledAt: patch.scheduled_at,
+    })
+    if (!booking) {
+      closeAssignDialog()
+      return
+    }
+    if (booking.choice) patch = bookingPatch(booking, patch.scheduled_at)
+    // Booked, it leaves the lane it waited in: a lane lists by
+    // holding_area_id alone, so a stale one draws the job twice (GDXA-1378).
+    if (job.holding_area_id) patch.holding_area_id = null
   }
   assignDialogSaving.value = true
   try {
-    if (!job.scheduled_at) {
-      const d = new Date(selectedDate.value)
-      d.setHours(9, 0, 0, 0)
-      patch.scheduled_at = d.toISOString()
-    }
     await api.patch(`/api/jobs/${job.id}`, patch)
+    if (booking.choice?.days) await bookLaterDays(job.id, displayCustomer(job), booking)
     const techName = (technicians.value.find((t) => String(t.id) === String(techId)) || {}).name || 'tech'
     toast.add({
       severity: 'success',
@@ -373,13 +483,58 @@ async function submitNewJob() {
       title: f.title.trim(),
       scheduled_at: scheduled.toISOString(),
     }
+    const hours = Number(f.hours)
+    if (hours > 0) payload.scheduled_duration_hours = hours
+    const label = customerOptions.value.find((c) => c.value === f.customer_id)?.label || payload.title
+    let booking = { choice: null }
+    let booked = true
     if (f.assigned_tech_id) {
       payload.assigned_tech_id = f.assigned_tech_id
       payload.assigned_to = f.assigned_tech_id
       payload.technician_id = f.assigned_tech_id
+      // Booked into the tech's day: one longer than they have left asks
+      // first (GDXA-1686). Cancel leaves the form open and writes nothing.
+      booking = await fitInTechDay({
+        label,
+        hours,
+        techId: f.assigned_tech_id,
+        techIds: [String(f.assigned_tech_id)],
+        scheduledAt: payload.scheduled_at,
+      })
+      if (!booking) return
     }
-    await api.post('/api/jobs', payload)
-    toast.add({ severity: 'success', summary: 'Job created', life: 2500 })
+    if (booking.choice) {
+      // The crew it picked replaces the one-tech assignment.
+      for (const k of ['assigned_tech_id', 'assigned_to', 'technician_id']) delete payload[k]
+      payload.assigned_tech_ids = booking.choice.tech_ids
+      payload.lead_tech_id = booking.choice.lead
+      if (booking.choice.hours != null) payload.scheduled_duration_hours = booking.choice.hours
+    }
+    if (booking.choice?.days) {
+      // A create books its one visit at the job's whole hours, so a split is
+      // created undated and then booked as the board books one (bookingPatch),
+      // leaving the lane create routes an undated job into.
+      const { scheduled_at, ...undated } = payload
+      const created = await api.post('/api/jobs', undated)
+      booked = false
+      try {
+        await api.patch(`/api/jobs/${created.id}`,
+          { ...bookingPatch(booking, scheduled_at), holding_area_id: null }, { suppressErrorToast: true })
+        booked = true
+      } catch (e) {
+        toast.add({
+          severity: 'warn',
+          summary: `${label} was created but not booked`,
+          detail: `${e?.message || 'The booking was refused.'} It is waiting on the board to be assigned a day.`,
+          life: 9000,
+        })
+      }
+      if (booked) await bookLaterDays(created.id, label, booking)
+    } else {
+      await api.post('/api/jobs', payload)
+    }
+    // Created but not booked has already said so; this would contradict it.
+    if (booked) toast.add({ severity: 'success', summary: 'Job created', life: 2500 })
     newJobOpen.value = false
     newJobForm.value = emptyJobForm()
     await refreshBoard()
@@ -793,6 +948,20 @@ onUnmounted(() => {
             />
           </div>
           <div>
+            <label for="md-newjob-hours">Hours (optional)</label>
+            <InputText
+              id="md-newjob-hours"
+              v-model="newJobForm.hours"
+              type="number"
+              inputmode="decimal"
+              step="0.25"
+              min="0"
+              placeholder="e.g. 1.5"
+              class="w-full"
+              data-test="md-newjob-hours"
+            />
+          </div>
+          <div>
             <label>Assign tech (optional)</label>
             <Select
               v-model="newJobForm.assigned_tech_id"
@@ -852,6 +1021,7 @@ onUnmounted(() => {
         </template>
       </Dialog>
       <CrewChangeDialog :prompt="crewPrompt" @answer="answerCrewPrompt" />
+      <DayOverflowDialog :prompt="overflowPrompt" :technicians="technicians" :all-technicians="technicians" @answer="answerOverflowPrompt" />
     </section>
     <MobileChatDialog v-model:visible="chatOpen" :job="chatJob" mark-read @read="loadThreads" />
 </template>
