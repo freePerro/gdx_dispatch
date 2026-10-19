@@ -57,6 +57,13 @@ jobs:
         # anything are documented and guarded in that script.
         run: bash gdx_dispatch/tools/ruff_ratchet.sh
 
+      - name: No unaccepted invalid noqa directive
+        # ruff WARNS on a noqa code outside its grammar and drops every ruff
+        # code after it on the line; the ratchet above counts diagnostics, not
+        # warnings (GDXA-1892). Here, not in pytest: the docker-app image has
+        # no ruff. Accepted sites: .ruff_invalid_noqa_pending.
+        run: python3 gdx_dispatch/tools/ruff_noqa_guard.py
+
       - name: No tracked file matches an ignore rule
         # Once a path is tracked its .gitignore line does nothing, so a run
         # artifact committed by accident is refreshed by every later run and
