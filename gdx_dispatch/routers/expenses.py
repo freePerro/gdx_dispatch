@@ -382,7 +382,7 @@ def create_expense_line(
     # GL S8 (P6): lines are built incrementally, so per-add we only reject
     # what can never reconcile (overshoot); an under-complete set defers the
     # repost and the header-level entry stays live. Equality reposts.
-    lines_sum = sum(_to_float(l.amount) for l in expense.lines)
+    lines_sum = sum(_to_float(ln.amount) for ln in expense.lines)
     header = _to_float(expense.amount)
     if lines_sum > header + 0.005:
         raise HTTPException(
