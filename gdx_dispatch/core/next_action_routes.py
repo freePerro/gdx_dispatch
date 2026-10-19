@@ -1,18 +1,10 @@
-"""gdx_dispatch/core/recommendation_routes.py — FastAPI routes for next actions.
+"""gdx_dispatch/core/next_action_routes.py — FastAPI routes for next actions.
 
 Exposes:
   GET  /api/next-actions                  — next-action queue for current user
   POST /api/next-actions/{id}/complete    — mark an action complete
   POST /api/next-actions/{id}/snooze      — snooze an action
   POST /api/next-actions                  — create a manual action
-
-The three ``GET /api/recommendations*`` routes this module used to serve, and
-the engine behind them, were deleted in GDXA-21 as a dead surface with no
-caller of any kind. The module keeps its FILE NAME because renaming it would
-drag in ``app.py`` (imported at :724, included at :1649) and put a second owner
-on that change; its ``tags=["recommendations"]`` below is set right here and is
-simply left for the same rename. Both are cosmetic leftovers, not a claim that
-anything recommendation-shaped still exists.
 """
 from __future__ import annotations
 
@@ -30,7 +22,7 @@ from gdx_dispatch.core.next_action import queue as action_queue
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api", tags=["recommendations"])
+router = APIRouter(prefix="/api", tags=["next-actions"])
 
 _auth_dep = Depends(require_role("admin", "owner", "dispatcher", "technician", "viewer"))
 

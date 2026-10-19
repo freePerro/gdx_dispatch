@@ -580,7 +580,7 @@ def test_pg_get_queue_still_returns_auto_actions_when_the_persisted_read_fails(p
 def test_pg_get_queue_does_not_cost_the_caller_its_row(pg_test_engine):
     """And the GDXA-86 claim proper, for this file: pending ORM work survives.
 
-    ``recommendation_routes`` holds nothing pending today, so this is the
+    ``next_action_routes`` holds nothing pending today, so this is the
     same defensive case as ``ai_quote``'s — asserted because the shape is what
     is being fixed, not the one caller.
     """

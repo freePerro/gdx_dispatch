@@ -67,7 +67,7 @@ def test_an_alias_is_the_same_dict(tmp_path):
 
 
 def test_the_stashed_copy_on_request_state_user_is_followed(tmp_path):
-    """recommendation_routes and error_sink read request.state.user."""
+    """next_action_routes and error_sink read request.state.user."""
     assert _scan(tmp_path, """
         def _uid(request: Request):
             user = getattr(request.state, "user", None) or {}
