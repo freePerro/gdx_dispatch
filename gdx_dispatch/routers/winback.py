@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
@@ -52,6 +52,8 @@ from gdx_dispatch.models.tenant_models import FollowUp, WinbackCampaign, Winback
 
 
 class WinbackCampaignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     channel: str = Field(default="sms", pattern=r"^(sms|email)$")
     subject: str | None = Field(default=None, max_length=200)
@@ -60,10 +62,14 @@ class WinbackCampaignIn(BaseModel):
 
 
 class SendCampaignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     override_customer_ids: list[str] | None = Field(default=None, max_length=5000)
 
 
 class FollowUpIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     entity_type: str = Field(pattern=r"^(estimate|invoice|customer)$")
     entity_id: str = Field(min_length=1, max_length=64)
     assigned_to: str | None = Field(default=None, max_length=200)
@@ -72,6 +78,8 @@ class FollowUpIn(BaseModel):
 
 
 class BulkFollowUpIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ids: list[str] = Field(min_length=1, max_length=500)
 
 

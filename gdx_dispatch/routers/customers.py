@@ -44,7 +44,7 @@ router = APIRouter(prefix="/api/customers", tags=["customers"], dependencies=[De
 
 
 class CustomerCreateIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     name: str = Field(..., min_length=1)
     phone: str | None = None
@@ -86,7 +86,7 @@ class CustomerCreateIn(BaseModel):
 
 
 class CustomerUpdateIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     name: str | None = Field(default=None, min_length=1)
     phone: str | None = None
@@ -174,7 +174,7 @@ class CustomerListOut(BaseModel):
 # dialog toasted "Saved" while the server kept only the street. Lengths match
 # the columns (String(120)/String(20)).
 class CustomerLocationCreateIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     label: str | None = "Service Address"
     address: str = Field(..., min_length=1)
@@ -211,7 +211,7 @@ class CustomerLocationOut(BaseModel):
 
 
 class CustomerLocationPatchIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     label: str | None = None
     address: str | None = None
@@ -1889,6 +1889,8 @@ def absorb_subcustomers(
 
 
 class MergeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     keep_id: str = Field(..., min_length=1)
     merge_ids: list[str] = Field(..., min_length=1)
 

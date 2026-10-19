@@ -39,7 +39,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -73,6 +73,8 @@ class BulkTagIn(BaseModel):
     the sibling `create_job_line_item` ended up the one writer that could put a
     0 on an invoice line (#560): a raw dict runs no validation at all. That
     sibling was deleted 2026-10-12 (GDXA-736); see the module docstring."""
+
+    model_config = ConfigDict(extra="forbid")
 
     customer_ids: list[str] = Field(min_length=1, max_length=500)
     tag: str = Field(min_length=1, max_length=80)

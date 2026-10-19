@@ -8,7 +8,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, select, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
@@ -61,6 +61,8 @@ class UserLocation(TenantBase):
 # ---------------------------------------------------------------------------
 
 class LocationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     address: str | None = None
     city: str | None = None
@@ -74,6 +76,8 @@ class LocationCreate(BaseModel):
 
 
 class LocationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     address: str | None = None
     city: str | None = None
@@ -88,6 +92,8 @@ class LocationUpdate(BaseModel):
 
 
 class UserLocationAssign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     can_dispatch_for: bool = True
 
