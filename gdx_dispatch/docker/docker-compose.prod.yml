@@ -1,0 +1,65 @@
+# Production overlay on the one layout (docker-compose.yml). Tracked since
+# 2026-10-19; it replaces the untracked docker-compose.serverports.yml that
+# lived only on the prod box, where no review or test could see it.
+#
+# Prod's .env carries
+#   COMPOSE_FILE=gdx_dispatch/docker/docker-compose.yml:gdx_dispatch/docker/docker-compose.prod.yml
+#   GDX_REQUIRE_EXISTING_DATA=1
+# so a bare `docker compose -p gdx …` from the repo root includes this file,
+# and update.sh reads the same line. The base alone (an explicit
+# `-f docker-compose.yml`) stops in bootstrap instead of serving a fresh, empty
+# database only when the lock reaches it: with `--env-file ./.env`, as every
+# runbook passes. Without it compose reads .env from gdx_dispatch/docker/,
+# which prod does not have, and neither lock applies. update.sh has a third:
+# it refuses when the files resolve the database to a volume that does not
+# exist.
+#
+# What differs from a customer install, and why:
+#   - Host nginx + certbot terminate TLS and proxy to 127.0.0.1:8002, so Caddy
+#     never starts (its profile is never enabled) and app publishes a port.
+#   - The five DATA volumes are prod's existing ones, by name. external: true
+#     means compose never creates or deletes them; a missing one aborts `up`
+#     instead of silently starting empty. Secrets, backups and the Caddy
+#     volumes have no prod predecessor, so the base creates them fresh.
+#   - More worker concurrency than a 2-vCPU customer box gets.
+services:
+  app:
+    ports:
+      - "127.0.0.1:8002:8000"
+    environment:
+      # The phone.com webhook rotation builds its URLs from this; without it
+      # they point at example.com (v1.24.2 refuses that instead of breaking).
+      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
+      # Voice-note transcription key, app only. NOT plugin-host: there an
+      # OPENAI_API_KEY would override the Door Quote plugin's own key.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  celery-high:
+    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:high -c 4 --loglevel=info
+    environment:
+      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
+  celery-low:
+    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:low -c 2 --loglevel=info
+    environment:
+      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
+  celery-beat:
+    environment:
+      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
+  caddy:
+    profiles: ["prod-never"]
+
+volumes:
+  gdx_db_data:
+    external: true
+    name: docker_db_data
+  gdx_uploads:
+    external: true
+    name: docker_gdx_uploads
+  gdx_recordings:
+    external: true
+    name: gdx_gdx_recordings
+  gdx_plugins:
+    external: true
+    name: gdx_gdx_plugins
+  gdx_redis_data:
+    external: true
+    name: gdx_redis_data

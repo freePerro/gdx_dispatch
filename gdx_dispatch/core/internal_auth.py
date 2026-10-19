@@ -110,9 +110,10 @@ def token() -> str:
     """The shared secret: the explicit one if set, else derived from SECRET_KEY.
 
     The derivation is what makes fail-closed deployable. Without it this change
-    is a coordinated-deploy-or-outage: production runs
+    is a coordinated-deploy-or-outage: production ran
     ``docker-compose.yml + selfhost.yml + serverports.yml`` with no
-    ``secrets-init`` to mint anything, and the public demo runs an **untracked**
+    ``secrets-init`` to mint anything (until the one compose layout of
+    2026-10-19, whose secrets-init mints a token), and the public demo runs an **untracked**
     compose file that no pull request can edit. Requiring a new variable would
     have taken down the browser stream, plugin events and the restart hook on
     both stacks the moment the image rolled — and left demo unfixable from git.

@@ -29,8 +29,12 @@ OPERATOR_ENV = [
     ("GDX_TRUSTED_UPSTREAM_PROXIES", "the proxies (Cloudflare) stepped through in X-Forwarded-For"),
 ]
 
-#: Compose files that stand up the app for a real deployment.
-DEPLOY_COMPOSE = ["docker-compose.yml", "docker-compose.customer.yml"]
+#: Compose files that stand up the app for a real deployment. Since 2026-10-19
+#: there is one layout: production layers docker-compose.prod.yml over it, and
+#: compose MERGES an overlay's `environment:` into the base's by key, so an
+#: overlay can add a var but not drop one without a `!reset` tag, which
+#: test_compose_layout_parity.py forbids in the prod overlay.
+DEPLOY_COMPOSE = ["docker-compose.yml"]
 
 #: Vars that more than one container must agree on, and every service that needs
 #: the SAME value. Checking only `app` is not enough: a shared secret delivered
@@ -170,16 +174,15 @@ def test_the_internal_token_never_reaches_the_untrusted_workflow_container(filen
     """n8n runs untrusted workflow code on the compose network. The token exists
     to keep it out of /internal/*, so handing it the token defeats the point.
 
-    Checks BOTH delivery routes, because the two stacks use different ones: the
-    `environment:` block, and the secrets VOLUME that the customer stack's
-    secrets-init writes runtime.env onto. An env-only assertion passes happily
-    while a `gdx_secrets:/secrets:ro` mount hands n8n the whole secret set —
-    which is the customer stack's actual mechanism.
+    Checks BOTH delivery routes: the `environment:` block, and the secrets
+    VOLUME that secrets-init writes runtime.env onto. An env-only assertion
+    passes happily while a `gdx_secrets:/secrets:ro` mount hands n8n the whole
+    secret set — which is the layout's actual mechanism.
     """
     services = _services(filename)
     present = [s for s in TOKEN_MUST_NOT_REACH if s in services]
     if not present:
-        # SKIP, not a silent pass. docker-compose.yml runs no n8n, so this
+        # SKIP, not a silent pass. The layout runs no n8n, so this
         # parametrization checked nothing while reporting green — half an
         # advertised guard that is really decoration. Saying "skipped" keeps the
         # coverage claim honest, and turns into a real check the day that stack
@@ -256,8 +259,8 @@ def test_the_browser_allowlist_default_survives_an_empty_env():
 def test_plugin_host_does_not_hold_the_platform_mailbox_password():
     """GDXA-271 put the mailbox password on the celery workers (the ops alarms
     run there) through its own anchor rather than *app-env, because plugin-host
-    merges *app-env and runs third-party code. Dev/self-host compose only:
-    docker-compose.customer.yml already shared it through its anchor before
-    this change."""
+    merges *app-env and runs third-party code. The one layout (2026-10-19)
+    keeps that split: the mail settings live in their own x-platform-mail
+    anchor, merged into app and the two workers only."""
     env = _service_environment("docker-compose.yml", "plugin-host")
     assert "PLATFORM_SMTP_PASS" not in env

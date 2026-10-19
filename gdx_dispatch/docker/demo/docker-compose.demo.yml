@@ -17,7 +17,10 @@
 # Design choices:
 #  * Standalone file (NOT layered on docker-compose.yml) — layering would inherit
 #    the production `external: true` db/uploads volumes and risk touching prod
-#    data. This file references only demo-scoped, managed volumes.
+#    data. This file references only demo-scoped, managed volumes. (Since
+#    2026-10-19 those externals live in docker-compose.prod.yml, not the base,
+#    so layering on the base alone is now safe; moving demo onto it is an open
+#    item of the one-layout work.)
 #  * No Celery: a demo needs no background side-effects. The nightly reset
 #    handles state. plugin-host IS run, though — the core app proxies /api/plugins
 #    to it (PLUGIN_HOST_URL), so without it the nav 500s with a visible error.

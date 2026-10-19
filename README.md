@@ -71,23 +71,23 @@ and root component at [`gdx_dispatch/frontend/src/App.vue`](gdx_dispatch/fronten
 
 ## Quick start (Docker)
 
-Requires Docker and Docker Compose. The compose file declares its database and
-uploads volumes `external` (so `docker compose down -v` can never delete them),
-which means Compose will not create them; create them once before the first
-`up`:
+Requires Docker and Docker Compose. Local development runs the same compose
+layout every install runs (`gdx_dispatch/docker/docker-compose.yml`) plus the
+dev overlay (`docker-compose.dev.yml`), which builds the images from this
+checkout. `dev-up.sh` wraps both, stamps the git SHA into the build, and creates
+the dev overlay's two `external` volumes (so `docker compose down -v` can never
+delete the dev database) on first run:
 
 ```bash
-docker volume create docker_db_data
-docker volume create docker_gdx_uploads
-
 cp .env.template .env
-# Fill in the [REQUIRED] values (database password, SECRET_KEY, …)
+# Secrets are minted on first boot; .env only needs what you want to override.
 
-docker compose -f gdx_dispatch/docker/docker-compose.yml up -d --build
+gdx_dispatch/docker/dev-up.sh --build            # add --reload for hot reload
 ```
 
-This brings up PostgreSQL, Redis, the API, and the Celery workers. The API is
-exposed on <http://localhost:8001> with a health check at `/health`.
+This brings up PostgreSQL, Redis, the API, the plugin host and the Celery
+workers as compose project `docker`. The API is exposed on
+<http://localhost:8001> with a health check at `/health`.
 
 On first start the API container automatically (and idempotently) runs database
 migrations, creates the application tables, and seeds a single default tenant
@@ -98,7 +98,7 @@ plus an **initial admin user** so you can log in right away:
   generated and printed to the container logs:
 
   ```bash
-  docker compose -f gdx_dispatch/docker/docker-compose.yml logs app | grep -A4 "initial admin account"
+  docker logs docker-app-1 2>&1 | grep -A4 "initial admin account"
   ```
 
 The admin is created with `must_change_password` set — change it after your
@@ -106,8 +106,9 @@ first login.
 
 ## Self-hosting on your own VPS (one command, no configuration)
 
-The easiest way to run GDX Dispatch is the standalone customer compose file
-published with every release. It needs **no `.env`, no cloned repo, and no
+The easiest way to run GDX Dispatch is the compose file published with every
+release. It is `gdx_dispatch/docker/docker-compose.yml`, the same layout
+production runs, attached to the release as `docker-compose.customer.yml`. It needs **no `.env`, no cloned repo, and no <!-- release asset name; link-ok -->
 secret to fill in** — a `secrets-init` container mints strong secrets on first
 boot and persists them in a volume, so restarts and updates keep your logins
 and encrypted data.
@@ -118,9 +119,9 @@ and — optionally — a domain with an A record pointing at the server.
 
 ```bash
 mkdir gdx && cd gdx
-curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/docker-compose.customer.yml -o docker-compose.customer.yml
+curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/docker-compose.customer.yml -o docker-compose.customer.yml  # release asset name; link-ok
 echo 'GDX_DOMAIN=dispatch.example.com' > .env   # optional — enables automatic HTTPS via Let's Encrypt
-docker compose -p gdx -f docker-compose.customer.yml up -d
+docker compose -p gdx -f docker-compose.customer.yml up -d  # release asset name; link-ok
 ```
 
 That's the whole install. On first boot the stack mints its secrets, runs all
@@ -140,41 +141,38 @@ stays off while blank. A backup sidecar dumps the database daily to the
 `gdx_backups` volume (30-day retention). To update:
 
 ```bash
-docker compose -p gdx -f docker-compose.customer.yml pull
-docker compose -p gdx -f docker-compose.customer.yml up -d
+docker compose -p gdx -f docker-compose.customer.yml pull  # release asset name; link-ok
+docker compose -p gdx -f docker-compose.customer.yml up -d  # release asset name; link-ok
 ```
 
-Data lives in named volumes (`gdx_db_data`, `gdx_uploads`, `gdx_backups`,
-`gdx_secrets`); `docker compose down` without `-v` never touches them.
+Data lives in named volumes (`gdx_db_data`, `gdx_uploads`, `gdx_recordings`,
+`gdx_plugins`, `gdx_redis_data`, `gdx_backups`, `gdx_secrets`);
+`docker compose down` without `-v` never touches them.
 
 Full guides on the wiki:
 [Getting Started](https://github.com/freePerro/gdx_dispatch/wiki/Getting-Started) ·
 [Updating](https://github.com/freePerro/gdx_dispatch/wiki/Updating) ·
 [Backup & Restore](https://github.com/freePerro/gdx_dispatch/wiki/Backup-and-Restore)
 
-## Self-hosting from a checkout (overlay on the base compose)
+## Self-hosting from a checkout
 
-Alternatively, run a pre-built, pinned release from GitHub Container Registry
-by layering the self-host overlay on top of the base compose file. This path
-uses the full `.env.template` and expects you to manage your own reverse
-proxy/TLS. The base file declares its data volumes `external`, so create them
-once before the first `up`:
+The same file runs from a clone of this repository, which is how production
+runs. It pulls `ghcr.io/freeperro/gdx_dispatch:<APP_VERSION>` (`latest` when
+unset); nothing is built. The image tag is the single source of truth for the
+running version (reported by `/health` and the admin **update-check**).
 
 ```bash
-docker volume create docker_db_data
-docker volume create docker_gdx_uploads
-
-cp .env.template .env          # fill in [REQUIRED] values
 echo 'APP_VERSION=1.0.0' >> .env   # or leave unset to track :latest
-
-docker compose -p gdx --env-file ./.env \
-  -f gdx_dispatch/docker/docker-compose.yml \
-  -f gdx_dispatch/docker/docker-compose.selfhost.yml up -d
+docker compose -p gdx --env-file ./.env -f gdx_dispatch/docker/docker-compose.yml up -d
 ```
 
-This pulls `ghcr.io/freeperro/gdx_dispatch:<APP_VERSION>` instead of building.
-The image tag is the single source of truth for the running version (reported
-by `/health` and the admin **update-check**).
+A host that needs something the base does not do (production terminates TLS in
+its own nginx and keeps volumes that predate this layout) adds an overlay and
+names both files in `.env`, so every command and `update.sh` agree on them:
+
+```bash
+COMPOSE_FILE=gdx_dispatch/docker/docker-compose.yml:gdx_dispatch/docker/docker-compose.prod.yml
+```
 
 ### Updating
 

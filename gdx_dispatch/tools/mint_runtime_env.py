@@ -1,6 +1,7 @@
-"""First-boot runtime-env minting for one-click self-host deploys.
+"""First-boot runtime-env minting for every compose install.
 
-docker-compose.customer.yml runs this as the `secrets-init` service before
+docker-compose.yml (the one layout, production included since 2026-10-19)
+runs this as the `secrets-init` service before
 anything else starts. It makes a zero-env `docker compose up` come up with
 real, stable secrets instead of dev defaults:
 
@@ -212,7 +213,7 @@ def main() -> int:
 
     # n8n encryption key → its OWN volume (never gdx_secrets), NO trailing newline
     # (n8n uses the file contents untrimmed). Only when the dir is mounted (the
-    # customer compose sets GDX_N8N_SECRETS_DIR); dev/prod skip it.
+    # compose layout's secrets-init sets GDX_N8N_SECRETS_DIR); a bare run skips it.
     n8n_dir = os.getenv(N8N_SECRETS_DIR_ENV, "").strip()
     n8n_key_path = None
     n8n_files: list[str] = []

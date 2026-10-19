@@ -1,8 +1,8 @@
 """A tracked file meant to be executed is tracked executable (mode 100755).
 
 `gdx_dispatch/docker/entrypoint.sh` was tracked 100644 (GDXA-993). Both
-Dockerfiles `chmod +x` it at build, so the image worked; the dev overlay's
-bind mount (`docker-compose.dev.yml`: `../../gdx_dispatch:/app/gdx_dispatch:ro`)
+Dockerfiles `chmod +x` it at build, so the image worked; the hot-reload overlay's
+bind mount (`docker-compose.reload.yml`: `../../gdx_dispatch:/app/gdx_dispatch:ro`)
 hides that layer, and the container died with
 `exec: "/app/gdx_dispatch/docker/entrypoint.sh": permission denied`. The same
 happens to any shebang script run as `./script` from a fresh clone.

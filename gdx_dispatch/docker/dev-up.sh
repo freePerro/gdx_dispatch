@@ -12,19 +12,32 @@
 #   ./dev-up.sh                # start whole stack (no rebuild)
 #   ./dev-up.sh app            # start just one service
 #   ./dev-up.sh --build app    # REBUILD app (bakes the SHA) then start
+#   ./dev-up.sh --reload app   # also hot-reload backend edits (reload overlay)
+#
+# The stack is the one layout (docker-compose.yml) plus the dev overlay
+# (docker-compose.dev.yml): build from source, dev ports, dev volumes.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 SHA="$(git rev-parse --short HEAD)"
 BT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# The base compose declares db/uploads `external`, so Compose aborts on a fresh
+FILES=(-f gdx_dispatch/docker/docker-compose.yml -f gdx_dispatch/docker/docker-compose.dev.yml)
+ARGS=()
+for a in "$@"; do
+  if [ "$a" = "--reload" ]; then
+    FILES+=(-f gdx_dispatch/docker/docker-compose.reload.yml)
+  else
+    ARGS+=("$a")
+  fi
+done
+
+# The dev overlay declares db/uploads `external`, so Compose aborts on a fresh
 # clone until they exist. `docker volume create` is a no-op on an existing one.
 docker volume create docker_db_data >/dev/null
 docker volume create docker_gdx_uploads >/dev/null
 
 APP_VERSION="$SHA" BUILD_TIME="$BT" GIT_SHA_SHORT="$SHA" \
-  docker compose -p docker --env-file ./.env \
-    -f gdx_dispatch/docker/docker-compose.yml up -d "$@"
+  docker compose -p docker --env-file ./.env "${FILES[@]}" up -d "${ARGS[@]}"
 
 echo "[dev-up] stack up at version ${SHA} (built ${BT})"

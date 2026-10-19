@@ -99,7 +99,7 @@ PYTEST="docker run --rm --entrypoint python -e JWT_SECRET=<32+ bytes> \
 # a whole file from the run. run_tests_split.sh now refuses to start on drift
 # (exit 3); a single-file `docker run ... -m pytest` does NOT check, so rebuild
 # after any requirements.txt edit:
-docker compose -f gdx_dispatch/docker/docker-compose.yml build app
+docker compose -f gdx_dispatch/docker/docker-compose.yml -f gdx_dispatch/docker/docker-compose.dev.yml build app
 
 # The images and CI install requirements.lock, not requirements.txt's ranges
 # (GDXA-467). After editing requirements.txt, re-lock both locks with the uv

@@ -46,9 +46,10 @@ def _resolve_tenant(control_db: Session, tenant_slug: str | None) -> Tenant | No
     The slug used to be hard-coded to "gdx" — one deployment's slug baked into
     the tree. Resolving by id rather than by GDX_TENANT_SLUG matters because
     single_tenant()["slug"] falls back to the 0000…0001 placeholder when
-    GDX_TENANT_SLUG is unset (compose defaults it to empty, and the selfhost,
-    staging, lab and dev overlays set it nowhere), which would make the seeder
-    silently find no tenant in exactly those environments.
+    GDX_TENANT_SLUG is unset (the compose layout has defaulted it to "gdx"
+    since 2026-10-19, but a bare `docker run`, a test or a run outside compose
+    leaves it unset), which would make the seeder silently find no tenant in
+    exactly those environments.
     """
     slug = tenant_slug or os.environ.get("OUTLOOK_BOOTSTRAP_TENANT_SLUG")
     if slug:

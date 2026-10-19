@@ -1,0 +1,25 @@
+# Hot reload — OPT-IN on top of the dev overlay, never on a server:
+#
+#   gdx_dispatch/docker/dev-up.sh --reload app
+#
+# Binds this checkout's gdx_dispatch/ tree into app and runs uvicorn with
+# --reload, so backend edits show up in about a second instead of a rebuild.
+# Its own file since 2026-10-19 (it was docker-compose.dev.yml, which is now
+# the build-from-source overlay every dev run needs).
+services:
+  app:
+    volumes:
+      - ../../gdx_dispatch:/app/gdx_dispatch:ro
+    command:
+      - uvicorn
+      - gdx_dispatch.app:create_app
+      - --factory
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/gdx_dispatch
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"

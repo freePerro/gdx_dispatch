@@ -1,7 +1,13 @@
 # One compose layout, one app container, one-line install
 
-**Status:** PLAN (2026-10-19), audited the same day (`critique_eb81cf5ec7a8.md`: five findings, all folded in below). Nothing built yet. Branch `chore/one-layout`, local
-only. Production is not touched by this work: the prod switch is a separate,
+**Status:** PARTIALLY BUILT (2026-10-19), audited the same day (`critique_eb81cf5ec7a8.md`: five findings, all folded in below). Branch `chore/one-layout`, local <!-- removed or still to be built; link-ok -->
+only. **Built:** Build A, the one layout (base + `docker-compose.prod.yml` /
+`.dev.yml` / `.reload.yml`; customer, selfhost and lab files deleted; the <!-- removed or still to be built; link-ok -->
+`GDX_REQUIRE_EXISTING_DATA` lock; `update.sh` reads `COMPOSE_FILE`; guard
+`tests/test_compose_layout_parity.py`). Checked with `docker compose config`
+and the compose guard tests only; no stack has run it yet. **Not built:** B
+(s6 all-in-one container), C (`install.sh`), D (wizard and boot gaps), and <!-- removed or still to be built; link-ok -->
+every vps2 rehearsal. Production is not touched by this work: the prod switch is a separate,
 maintainer-run step after review (see "Prod switch" below).
 
 **Parent plan:** `hostinger-guided-onboarding-plan.md` (PARTIALLY BUILT). That
@@ -17,10 +23,10 @@ many it is?", widened to "the whole works, not just the layout".
 
 The pain measured on 2026-10-18 is **layout drift**, not container count:
 
-- Prod runs `docker-compose.yml` + `docker-compose.selfhost.yml` + an
-  **untracked** `docker-compose.serverports.yml` that lives only on the prod
+- Prod runs `docker-compose.yml` + `docker-compose.selfhost.yml` + an <!-- removed or still to be built; link-ok -->
+  **untracked** `docker-compose.serverports.yml` that lives only on the prod <!-- removed or still to be built; link-ok -->
   box.
-- Customers run `docker-compose.customer.yml`, a standalone 496-line file that
+- Customers run `docker-compose.customer.yml`, a standalone 496-line file that <!-- removed or still to be built; link-ok -->
   has drifted from the base. It lacks `GDX_TENANT_ID`, `VAPID_PRIVATE_KEY_B64`,
   `INBOUND_EMAIL_WEBHOOK_SECRET`, `GDX_SESSION_RECORDING*` and the app-only
   vars `METRICS_TOKEN`, `POWER_APPS_*`, `GDX_MICROSOFT_SECRET_KEY`,
@@ -28,7 +34,7 @@ The pain measured on 2026-10-18 is **layout drift**, not container count:
 - It also has **no `/app/recordings` volume**. That bug is ledger entry 1280,
   filed 2026-10-18.
 - Lab, dev, demo and selfhost overlays add four more files.
-  `docker-compose.lab.yml` is SaaS-era and unused (Doug, 2026-10-18).
+  `docker-compose.lab.yml` is SaaS-era and unused (Doug, 2026-10-18). <!-- removed or still to be built; link-ok -->
 
 Every fix lands in the file someone happened to open. Prod and customers
 diverge without anything noticing.
@@ -37,7 +43,7 @@ diverge without anything noticing.
 
 Verified against code on 2026-10-19 (`origin/main` c0f5aa01):
 
-- `docker-compose.customer.yml` is the hardened layout:
+- `docker-compose.customer.yml` is the hardened layout: <!-- removed or still to be built; link-ok -->
   - `secrets-init`, which mints keys into the `gdx_secrets` volume
   - redis with `--requirepass`
   - `POSTGRES_PASSWORD_FILE`
@@ -49,8 +55,8 @@ Verified against code on 2026-10-19 (`origin/main` c0f5aa01):
 - `tools/mint_runtime_env.py`: precedence is env, then stored, then minted.
   `DB_PASSWORD` is stored-wins. Operator values must be shell-safe.
   `entrypoint.sh` sources `GDX_RUNTIME_ENV_FILE` over the container env.
-- `release.yml` attaches `docker-compose.customer.yml` to every release. The
-  stable URL `releases/latest/download/docker-compose.customer.yml` is what
+- `release.yml` attaches `docker-compose.customer.yml` to every release. The <!-- removed or still to be built; link-ok -->
+  stable URL `releases/latest/download/docker-compose.customer.yml` is what <!-- removed or still to be built; link-ok -->
   the README tells strangers to curl.
 - **A fresh-stranger install works today.** Re-run 2026-10-19 on a clean VPS
   (Docker 29.7.2, Compose v5.5.0, 15 GB) by following the README exactly:
@@ -102,10 +108,10 @@ Gathered 2026-10-18/19:
 ### A. One layout
 
 - **`gdx_dispatch/docker/docker-compose.yml` becomes the customer file's content**, plus the env parity it lacked.
-  - Old `docker-compose.customer.yml`, `docker-compose.selfhost.yml`, `docker-compose.lab.yml` and `.env.lab.example` are deleted.
-  - `release.yml` still publishes the asset as `docker-compose.customer.yml`, copied from the new file, so the stable URL every installed customer and the README use keeps working.
+  - Old `docker-compose.customer.yml`, `docker-compose.selfhost.yml`, `docker-compose.lab.yml` and `.env.lab.example` are deleted. <!-- removed or still to be built; link-ok -->
+  - `release.yml` still publishes the asset as `docker-compose.customer.yml`, copied from the new file, so the stable URL every installed customer and the README use keeps working. <!-- removed or still to be built; link-ok -->
   - The **volume keys stay the customer file's keys** (`gdx_db_data`, `gdx_uploads`, …). An existing customer install (`-p gdx`) keeps its data across the switch.
-- **`gdx_dispatch/docker/docker-compose.prod.yml` (tracked)** replaces the untracked prod `serverports.yml`. It contains:
+- **`gdx_dispatch/docker/docker-compose.prod.yml` (tracked)** replaces the untracked prod `serverports.yml`. It contains: <!-- removed or still to be built; link-ok -->
   - app on `127.0.0.1:8002`
   - db and redis with no host ports
   - Caddy off via a never-enabled profile, because prod keeps host nginx + certbot
@@ -116,8 +122,8 @@ Gathered 2026-10-18/19:
 - **Running the base alone must never be able to serve an empty prod** (audit finding 1). The new base's db volume is a plain compose volume (`gdx_gdx_db_data` under `-p gdx`). A run on prod without the override would create an empty database, seed a new admin, return 200, and attach to prod's *real* redis, recordings and plugins. Two independent locks:
   1. Prod's `.env` sets `COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml`, so a hand-typed `docker compose up` in that directory includes the override. Check at build time that Compose reads `COMPOSE_FILE` from the `.env` that `update.sh` uses.
   2. A new `GDX_REQUIRE_EXISTING_DATA=1` in prod's `.env`, passed through the base's `x-app-env`: `bootstrap_app` refuses (non-zero exit) when the tenant table is empty, so the container crash-loops loudly instead of seeding.
-  - In addition, `install.sh` refuses to run on a host that has a `docker_db_data` volume ("this host runs the prod layout; use update.sh").
-- `docker-compose.dev.yml` becomes an overlay on the new base (`build:` instead of `image:`, dev ports, `GDX_ENV=dev`). The demo compose stays standalone for now and is listed as an open item, not silently left.
+  - In addition, `install.sh` refuses to run on a host that has a `docker_db_data` volume ("this host runs the prod layout; use update.sh"). <!-- removed or still to be built; link-ok -->
+- `docker-compose.dev.yml` becomes an overlay on the new base (`build:` instead of `image:`, dev ports, `GDX_ENV=dev`). The demo compose stays standalone for now and is listed as an open item, not silently left. <!-- removed or still to be built; link-ok -->
 - **Recordings:** add `gdx_recordings:/app/recordings` to the app (closes ledger 1280).
 - **Env parity:** port every var the old base passed and the customer file lacked into `x-app-env` (list in "Why"). `PLATFORM_SMTP_HOST`/`USER` keep the customer file's blank defaults; prod sets them in its `.env`, because today prod silently relies on the base's `smtp.titan.email` default.
 - **Redis password on prod:** prod redis has no password today. The new layout gives it one from `secrets-init`. The AOF data does not store the password, so the existing volume is reused unchanged.
@@ -158,9 +164,9 @@ Gathered 2026-10-18/19:
 - Net result: 9 containers become **6**, or 5 on prod with Caddy off. The app becomes **one container**.
 - **Migration from the split layout:** the old `celery-*` containers become orphans. The install/update path always runs `up -d --remove-orphans`.
 
-### C. One-line install (`install.sh`, published as a release asset)
+### C. One-line install (`install.sh`, published as a release asset) <!-- removed or still to be built; link-ok -->
 
-The command is `curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/install.sh | sh`. The same script is the update command: re-running it is idempotent.
+The command is `curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/install.sh | sh`. The same script is the update command: re-running it is idempotent. <!-- removed or still to be built; link-ok -->
 
 1. Preflight:
    - Docker ≥ 24 and Compose v2. If Docker is missing, print the official install link and exit. Docker is installed for the stranger only with `--install-docker`, which uses get.docker.com.
@@ -191,8 +197,8 @@ A shellcheck-clean script gets a test that runs it in a container with a fake `d
 ## Rehearsal (gdx-vps2 only; prod is read-only)
 
 1. Fresh-stranger install of the **current release**: done 2026-10-19 (above).
-2. Wipe; install the **branch build** (image built locally and loaded on vps2, no registry push), through `install.sh`. Repeat the walk.
-3. Update path: install the current release, then run branch `install.sh` over it. Check that orphans are removed, data stays, and keys survive (old JWT still valid).
+2. Wipe; install the **branch build** (image built locally and loaded on vps2, no registry push), through `install.sh`. Repeat the walk. <!-- removed or still to be built; link-ok -->
+3. Update path: install the current release, then run branch `install.sh` over it. Check that orphans are removed, data stays, and keys survive (old JWT still valid). <!-- removed or still to be built; link-ok -->
 4. **Prod-copy rehearsal:**
    1. **Before any prod data lands:**
       - ufw default-deny incoming (SSH allowed)
@@ -216,13 +222,17 @@ A shellcheck-clean script gets a test that runs it in a container with a fake `d
 
 1. Tag the overlapping ledger entries `deferred`.
 2. Release.
-3. Copy the tracked prod override over `serverports.yml`.
-4. Add `PLATFORM_SMTP_HOST`/`USER` to prod `.env`.
-5. Run `update.sh` (snapshot first).
-6. **Rollback:** prod's `/var/www/gdx_dispatch` is a git checkout, and `docker-compose.yml` and `selfhost.yml` are tracked there. So the switch's own pull rewrites them, and a `--legacy` flag in the new tree would point at files that are gone (audit finding 2). Instead:
+3. Leave the old `serverports.yml` where it is. It is untracked, so no pull touches it, and the rollback runs with it. Do not copy `docker-compose.prod.yml` over it: that file is tracked and `COMPOSE_FILE` names it in place. (Copying it over was this step until the 2026-10-19 audit, finding 5: the rollback would then publish db and redis on 127.0.0.1:5432/6379, which the old file removed on purpose.) <!-- removed or still to be built; link-ok -->
+4. Add both locks to prod's repo-root `.env` before the update. Prod's `.env` had neither on 2026-10-19 (audit finding 1), and nothing else adds them:
+   - `COMPOSE_FILE=gdx_dispatch/docker/docker-compose.yml:gdx_dispatch/docker/docker-compose.prod.yml`
+   - `GDX_REQUIRE_EXISTING_DATA=1`
+5. Add `PLATFORM_SMTP_HOST`/`USER` to prod `.env`.
+6. Change the deploy skills (gdxproductionupdate, gdxship) to run plain `update.sh`, with no `EXTRA_COMPOSE=…serverports.yml` and no `HEALTH_PORT`. The old command layers the old overlay on the new base, which declares none of prod's volumes: the database would come up on a new, empty `gdx_gdx_db_data`, bootstrap would seed it and `/health` would go green (audit finding 2). `update.sh` now refuses that run, because the volume it resolves does not exist, but the skills should not depend on the refusal. <!-- removed or still to be built; link-ok -->
+7. Run `update.sh` (snapshot first).
+8. **Rollback:** prod's `/var/www/gdx_dispatch` is a git checkout, and `docker-compose.yml` and `selfhost.yml` are tracked there. So the switch's own pull rewrites them, and a `--legacy` flag in the new tree would point at files that are gone (audit finding 2 of the earlier audit). Instead: <!-- removed or still to be built; link-ok -->
    1. `git checkout <previous tag>` in that checkout, which restores the old files and the old `update.sh`.
-   2. Pin the previous `APP_VERSION`.
-   3. Run the old command, with `serverports.yml` still in place (it is untracked and never deleted).
+   2. Pin the previous `APP_VERSION`, and delete the two lines from step 4 so a bare `docker compose` does not name the new files.
+   3. Run the old command, with `serverports.yml` still in place (step 3 kept it). <!-- removed or still to be built; link-ok -->
 
    The volumes the new layout adds (secrets, backups) are left alone. Rehearse the rollback on vps2 too.
 
@@ -246,7 +256,7 @@ through a loopback tunnel. Every step passed. What a stranger hits:
      - Caddy supports them since the fix discussed in [caddy#7399](https://github.com/caddyserver/caddy/issues/7399) (closed 2026-04-25). `caddy:2-alpine` is v2.11.7 (released 2026-10-03).
      - On the rehearsal VPS, a Caddyfile with `default_sni <ip>` and `<ip> { tls { issuer acme { profile shortlived } } }` got a trusted certificate on the first try: issuer `Let's Encrypt YE2`, SAN `IP Address:2.24.120.242`, valid 10-19 to 10-25.
      - Plain `curl https://<ip>/` verified it against the system trust store.
-     - So with no domain, Caddy serves **real HTTPS on the IP**. `install.sh` detects the public IPv4 and passes it as `GDX_PUBLIC_IP`.
+     - So with no domain, Caddy serves **real HTTPS on the IP**. `install.sh` detects the public IPv4 and passes it as `GDX_PUBLIC_IP`. <!-- removed or still to be built; link-ok -->
      - If that address is not public (no IPv4 detected, or the issue fails), Caddy falls back to today's plain :80, and the install output says logins will expire every few minutes until a domain is set.
      - `secure=True` stays.
 2. The forced password change lands on the full `/profile` page.

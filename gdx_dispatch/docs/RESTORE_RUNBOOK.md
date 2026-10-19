@@ -71,14 +71,14 @@ rm -f /tmp/restore.dump
 1. Stop the writers first — with the project name, or nothing stops:
 
    ```bash
-   # The production stack is compose project `gdx`, built from THREE files by
-   # gdx_dispatch/docker/update.sh. Plain `docker compose -f …docker-compose.yml`
-   # addresses a project that does not exist: `stop` stops nothing and `up`
-   # creates a SECOND stack on the same volumes. Always use the same array
-   # update.sh uses (run from the checkout root, where .env lives):
-   COMPOSE=(docker compose -p gdx --env-file ./.env
-     -f gdx_dispatch/docker/docker-compose.yml
-     -f gdx_dispatch/docker/docker-compose.selfhost.yml)
+   # The production stack is compose project `gdx`: docker-compose.yml plus
+   # docker-compose.prod.yml, named by the COMPOSE_FILE line in .env (update.sh
+   # reads the same line). Without `-p gdx` compose addresses a project that does
+   # not exist: `stop` stops nothing and `up` creates a SECOND stack. Never add
+   # `-f …docker-compose.yml` alone: it drops the prod overlay and its volumes,
+   # and GDX_REQUIRE_EXISTING_DATA=1 then refuses to boot. Run from the checkout
+   # root, where .env lives:
+   COMPOSE=(docker compose -p gdx --env-file ./.env)
    "${COMPOSE[@]}" stop app celery-high celery-low celery-beat
    ```
 
@@ -98,14 +98,20 @@ rm -f /tmp/restore.dump
 2. Restore `.env` from its own backup — it carries the encryption keys
    (`MASTER_ENCRYPTION_KEY`, `GDX_FERNET_KEY`); without them the restored
    PII columns are ciphertext. See `SECRETS_ROTATION_RUNBOOK.md`.
-3. Create the base compose file's external volumes (Compose refuses to start
-   without them, and will not create them itself), then
-   `"${COMPOSE[@]}" up -d db` (the array from the section above), then restore
-   as above into `gdx`:
+3. Put the `COMPOSE_FILE` and `GDX_REQUIRE_EXISTING_DATA=1` lines in `.env`
+   (header of `docker-compose.prod.yml`), create the prod overlay's five
+   external data volumes (Compose refuses to start without them, and will not
+   create them itself), then `"${COMPOSE[@]}" up -d db` (the array from the
+   section above), then restore as above into `gdx`. The restore has to come
+   before the app's first start: with the flag set, the app refuses an empty
+   database instead of seeding one.
 
    ```bash
    docker volume create docker_db_data
    docker volume create docker_gdx_uploads
+   docker volume create gdx_gdx_recordings
+   docker volume create gdx_gdx_plugins
+   docker volume create gdx_redis_data
    ```
 4. `update.sh` to pull the pinned image and start everything.
 5. Point DNS at the new host. If the public origin (`GDX_PUBLIC_BASE_URL`)
