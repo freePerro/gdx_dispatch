@@ -49,9 +49,6 @@ services:
       QB_REDIRECT_URI: ${QB_REDIRECT_URI:-http://localhost:8001/api/qb/oauth/callback}
       QB_ENVIRONMENT: ${QB_ENVIRONMENT:-sandbox}
   secrets-init: *dev-image
-  celery-high: *dev-image
-  celery-low: *dev-image
-  celery-beat: *dev-image
   plugin-host:
     build:
       context: ../..

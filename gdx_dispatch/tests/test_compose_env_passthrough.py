@@ -40,11 +40,14 @@ DEPLOY_COMPOSE = ["docker-compose.yml"]
 #: the SAME value. Checking only `app` is not enough: a shared secret delivered
 #: to app alone fails closed everywhere else, silently.
 #:
-#: GDX_INTERNAL_TOKEN's list includes celery-high on purpose — it runs
+#: The Celery workers count too: the high worker runs
 #: `deliver_plugin_event_task`, which POSTs plugin-host /internal/events itself
 #: (core/plugin_events.py). The issue that asked for this fix (#596) named only
 #: "app and plugin-host"; that would have 401'd every plugin event delivery.
-_PLUGIN_HOST_CALLERS = ["app", "plugin-host", "celery-high", "celery-low", "celery-beat"]
+#: Since 2026-10-19 the workers and beat run inside the app container (its s6
+#: tree, test_s6_service_tree.py), so "app" covers them; before that they were
+#: three services of their own, each listed here.
+_PLUGIN_HOST_CALLERS = ["app", "plugin-host"]
 
 SHARED_ENV = [
     ("GDX_INTERNAL_TOKEN", _PLUGIN_HOST_CALLERS),
@@ -55,13 +58,13 @@ SHARED_ENV = [
     # stayed green. Pinning only the token tested the variable nobody sets.
     ("SECRET_KEY", _PLUGIN_HOST_CALLERS),
     # GDXA-271: the ops-alert handler installs in the API lifespan and in every
-    # celery worker child, and the alarm checks run on the workers. A recipient
-    # or password delivered to app alone leaves the channel silently off there.
-    ("OPS_ALERT_EMAIL", ["app", "celery-high", "celery-low"]),
-    ("PLATFORM_SMTP_PASS", ["app", "celery-high", "celery-low"]),
+    # celery worker child, and the alarm checks run on the workers, which run in
+    # the app container since 2026-10-19.
+    ("OPS_ALERT_EMAIL", ["app"]),
+    ("PLATFORM_SMTP_PASS", ["app"]),
     # The login user must be the operator's, not a literal: a password with a
     # placeholder user fails every login while every guard above stays green.
-    ("PLATFORM_SMTP_USER", ["app", "celery-high", "celery-low"]),
+    ("PLATFORM_SMTP_USER", ["app"]),
 ]
 
 #: The host version that plugin discovery compares a plugin's `requires`
@@ -261,6 +264,6 @@ def test_plugin_host_does_not_hold_the_platform_mailbox_password():
     run there) through its own anchor rather than *app-env, because plugin-host
     merges *app-env and runs third-party code. The one layout (2026-10-19)
     keeps that split: the mail settings live in their own x-platform-mail
-    anchor, merged into app and the two workers only."""
+    anchor, merged into app only, whose container runs the workers."""
     env = _service_environment("docker-compose.yml", "plugin-host")
     assert "PLATFORM_SMTP_PASS" not in env

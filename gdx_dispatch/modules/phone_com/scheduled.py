@@ -50,8 +50,9 @@ log = logging.getLogger(__name__)
 
 MIN_LEAD = timedelta(minutes=1)
 MAX_LEAD = timedelta(days=30)
-# A row still "sending" after this long lost its worker mid-send (celery-low
-# and -high are recreated on every deploy): it becomes "unknown", never resent.
+# A row still "sending" after this long lost its worker mid-send (the workers
+# restart with the app container on every deploy): it becomes "unknown", never
+# resent.
 STALE_SENDING = timedelta(minutes=10)
 BATCH_SIZE = 25
 # Past this, a due text is held back rather than sent late (see 4 above).

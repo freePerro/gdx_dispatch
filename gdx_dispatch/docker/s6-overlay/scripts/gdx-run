@@ -1,0 +1,40 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Starts one of the all-in-one app container's four long-running processes, as
+# appuser, through entrypoint.sh (for the runtime env) with migrations and
+# bootstrap skipped: init-gdx already ran them.
+#
+#   gdx-run web | worker-high | worker-low | beat
+#
+# The web command is the image's CMD (Dockerfile); a test keeps the two equal.
+# GDX_DEV_RELOAD=1 (docker-compose.reload.yml) swaps it for uvicorn --reload.
+# The workers carry their own node names: two workers in one container would
+# otherwise both be celery@<hostname>, and inspect, ping and revoke would
+# reach only one of them.
+set -e
+case "$1" in
+  web)
+    if [ "${GDX_DEV_RELOAD:-}" = "1" ]; then
+      set -- uvicorn gdx_dispatch.app:create_app --factory \
+        --host 0.0.0.0 --port 8000 --reload --reload-dir /app/gdx_dispatch
+    else
+      set -- uvicorn gdx_dispatch.main:app --host 0.0.0.0 --port 8000 \
+        --workers 2 --timeout-worker-healthcheck 30 --access-log
+    fi ;;
+  worker-high)
+    set -- celery -A gdx_dispatch.core.celery_app worker -Q priority:high \
+      -c "${GDX_CELERY_HIGH_CONCURRENCY:-2}" -n high@%h --loglevel=info ;;
+  worker-low)
+    set -- celery -A gdx_dispatch.core.celery_app worker -Q priority:low \
+      -c "${GDX_CELERY_LOW_CONCURRENCY:-1}" -n low@%h --loglevel=info ;;
+  beat)
+    set -- celery -A gdx_dispatch.core.celery_app beat --loglevel=info ;;
+  *)
+    echo "gdx-run: unknown process '$1'" >&2
+    exit 2 ;;
+esac
+# s6 does not start in the image's WORKDIR; gdx_dispatch imports from /app.
+cd /app
+exec /command/s6-setuidgid appuser env HOME=/home/appuser \
+  GDX_SKIP_MIGRATIONS=1 GDX_SKIP_BOOTSTRAP=1 \
+  /app/gdx_dispatch/docker/entrypoint.sh "$@"

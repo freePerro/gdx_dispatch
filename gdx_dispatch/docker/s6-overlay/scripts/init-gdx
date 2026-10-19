@@ -1,0 +1,17 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# s6-rc oneshot `init-gdx`: the all-in-one app container's boot step, run once
+# before the four processes start (each of them depends on it).
+#
+# It is entrypoint.sh with `true` as the command: runtime env, ORM tables,
+# `alembic upgrade head`, first-run bootstrap, then exit. A failure fails the
+# oneshot, and S6_BEHAVIOUR_IF_STAGE2_FAILS=2 (Dockerfile) stops the container,
+# as entrypoint.sh's `set -e` did in the split layout.
+#
+# with-contenv: s6 starts services with an empty environment, so without it
+# there is no DATABASE_URL and Alembic falls back to alembic.ini. s6-setuidgid
+# keeps HOME, which the PDF font cache needs, so it is set explicitly. s6 does
+# not start in the image's WORKDIR either, and gdx_dispatch imports from /app.
+cd /app || exit 1
+exec /command/s6-setuidgid appuser env HOME=/home/appuser \
+  /app/gdx_dispatch/docker/entrypoint.sh true

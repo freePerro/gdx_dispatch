@@ -16,6 +16,9 @@
 #
 # The stack is the one layout (docker-compose.yml) plus the dev overlay
 # (docker-compose.dev.yml): build from source, dev ports, dev volumes.
+# The app container starts with s6-overlay's /init (web, both Celery workers
+# and beat in one container). A docker-app image built before that change has
+# no /init and fails to start: run `./dev-up.sh --build app` once.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

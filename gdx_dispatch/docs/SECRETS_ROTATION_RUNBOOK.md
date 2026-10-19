@@ -56,8 +56,9 @@ NEW_PW=$(openssl rand -base64 32)
   -c "sed -i '/^DB_PASSWORD=/d' /secrets/runtime.env"
 "${COMPOSE[@]}" run --rm --no-deps secrets-init
 
-# 5. Recreate everything that reads runtime.env or db_password at start.
-"${COMPOSE[@]}" up -d --force-recreate app celery-high celery-low celery-beat plugin-host backup
+# 5. Recreate everything that reads runtime.env or db_password at start (the
+#    app container carries the Celery workers and beat).
+"${COMPOSE[@]}" up -d --force-recreate app plugin-host backup
 
 # 6. Verify
 "${COMPOSE[@]}" exec -T app curl -sf http://localhost:8000/health

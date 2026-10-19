@@ -53,10 +53,11 @@ the moment the image rolled.
 Delivery note (issue #598, item 1): the compose files enumerate ``environment:``
 explicitly and there is **no** ``env_file:``, so setting this in the operator's
 environment file alone delivers nothing. ``GDX_INTERNAL_TOKEN`` is therefore
-declared in the shared ``x-app-env`` anchor, which reaches app, plugin-host
-**and the celery services** — ``celery-high`` runs ``deliver_plugin_event_task``
-and calls ``/internal/events`` itself, so a token delivered only to app +
-plugin-host would fail closed on every plugin event delivery. That passthrough
+declared in the shared ``x-app-env`` anchor, which reaches app and plugin-host.
+The Celery workers run inside the app container (since 2026-10-19; before that
+they were services of their own that also had to receive it), and the high
+worker runs ``deliver_plugin_event_task``, which calls ``/internal/events``
+itself. That passthrough
 is what makes an explicit override possible; the derivation is what makes the
 default work.
 """

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Every longrun's ./finish. s6-supervise runs it after each death, from the
+# service directory, with the exit code (256 = killed by a signal) and signal.
+#
+# s6 restarts a dead process on its own, which is the point; but a process
+# that keeps dying would restart forever inside a container Docker still calls
+# running. Five deaths in 60 s stop the container with exit code 1, so the
+# restart policy, `docker ps` and update.sh see it. SIGTERM is left out: that
+# is a normal stop. SIGKILL is in: it is what the OOM killer sends.
+if /command/s6-permafailon 60 5 1-255,SIGKILL,SIGSEGV,SIGBUS,SIGABRT,SIGILL,SIGFPE true; then
+  exit 0
+fi
+echo "[s6] $(basename "$PWD") died 5 times in 60 s; stopping the container" >&2
+echo 1 > /run/s6-linux-init-container-results/exitcode
+exec /run/s6/basedir/bin/halt

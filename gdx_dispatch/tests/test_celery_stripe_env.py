@@ -28,9 +28,10 @@ COMPOSE = (
     pathlib.Path(__file__).resolve().parents[1] / "docker" / "docker-compose.yml"
 )
 
-# Services that execute application code and may reach a third-party API.
-# plugin-host is included because it runs the same image.
-WORKER_SERVICES = ("celery-high", "celery-low", "celery-beat")
+# Services that run the Celery workers and beat. Since 2026-10-19 they run
+# inside the app container (its s6 tree; test_s6_service_tree.py pins that),
+# not as celery-high/celery-low/celery-beat services of their own.
+WORKER_SERVICES = ("app",)
 
 
 def _services() -> dict:

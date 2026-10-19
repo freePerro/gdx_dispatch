@@ -77,9 +77,10 @@ rm -f /tmp/restore.dump
    # not exist: `stop` stops nothing and `up` creates a SECOND stack. Never add
    # `-f …docker-compose.yml` alone: it drops the prod overlay and its volumes,
    # and GDX_REQUIRE_EXISTING_DATA=1 then refuses to boot. Run from the checkout
-   # root, where .env lives:
+   # root, where .env lives. The app container also runs the Celery workers and
+   # beat, and backup holds a connection while it dumps, so stop both:
    COMPOSE=(docker compose -p gdx --env-file ./.env)
-   "${COMPOSE[@]}" stop app celery-high celery-low celery-beat
+   "${COMPOSE[@]}" stop app backup
    ```
 
 2. Rename, don't drop: `ALTER DATABASE gdx RENAME TO gdx_broken_<ts>` — keep the broken copy until the restored one has served a full day.

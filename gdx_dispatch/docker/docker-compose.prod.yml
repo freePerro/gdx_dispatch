@@ -33,17 +33,9 @@ services:
       # Voice-note transcription key, app only. NOT plugin-host: there an
       # OPENAI_API_KEY would override the Door Quote plugin's own key.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  celery-high:
-    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:high -c 4 --loglevel=info
-    environment:
-      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
-  celery-low:
-    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:low -c 2 --loglevel=info
-    environment:
-      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
-  celery-beat:
-    environment:
-      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
+      # Prod's worker processes per queue (the split layout's -c 4 / -c 2).
+      GDX_CELERY_HIGH_CONCURRENCY: ${GDX_CELERY_HIGH_CONCURRENCY:-4}
+      GDX_CELERY_LOW_CONCURRENCY: ${GDX_CELERY_LOW_CONCURRENCY:-2}
   caddy:
     profiles: ["prod-never"]
 

@@ -29,13 +29,27 @@ case "$*" in
     [ -z "$DB_VOLUME" ] && { echo '{"volumes": {}}'; exit 0; }
     printf '{\n  "volumes": {\n    "gdx_db_data": {\n      "name": "%s",\n      "external": true\n    }\n  }\n}\n' "$DB_VOLUME" ;;
   "volume inspect "*) [ "$3" = "$EXISTING_VOLUME" ] && exit 0; exit 1 ;;
-  *" exec "*) exit 3 ;;  # the snapshot: stop the run here, it got past the guard
+  *" exec "*)  # the snapshot: by default stop the run here, it got past the guard
+    [ "${SNAPSHOT_OK:-0}" = 1 ] || exit 3
+    echo "-- dump" ;;
+  *" config app")  # real `config app` output also carries app's dependencies
+    printf 'name: gdx\nservices:\n  db:\n    image: postgres:16-alpine\n'
+    printf '  app:\n    depends_on:\n      db:\n        condition: service_healthy\n'
+    printf '    image: ghcr.io/example/gdx:1.0.0\n'
+    printf '  secrets-init:\n    image: ghcr.io/example/gdx:1.0.0\nvolumes:\n  gdx_db_data:\n    name: x\n' ;;
+  "run --rm --entrypoint test ghcr.io/example/gdx:1.0.0 -x /init")
+    case "${HAS_INIT:-1}" in 1) exit 0 ;; 0) exit 1 ;; *) exit 125 ;; esac ;;
+  "run "*) exit 125 ;;  # any other image reference is the lookup gone wrong
+  *" ps -q app") echo appid ;;
+  "inspect -f {{.State.Health.Status}} appid") echo healthy ;;
 esac
 exit 0
 """
 
 
-def _run(tmp_path: Path, env_lines: str, db_volume: str, existing: str) -> tuple[int, str, list[str]]:
+def _run(
+    tmp_path: Path, env_lines: str, db_volume: str, existing: str, **fake_env: str
+) -> tuple[int, str, list[str]]:
     root = tmp_path / "repo"
     (root / "gdx_dispatch" / "docker").mkdir(parents=True)
     shutil.copy(UPDATE_SH, root / "gdx_dispatch" / "docker" / "update.sh")
@@ -57,6 +71,7 @@ def _run(tmp_path: Path, env_lines: str, db_volume: str, existing: str) -> tuple
             "DOCKER_LOG": str(log),
             "DB_VOLUME": db_volume,
             "EXISTING_VOLUME": existing,
+            **fake_env,
         },
     )
     return proc.returncode, proc.stderr, log.read_text().splitlines()
@@ -93,3 +108,32 @@ def test_compose_file_quotes_are_stripped_like_compose_does(tmp_path: Path) -> N
     config = next(c for c in calls if " config --format json" in c)
     assert "-f a.yml -f b.yml" in config, config
     assert '"' not in config, config
+
+
+# The one-container layout (2026-10-19): the compose files start the app with
+# /init, which only images from that change on carry.
+
+
+def test_refuses_an_image_without_s6_before_anything_is_recreated(tmp_path: Path) -> None:
+    rc, err, calls = _run(
+        tmp_path, "", db_volume="docker_db_data", existing="docker_db_data", SNAPSHOT_OK="1", HAS_INIT="0"
+    )
+    assert rc == 1
+    assert "has no /init" in err and "ghcr.io/example/gdx:1.0.0" in err
+    assert not any(" up " in c for c in calls), calls
+
+
+def test_a_failed_check_is_not_reported_as_a_missing_init(tmp_path: Path) -> None:
+    rc, err, calls = _run(
+        tmp_path, "", db_volume="docker_db_data", existing="docker_db_data", SNAPSHOT_OK="1", HAS_INIT="error"
+    )
+    assert rc == 1
+    assert "could not check" in err and "has no /init" not in err
+    assert not any(" up " in c for c in calls), calls
+
+
+def test_the_first_up_removes_the_old_celery_containers(tmp_path: Path) -> None:
+    rc, err, calls = _run(tmp_path, "", db_volume="docker_db_data", existing="docker_db_data", SNAPSHOT_OK="1")
+    assert rc == 0, err
+    ups = [c for c in calls if " up " in c]
+    assert ups[0].endswith("up -d --remove-orphans db redis app"), ups

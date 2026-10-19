@@ -5,9 +5,12 @@ only. **Built:** Build A, the one layout (base + `docker-compose.prod.yml` /
 `.dev.yml` / `.reload.yml`; customer, selfhost and lab files deleted; the <!-- removed or still to be built; link-ok -->
 `GDX_REQUIRE_EXISTING_DATA` lock; `update.sh` reads `COMPOSE_FILE`; guard
 `tests/test_compose_layout_parity.py`). Checked with `docker compose config`
-and the compose guard tests only; no stack has run it yet. **Not built:** B
-(s6 all-in-one container), C (`install.sh`), D (wizard and boot gaps), and <!-- removed or still to be built; link-ok -->
-every vps2 rehearsal. Production is not touched by this work: the prod switch is a separate,
+and the compose guard tests only. Build B, the s6 all-in-one app container
+(`gdx_dispatch/docker/s6-overlay/`, guard
+`gdx_dispatch/tests/test_s6_service_tree.py`), booted locally on an empty
+database: see "As built" under B. **Not built:** <!-- still to be built; link-ok -->
+C (`install.sh`), D (wizard and boot gaps), and every vps2 rehearsal. <!-- still to be built; link-ok -->
+Production is not touched by this work: the prod switch is a separate,
 maintainer-run step after review (see "Prod switch" below).
 
 **Parent plan:** `hostinger-guided-onboarding-plan.md` (PARTIALLY BUILT). That
@@ -163,6 +166,18 @@ Gathered 2026-10-18/19:
 - **Stays separate:** db and redis (stock images, data volumes untouched); plugin-host (separate Playwright image and its isolation boundary); Caddy; backup; n8n.
 - Net result: 9 containers become **6**, or 5 on prod with Caddy off. The app becomes **one container**.
 - **Migration from the split layout:** the old `celery-*` containers become orphans. The install/update path always runs `up -d --remove-orphans`.
+- **As built (2026-10-19, local boot of image `gdx-aio-test`, compose project of its own, empty volumes):**
+  - The tree lives in `gdx_dispatch/docker/s6-overlay/` (copied to `/etc/s6-overlay/`), not `s6-rc.d/` at the docker root.
+  - First boot failed: s6 does not start services in the image's WORKDIR, so `gdx_dispatch` did not import. The init and run scripts now `cd /app`. The failed oneshot stopped the container as designed.
+  - Healthy in 35 s on an empty database (all migrations, bootstrap). All four processes run as appuser; `celery inspect ping` answers from `high@` and `low@`.
+  - SIGKILL of a worker: s6 restarts it in place. Five in 60 s: the container dies with exit code 1 and the restart policy brings it back healthy.
+  - That trip first hung: s6's default `S6_SERVICES_GRACETIME` (3 s) is shorter than a Celery warm shutdown, so the kill stage hit the supervisors mid-stop, s6 respawned them and a worker came back up. The Dockerfile sets 50 s, past the 45 s `timeout-kill`.
+  - `docker stop` takes about 6 s, exit 0. Stopping beat by hand makes the healthcheck fail. `GDX_DEV_RELOAD=1` runs uvicorn `--reload`.
+  - From the commit audit: update.sh's first `up` now removes orphans, so the split layout's celery-beat
+    cannot run beside the new beat (there is no beat lock); and update.sh refuses an image with no `/init`
+    (an older `:latest` or a pinned older release under these compose files) before anything is recreated.
+    Rolling back past this change needs the old tag checked out, not only an older `APP_VERSION`.
+  - Not tested: a stop while a task is running (the 45 s warm-shutdown window), memory under load, arm64.
 
 ### C. One-line install (`install.sh`, published as a release asset) <!-- removed or still to be built; link-ok -->
 

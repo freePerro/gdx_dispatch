@@ -10,16 +10,9 @@ services:
   app:
     volumes:
       - ../../gdx_dispatch:/app/gdx_dispatch:ro
-    command:
-      - uvicorn
-      - gdx_dispatch.app:create_app
-      - --factory
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8000"
-      - --reload
-      - --reload-dir
-      - /app/gdx_dispatch
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
+      # The web process runs uvicorn --reload instead of the release command
+      # (s6-overlay/scripts/gdx-run). The workers do not reload: restart app
+      # after a task change.
+      GDX_DEV_RELOAD: "1"

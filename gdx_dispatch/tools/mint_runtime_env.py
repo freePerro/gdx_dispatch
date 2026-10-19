@@ -80,8 +80,8 @@ MANAGED_SECRETS = {
     "DB_PASSWORD": lambda: pysecrets.token_urlsafe(24),  # URL-safe: goes in DATABASE_URL
     # Shared secret gating plugin-host's /internal/* routes — including the
     # WebSocket that autofills the operator's stored login (ADR-014). Injected
-    # into app, plugin-host AND the celery services (all of them load
-    # runtime.env; celery-high dispatches plugin events over /internal/events),
+    # into app and plugin-host (both load runtime.env; the app container's
+    # Celery worker dispatches plugin events over /internal/events),
     # never into n8n — keeping it out of the untrusted workflow container is the
     # whole point. plugin-host fails closed on it outside dev
     # (core/internal_auth.py, #596); this comment previously said "enforcement is

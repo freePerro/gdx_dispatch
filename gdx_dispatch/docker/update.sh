@@ -52,11 +52,36 @@ echo "[update] Snapshotting database -> ${snapshot}"
 echo "[update] Pulling images…"
 "${COMPOSE[@]}" pull
 
-# Start app ALONE first: only app runs migrations (every other app-image
-# service sets GDX_SKIP_MIGRATIONS), so exactly one container migrates.
+# These compose files start the app under s6 (/init). An image from before the
+# one-container layout has no /init: a checkout of main that pulls an older
+# :latest, or one that pins an older APP_VERSION. Stop before anything is
+# recreated, while the old containers still run.
+# app's own image: `config --images app` also lists the services it depends on.
+app_image="$("${COMPOSE[@]}" config app | awk '/^services:/ {s=1; next} /^[^ ]/ {s=0}
+  s && /^  [^ ]/ {svc=$1} s && svc == "app:" && /^    image: / && !found {print $2; found=1}')"
+init_rc=0
+[ -n "${app_image}" ] && { docker run --rm --entrypoint test "${app_image}" -x /init || init_rc=$?; }
+if [ -z "${app_image}" ] || [ "${init_rc}" != 0 ]; then
+  if [ "${init_rc}" = 1 ]; then
+    echo "[update] Refusing: ${app_image} has no /init, and these compose files start the app with it." >&2
+    echo "[update] The image is older than this checkout. Pin a release at least as new as the checkout" >&2
+    echo "[update] (APP_VERSION in .env), or check out the tag of the release you pinned (git checkout v<version>)." >&2
+  else
+    echo "[update] Refusing: could not check the app image '${app_image:-?}' for /init (docker exit ${init_rc})." >&2
+  fi
+  echo "[update] Nothing was changed; the snapshot is ${snapshot}." >&2
+  exit 1
+fi
+
+# Start app ALONE first: only app runs migrations (plugin-host sets
+# GDX_SKIP_MIGRATIONS), so exactly one container migrates. The app container
+# starts its Celery workers and beat itself, after the migrations.
 # secrets-init runs first through depends_on.
+# --remove-orphans here, not only after health: an install still on the split
+# layout has celery-* containers, and the old celery-beat beside the new app's
+# beat would fire every scheduled task twice until they were removed.
 echo "[update] Starting app (runs migrations)…"
-"${COMPOSE[@]}" up -d db redis app
+"${COMPOSE[@]}" up -d --remove-orphans db redis app
 
 # Budget generously: app applies migrations BEFORE it serves /health, and a
 # real DDL migration can take minutes. Default ~10 min; override with HEALTH_TIMEOUT.
@@ -88,10 +113,12 @@ echo "[update] App not healthy in time (container status: ${status:-unknown})." 
 if [ "${status}" = "running" ] || [ "${status}" = "restarting" ]; then
   echo "[update] It may still be applying a long migration. DO NOT restore the snapshot yet." >&2
   echo "[update] Watch it finish:  ${COMPOSE[*]} logs -f app" >&2
-  echo "[update] Workers were NOT started; rerun ./update.sh once /health is up." >&2
+  echo "[update] plugin-host and backup were NOT started; rerun ./update.sh once /health is up." >&2
 else
   echo "[update] App is not running — safe to roll back:" >&2
-  echo "  1) pin the previous release in .env  (APP_VERSION=<old>)" >&2
+  echo "  1) pin the previous release in .env  (APP_VERSION=<old>) and check out its tag" >&2
+  echo "     (git checkout v<old>): the compose files and the image must match, and an" >&2
+  echo "     image from before the one-container layout cannot run these compose files" >&2
   echo "  2) gunzip -c ${snapshot} | ${COMPOSE[*]} exec -T db psql -U gdx gdx" >&2
   echo "  3) ${COMPOSE[*]} up -d" >&2
 fi
