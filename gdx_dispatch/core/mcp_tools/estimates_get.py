@@ -46,7 +46,7 @@ async def handler(
     if estimate is None or estimate.deleted_at is not None:
         return {"error": "estimate not found"}
 
-    lines = sorted(estimate.lines, key=lambda l: (l.sort_order or 0, l.created_at or 0))
+    lines = sorted(estimate.lines, key=lambda ln: (ln.sort_order or 0, ln.created_at or 0))
 
     return {
         "estimate": {
