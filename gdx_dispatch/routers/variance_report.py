@@ -176,7 +176,6 @@ def variance_summary(
                     est_qty = int(est_row["est_qty"] or 0)
             except Exception:
                 logging.getLogger(__name__).exception("variance_summary caught exception")
-                pass
 
             actual_qty = int(r["actual_qty"] or 0)
             results.append({
