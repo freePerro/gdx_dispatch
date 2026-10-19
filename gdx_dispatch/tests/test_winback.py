@@ -178,10 +178,23 @@ def test_send_campaign_enqueues_sends(client: TestClient):
     finally:
         db.close()
 
-    # Campaign status now "sent"
+    # Queued, not sent (GDXA-1723): nobody is contacted until the drainer
+    # (tasks/winback_drain.py) delivers the rows and settles the campaign.
     listed = client.get("/api/winback/campaigns").json()
-    assert listed[0]["status"] == "sent"
-    assert listed[0]["sent_at"] is not None
+    assert listed[0]["status"] == "sending"
+    assert listed[0]["sent_at"] is None
+    assert listed[0]["send_counts"] == {"queued": 3}
+
+
+def test_send_campaign_dedupes_repeated_override_ids(client: TestClient):
+    created = client.post("/api/winback/campaigns", json=_campaign_payload()).json()
+    cid = str(uuid4())
+    r = client.post(
+        f"/api/winback/campaigns/{created['id']}/send",
+        json={"override_customer_ids": [cid, cid, cid.upper()]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["enqueued"] == 1
 
 
 def test_channel_validation(client: TestClient):

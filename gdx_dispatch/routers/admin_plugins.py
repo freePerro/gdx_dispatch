@@ -103,7 +103,12 @@ async def upload_artifact(
     """Upload a private plugin wheel/sdist (not on a pip index, e.g. an internal
     plugin). Stored in plugin_artifact; plugin-host installs it on restart.
     Owner-only + audited — same trust tier as adding a dependency, since the
-    package runs with backend access in plugin-host."""
+    package runs with backend access in plugin-host.
+
+    Unlike a storefront install, this does not check the plugin's `requires`
+    (GDXA-1742): the constraint lives in the plugin's Python `PluginManifest`,
+    not in the wheel's metadata, and reading it would mean importing the
+    plugin's code in core. Only plugin-host's boot gate sees it."""
     name = safe_artifact_name(file.filename or "")
     if name is None:
         raise HTTPException(400, "filename must be a .whl or .tar.gz with no path")
@@ -192,6 +197,10 @@ def add_plugin(
     user: dict = Depends(_require_owner),
     db: Session = Depends(audit_ready_db),
 ) -> dict:
+    """Record an index package for plugin-host to pip-install on restart.
+
+    No `requires` check, for the reason `upload_artifact` gives: core never
+    sees the package's manifest (GDXA-1742)."""
     ensure_registry_table(db)
     # Guard the free-text package field against a wheel/sdist *filename* (issue
     # #100). A filename is not an index package spec; a private wheel belongs in the
@@ -325,9 +334,24 @@ def install_from_storefront(
     the response says "restart to apply" rather than claiming it is running.
     """
     from gdx_dispatch.core import plugin_storefront as store
+    from gdx_dispatch.plugin_api.discovery import host_version
 
     try:
         entry = store.find_entry(body.key, body.version)
+    except store.StorefrontError as exc:
+        raise HTTPException(status_code=502, detail=exc.owner_message) from None
+    # Before the download, and before any row: plugin-host's boot gate skips a
+    # plugin whose `requires` this host does not meet, with only a log line, so
+    # recording it here would answer "pending_restart" for a plugin that never
+    # loads.
+    reason = store.incompatibility(entry["requires"], host_version())
+    if reason:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{entry['name']} {entry['version']} cannot run on this server. "
+                   f"{reason} Nothing was installed.",
+        )
+    try:
         filename, content = store.download_wheel(entry)
     except store.StorefrontError as exc:
         raise HTTPException(status_code=502, detail=exc.owner_message) from None

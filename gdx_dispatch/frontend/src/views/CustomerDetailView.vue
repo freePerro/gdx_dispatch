@@ -588,8 +588,6 @@
       </Dialog>
 
       <CustomerStatementDialog v-if="canViewStatement" v-model:visible="showStatement" :customer-id="customer.id" />
-
-      <Toast data-testid="customer-detail-toast" />
     </section>
 </template>
 
@@ -623,7 +621,6 @@ import Textarea from "primevue/textarea";
 import InputNumber from "primevue/inputnumber";
 import RadioButton from "primevue/radiobutton";
 import ToggleSwitch from "primevue/toggleswitch";
-import Toast from "primevue/toast";
 
 const route = useRoute();
 const router = useRouter();
