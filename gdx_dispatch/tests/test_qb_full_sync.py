@@ -2471,7 +2471,7 @@ def test_pull_invoices_adoption_imports_lines(db_session: Session, qb_connection
     assert out["adopted"] == 1
     lines = db_session.execute(select(IL).where(IL.invoice_id == inv.id)).scalars().all()
     assert len(lines) == 2, "adoption must import QB lines"
-    assert sum(l.line_total for l in lines) == Decimal("250")
+    assert sum(line.line_total for line in lines) == Decimal("250")
 
 
 def test_pull_invoices_update_branch_resyncs_lines(db_session: Session, qb_connection, mock_qb):
@@ -2498,7 +2498,7 @@ def test_pull_invoices_update_branch_resyncs_lines(db_session: Session, qb_conne
     asyncio.run(sync.pull_invoices("tenant-1", db_session, mock_qb))
     lines = db_session.execute(select(IL).where(IL.invoice_id == invoice.id)).scalars().all()
     assert len(lines) == 2
-    assert sorted(l.description for l in lines) == ["QB-edited line A", "QB-edited line B"]
+    assert sorted(line.description for line in lines) == ["QB-edited line A", "QB-edited line B"]
 
 
 def test_pull_invoices_skips_subtotal_and_group_lines(db_session: Session, qb_connection, mock_qb):
@@ -2529,8 +2529,8 @@ def test_pull_invoices_skips_subtotal_and_group_lines(db_session: Session, qb_co
     }])
     asyncio.run(sync.pull_invoices("tenant-1", db_session, mock_qb))
     lines = db_session.execute(select(IL).where(IL.invoice_id == invoice.id)).scalars().all()
-    assert len(lines) == 2, f"expected 2 item lines, got {len(lines)}: {[l.description for l in lines]}"
-    assert sum(float(l.line_total) for l in lines) == 600.0
+    assert len(lines) == 2, f"expected 2 item lines, got {len(lines)}: {[line.description for line in lines]}"
+    assert sum(float(line.line_total) for line in lines) == 600.0
 
 
 def test_qb_client_query_paginates(monkeypatch):

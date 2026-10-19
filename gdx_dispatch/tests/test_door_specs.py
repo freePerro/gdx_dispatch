@@ -436,7 +436,7 @@ def test_po_door_snapshot_frozen_against_quote_revision(po_client):
     db = po_client._Session()
     try:
         lines = db.execute(_sel(EstimateLine).where(EstimateLine.company_id == "tenant-test")).scalars().all()
-        chi = next(l for l in lines if isinstance(l.line_metadata, dict) and l.line_metadata.get("source") == "chi_hubx")
+        chi = next(line for line in lines if isinstance(line.line_metadata, dict) and line.line_metadata.get("source") == "chi_hubx")
         md = dict(chi.line_metadata)
         md["Color"] = "Almond"
         chi.line_metadata = md
@@ -476,7 +476,7 @@ def test_po_snapshot_survives_a_status_patch(po_client):
     db = po_client._Session()
     try:
         lines = db.execute(_sel(EstimateLine).where(EstimateLine.company_id == "tenant-test")).scalars().all()
-        chi = next(l for l in lines if isinstance(l.line_metadata, dict) and l.line_metadata.get("source") == "chi_hubx")
+        chi = next(line for line in lines if isinstance(line.line_metadata, dict) and line.line_metadata.get("source") == "chi_hubx")
         md = dict(chi.line_metadata)
         md["Color"] = "Almond"
         chi.line_metadata = md
