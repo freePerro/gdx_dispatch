@@ -356,8 +356,8 @@ def _usable_shop_tz(tz_name: Any, *, blank: str = "blank zone") -> str:
         return _default_shop_tz(blank)
     try:
         ZoneInfo(str(tz_name))
-    except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, ValueError, OSError
-        return _default_shop_tz(f"unusable zone {tz_name!r}")
+    except Exception as exc:  # noqa: BLE001 — ZoneInfoNotFoundError, ValueError, OSError
+        return _default_shop_tz(f"unusable zone {tz_name!r}: {type(exc).__name__}")
     return str(tz_name)
 
 
