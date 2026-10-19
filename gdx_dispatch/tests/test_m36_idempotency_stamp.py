@@ -103,7 +103,7 @@ def test_unverifiable_token_stamps_nothing_and_passes_through():
     redis = FakeRedis()
     app, calls = _app(redis)
     client = TestClient(app)
-    bad = _token(secret="w" * 40)
+    bad = _token(secret=SECRET + "-wrong")
     r1 = _post(client, key="k-1", token=bad)
     r2 = _post(client, key="k-1", token=bad)
     assert r1.status_code == 200 and r2.status_code == 200
