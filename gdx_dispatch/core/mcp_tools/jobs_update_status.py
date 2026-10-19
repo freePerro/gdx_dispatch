@@ -3,26 +3,41 @@ from __future__ import annotations
 from typing import Any
 
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
+from gdx_dispatch.core.mcp_tools._helpers import live_job
+from gdx_dispatch.models.tenant_models import Job
+
+# Preview only, and so green (GDXA-1881). A stage change belongs to the job
+# page's own verbs — PATCH through the visit planner, Close out, Cancel job,
+# Re-open — each with its own guard and audit row, and no service the
+# assistant could call. The tool used to be yellow and never wrote, so its
+# Apply button answered "Applied" while the job stayed where it was.
+LIFECYCLE_STAGES = tuple(Job.__table__.c.lifecycle_stage.type.enums)
 
 DESCRIPTOR = ToolDescriptor(
     name="jobs.update_status",
-    description="Update a job's lifecycle_stage. Yellow tool — preview on first call, confirm to apply.",
-    blast_radius="yellow",
-    approval_required=True,
+    description=(
+        "Preview a change to a job's lifecycle_stage. Read-only: it never "
+        "changes the job (applied is always false). allowed=false with a "
+        "detail means the job page refuses that change as a plain stage "
+        "change (finish with Close out, cancel with Cancel job, change a "
+        "finished job with Re-open). A person makes the change on the job page."
+    ),
+    blast_radius="green",
     sensitivity_class="internal",
-    capabilities_required=[("write", "job")],
+    capabilities_required=[("read", "job")],
     input_schema={
         "type": "object",
         "required": ["job_id", "new_status"],
         "properties": {
             "job_id": {"type": "string"},
-            "new_status": {"type": "string"},
+            "new_status": {"type": "string", "enum": list(LIFECYCLE_STAGES)},
         },
     },
     output_schema={
         "type": "object",
         "properties": {
-            "updated": {
+            "applied": {"type": "boolean"},
+            "preview": {
                 "type": "object",
                 "properties": {
                     "job_id": {"type": "string"},
@@ -30,7 +45,8 @@ DESCRIPTOR = ToolDescriptor(
                     "after": {"type": "string"},
                 },
             },
-            "error": {"type": "string"},
+            "allowed": {"type": "boolean"},
+            "detail": {"type": "string"},
         },
     },
 )
@@ -41,58 +57,32 @@ async def handler(
     db: Any,
     job_id: str,
     new_status: str,
-    approval_ref: str | None = None,
     **_: Any,
 ) -> dict[str, Any]:
-    """
-    Handler for jobs.update_status.
-    In this slice, we only return the preview of the change.
-    The actual mutation happens in a subsequent call with an approval_ref.
-    """
-    # Note: The spec says "Do NOT call require_capability."
-    # The actual mutation (job.lifecycle_stage = new_status; db.commit())
-    # is deferred to a later slice.
+    """Say what the stage change would be and whether it is allowed."""
+    # Imported here: routers.jobs imports far more than a tool module should
+    # pull in at registration time.
+    from gdx_dispatch.routers.jobs import _stage_change_refusal
 
-    # We assume 'Job' is available via the db context or similar,
-    # but the test uses a mock db that returns a SimpleNamespace.
-    # We'll use the type provided by the mock or a generic lookup.
-    # Since we don't have the Job class definition, we use the db.get call
-    # as instructed.
+    # Raised, not returned: invoke_tool reports a returned error dict as a
+    # successful result.
+    if new_status not in LIFECYCLE_STAGES:
+        raise ValueError(f"new_status is not a lifecycle stage: {new_status!r}")
+    job = live_job(db, job_id)
 
-    # In the test, db.get is called with (Job, job_id).
-    # Since we don't have 'Job' imported, we'll have to handle the
-    # fact that 'Job' might not be in scope, but the test mocks it.
-    # However, the instruction says: `job = db.get(Job, job_id)`.
-    # I will attempt to import Job if possible, but since it's not in files_in,
-    # and the test mocks the db, I'll use a placeholder or assume it's
-    # available in the environment.
-    # Actually, looking at the test: `db.get.return_value = job`.
-    # The test doesn't actually pass a 'Job' class to the mock.
-    # I will use a local name 'Job' to satisfy the instruction.
-
-    # To avoid NameError if Job isn't defined, I'll try to get it from the db
-    # or just use a dummy if it's not provided. But the instruction is specific.
-    # Let's assume 'Job' is a type that should be imported, but since it's not
-    # in the ground truth, I'll define a placeholder or use a trick.
-    # Wait, if I can't import Job, I can't write `db.get(Job, job_id)`.
-    # Let's look at the test again. The test mocks `db.get`.
-    # It doesn't care what the first argument is.
-
-    # I'll define a dummy Job class to satisfy the syntax.
-    class Job:
-        pass
-
-    job = db.get(Job, job_id)
-    if job is None:
-        return {"error": "job not found"}
-
-    # In this slice, we only return the preview.
+    preview = {"job_id": str(job.id), "before": job.lifecycle_stage, "after": new_status}
+    if job.lifecycle_stage == new_status:
+        return {"applied": False, "preview": preview, "allowed": False,
+                "detail": f"Not changed. The job is already {new_status}."}
+    refusal = _stage_change_refusal(job.lifecycle_stage, new_status)
+    if refusal is not None:
+        return {"applied": False, "preview": preview, "allowed": False,
+                "detail": "Not changed. " + refusal["detail"]}
     return {
-        "updated": {
-            "job_id": str(job_id),
-            "before": job.lifecycle_stage,
-            "after": new_status,
-        }
+        "applied": False,
+        "preview": preview,
+        "allowed": True,
+        "detail": "Not changed. Change the stage on the job page.",
     }
 
 

@@ -27,6 +27,13 @@ CORE_DIR = GDX_DIR / "core"
 REQUIREMENTS = GDX_DIR / "requirements.txt"
 APP_PY = GDX_DIR / "app.py"
 
+# silent_failure_scanner.NOQA_MARKER_RE, copied so this file still runs as a
+# bare script; test_drift_scanner pins the two equal. Reads SILENTFAIL1 and,
+# until every site is converted, the legacy silent-failure (GDXA-1892).
+NOQA_MARKER_RE = re.compile(
+    r"#\s*(?i:noqa):\s*(?:[A-Z]+[0-9]+(?:\s*,\s*|\s+))*(?:SILENTFAIL1\b|(?i:silent-failure)\b)"
+)
+
 RED = "\033[91m"
 YELLOW = "\033[93m"
 GREEN = "\033[92m"
@@ -216,8 +223,10 @@ def check_import_logging() -> None:
 
     2026-04-17 D48-prereq fix: widen lookahead window from 3→10 lines
     (logging often follows a multi-line comment block, especially on
-    health-probe patterns) and respect ``
-    markers the same way silent_failure_scanner does. The prior version
+    health-probe patterns) and respect ``# noqa: SILENTFAIL1``
+    markers the same way silent_failure_scanner does (it also reads the
+    legacy ``# noqa: silent-failure`` until every site is converted,
+    GDXA-1892; see ``NOQA_MARKER_RE``). The prior version
     flagged app.py:1186 as a false positive — log call was on line
     1190, four past a 3-line comment, outside the old window.
 
@@ -234,7 +243,7 @@ def check_import_logging() -> None:
         r"\.(?:exception|error|warning|warn|info|debug|critical|fatal)\s*\(|\braise\b",
         re.IGNORECASE,
     )
-    noqa_pattern = re.compile(r"#\s*noqa:\s*silent-failure", re.IGNORECASE)
+    noqa_pattern = NOQA_MARKER_RE
     for i, line in enumerate(lines):
         if "except Exception" not in line and "except ImportError" not in line:
             continue

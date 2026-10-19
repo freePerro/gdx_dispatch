@@ -2323,20 +2323,6 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
 
 
-class SafetyChecklist(Base):
-    __tablename__ = "safety_checklists"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    technician_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    items: Mapped[str] = mapped_column(Text, nullable=False)
-    completed: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
-    photo_url: Mapped[str] = mapped_column(Text, nullable=True)
-    signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class PdfTemplate(Base):
     __tablename__ = "pdf_templates"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

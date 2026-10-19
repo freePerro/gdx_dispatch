@@ -6,7 +6,16 @@ from typing import Any
 from sqlalchemy import select
 
 from gdx_dispatch.core.mcp_registry import ToolDescriptor, register_tool
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 from gdx_dispatch.models.tenant_models import Job
+
+# Every lifecycle stage but the two terminal ones, read off the column's enum
+# so a new stage cannot drop out of "open" the way service_call — the default
+# for every new job — did (GDXA-1881).
+OPEN_LIFECYCLE_STAGES = tuple(
+    s for s in Job.__table__.c.lifecycle_stage.type.enums
+    if s not in ("completed", "cancelled")
+)
 
 DESCRIPTOR = ToolDescriptor(
     name="jobs.list",
@@ -37,6 +46,7 @@ DESCRIPTOR = ToolDescriptor(
                         "id": {"type": "string"},
                         "title": {"type": "string"},
                         "status": {"type": "string"},
+                        "lifecycle_stage": {"type": "string"},
                         "customer_id": {"type": "string"},
                         "scheduled_at": {"type": ["string", "null"]},
                         "completed_at": {"type": ["string", "null"]},
@@ -59,10 +69,11 @@ async def handler(
     **_,
 ) -> dict[str, Any]:
     """List jobs with optional filters."""
-    stmt = select(Job)
+    # Soft-deleted jobs are gone to every reader (invariant #2).
+    stmt = select(Job).where(Job.deleted_at.is_(None))
 
     if status == "open":
-        stmt = stmt.where(Job.lifecycle_stage.in_(("lead", "estimate", "scheduled", "in_progress")))
+        stmt = stmt.where(Job.lifecycle_stage.in_(OPEN_LIFECYCLE_STAGES))
     elif status == "scheduled":
         stmt = stmt.where(Job.lifecycle_stage == "scheduled")
     elif status == "completed":
@@ -70,7 +81,12 @@ async def handler(
     # "all" implies no status filter
 
     if customer_id:
-        stmt = stmt.where(Job.customer_id == customer_id)
+        # Bound as a UUID: SQLite stores the column as dashless hex, so a
+        # dashed string never matches there.
+        cid = coerce_uuid(customer_id)
+        if cid is None:
+            raise ValueError(f"customer_id is not a UUID: {customer_id!r}")
+        stmt = stmt.where(Job.customer_id == cid)
 
     if technician_id:
         stmt = stmt.where(Job.assigned_to == technician_id)
@@ -82,8 +98,9 @@ async def handler(
         except ValueError:
             return {"ok": False, "error_type": "validation_error", "error_body": "Invalid ISO date format for 'since'"}
 
-    # Limit to 50
-    stmt = stmt.limit(51)
+    # Limit to 50, newest first, so truncation drops the oldest rather than
+    # whatever the database happened to return last.
+    stmt = stmt.order_by(Job.created_at.desc(), Job.id).limit(51)
     result = db.execute(stmt)
     rows = result.scalars().all()
 
@@ -98,6 +115,7 @@ async def handler(
             "id": str(job.id),
             "title": job.title,
             "status": job.status,
+            "lifecycle_stage": job.lifecycle_stage,
             "customer_id": str(job.customer_id),
             "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
             "completed_at": job.completed_at.isoformat() if job.completed_at else None,

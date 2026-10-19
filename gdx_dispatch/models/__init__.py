@@ -91,7 +91,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     ReminderSettings,
     Resource,
     RolePermission,
-    SafetyChecklist,
     Segment,
     ServiceAgreement,
     ServiceAgreementTemplate,
