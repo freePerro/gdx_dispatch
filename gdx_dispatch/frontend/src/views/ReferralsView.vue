@@ -10,14 +10,14 @@
             icon="pi pi-plus"
             class="ml-2"
             data-testid="referral-add-btn"
-            @click="openDialog()"
+            @click="openCreate()"
           />
         </template>
       </Toolbar>
 
       <div class="filter-tabs" data-testid="referrals-tabs">
         <Button
-          v-for="status in ['all', 'pending', 'contacted', 'converted', 'declined']"
+          v-for="status in ['all', ...STATUSES]"
           :key="status"
           :label="statusLabel(status) + (counts[status] ? ` (${counts[status]})` : '')"
           :severity="statusFilter === status ? undefined : 'secondary'"
@@ -45,21 +45,28 @@
             <i class="pi pi-users" style="font-size:3rem; color:#64748b;"></i>
             <h3>No referrals yet</h3>
             <p>Capture new referrals to reward advocates and grow your business.</p>
-            <Button label="+ Add Referral" @click="openDialog()" />
+            <Button label="+ Add Referral" @click="openCreate()" />
           </div>
         </template>
 
-        <Column field="referrer_customer" header="Referrer" />
-        <Column field="referred_name" header="Referred" />
-        <Column field="status" header="Status" style="width:170px">
+        <Column header="Referrer">
+          <template #body="{ data }">
+            <router-link
+              v-if="data.referrer_name"
+              :to="`/customers/${data.referrer_id}`"
+            >{{ data.referrer_name }}</router-link>
+            <span v-else class="muted">Unknown customer</span>
+          </template>
+        </Column>
+        <Column field="referee_name" header="Referred" />
+        <Column field="referee_phone" header="Phone" style="width:150px" />
+        <Column field="status" header="Status" style="width:140px">
           <template #body="{ data }">
             <Tag :value="statusLabel(data.status)" :severity="statusSeverity(data.status)" />
           </template>
         </Column>
-        <Column field="reward" header="Reward" style="width:130px" sortable>
-          <template #body="{ data }">
-            {{ formatCurrency(data.reward) }}
-          </template>
+        <Column field="reward_given" header="Rewarded" style="width:110px">
+          <template #body="{ data }">{{ data.reward_given ? 'Yes' : 'No' }}</template>
         </Column>
         <Column field="created_at" header="Created" style="width:120px">
           <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
@@ -67,68 +74,86 @@
         <Column header="Actions" style="width:120px">
           <template #body="{ data }">
             <Button
-              v-tooltip="'Edit'"
-              icon="pi pi-pencil" aria-label="Edit"
+              v-if="data.status !== 'rewarded'"
+              v-tooltip="'Update status'"
+              icon="pi pi-pencil" aria-label="Update status"
               text
               size="small"
               data-testid="referral-edit-btn"
-              @click.stop="openDialog(data)"
+              @click.stop="openEdit(data)"
             />
           </template>
         </Column>
       </DataTable>
 
+      <!-- Create: the four fields ReferralCreateIn accepts. The server sets
+           status to pending; there is no notes or reward-amount column. -->
       <Dialog
-        v-model:visible="showDialog"
-        :header="editingReferral ? `Update ${editingReferral.referred_name}` : 'New Referral'"
+        v-model:visible="showCreate"
+        header="New Referral"
         modal
-        :style="{ width: '520px' }"
+        :style="{ width: '520px', maxWidth: '95vw' }"
         data-testid="referral-dialog"
       >
         <div class="form-grid">
           <div class="form-field full-width">
-            <label>Referrer</label>
-            <InputText v-model="form.referrer_customer" data-testid="referrer-input" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Referred</label>
-            <InputText v-model="form.referred_name" data-testid="referred-input" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Status</label>
-            <Select
-              v-model="form.status"
-              :options="statusOptions"
-              optionLabel="label"
-              optionValue="value"
+            <label for="referral-referrer">Referrer (customer)</label>
+            <AutoComplete
+              id="referral-referrer"
+              v-model="referrerPick"
+              :suggestions="customerSuggestions"
+              option-label="label"
+              forceSelection
+              placeholder="Search name, email or phone…"
               class="w-full"
-              data-testid="status-select"
-            />
-          </div>
-          <div class="form-field">
-            <label>Reward</label>
-            <InputNumber
-              v-model="form.reward"
-              mode="currency"
-              currency="USD"
-              :min="0"
-              data-testid="reward-input"
-              class="w-full"
+              data-testid="referrer-input"
+              @complete="onCustomerComplete"
             />
           </div>
           <div class="form-field full-width">
-            <label>Notes</label>
-            <Textarea
-              v-model="form.notes"
-              rows="3"
-              class="w-full"
-              placeholder="Capture any context or follow-up notes."
-            />
+            <label for="referral-referee-name">Referred name</label>
+            <InputText id="referral-referee-name" v-model="form.referee_name" maxlength="120" data-testid="referred-input" class="w-full" />
+          </div>
+          <div class="form-field">
+            <label for="referral-referee-phone">Referred phone</label>
+            <InputText id="referral-referee-phone" v-model="form.referee_phone" maxlength="30" type="tel" data-testid="referee-phone-input" class="w-full" />
+          </div>
+          <div class="form-field">
+            <label for="referral-referee-email">Referred email (optional)</label>
+            <InputText id="referral-referee-email" v-model="form.referee_email" maxlength="255" type="email" data-testid="referee-email-input" class="w-full" />
           </div>
         </div>
         <template #footer>
-          <Button label="Cancel" severity="secondary" @click="showDialog = false" />
-          <Button label="Save" icon="pi pi-check" @click="saveReferral" :loading="saving" />
+          <Button label="Cancel" severity="secondary" @click="showCreate = false" />
+          <Button label="Save" icon="pi pi-check" :disabled="!canCreate" :loading="saving" data-testid="referral-save-btn" @click="createReferral" />
+        </template>
+      </Dialog>
+
+      <!-- Edit: ReferralPatchIn takes status only, and the server refuses a
+           move backwards (409), so only the current and later statuses show. -->
+      <Dialog
+        v-model:visible="showEdit"
+        :header="editingReferral ? `Update ${editingReferral.referee_name}` : 'Update referral'"
+        modal
+        :style="{ width: '420px', maxWidth: '95vw' }"
+        data-testid="referral-edit-dialog"
+      >
+        <div class="form-field">
+          <label for="referral-status">Status</label>
+          <Select
+            id="referral-status"
+            v-model="editStatus"
+            :options="editStatusOptions"
+            optionLabel="label"
+            optionValue="value"
+            class="w-full"
+            data-testid="status-select"
+          />
+          <small v-if="editStatus === 'rewarded'" class="muted">Marking rewarded records that the reward was given. It cannot be undone.</small>
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="showEdit = false" />
+          <Button label="Save" icon="pi pi-check" :loading="saving" data-testid="referral-status-save-btn" @click="saveStatus" />
         </template>
       </Dialog>
     </section>
@@ -138,44 +163,50 @@
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatTimestamp } from "../utils/formatTimestamp";
-import { formatMoney as formatCurrency } from "../composables/useFormatters";
+import AutoComplete from "primevue/autocomplete";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
-import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
 import Select from "primevue/select";
 import Tag from "primevue/tag";
-import Textarea from "primevue/textarea";
 import Toolbar from "primevue/toolbar";
+
+// Speaks routers/referrals.py as it is. Until GDXA-1693 this page posted
+// {referrer_customer, referred_name, reward, notes} (always 422), offered
+// statuses the router refuses, and read columns the API never returns.
+// STATUSES is the router's ALLOWED_STATUSES in its forward-only order.
+const STATUSES = ["pending", "converted", "rewarded"];
 
 const api = useApiWithToast();
 
 const referrals = ref([]);
 const loading = ref(true);
 const statusFilter = ref("all");
-const showDialog = ref(false);
+const showCreate = ref(false);
+const showEdit = ref(false);
 const editingReferral = ref(null);
+const editStatus = ref("pending");
 const saving = ref(false);
+const referrerPick = ref(null);
+const customerSuggestions = ref([]);
 
-const statusOptions = [
-  { label: "Pending", value: "pending" },
-  { label: "Contacted", value: "contacted" },
-  { label: "Converted", value: "converted" },
-  { label: "Declined", value: "declined" },
-];
-
-const emptyForm = () => ({
-  referrer_customer: "",
-  referred_name: "",
-  status: "pending",
-  reward: null,
-  notes: "",
-});
+const emptyForm = () => ({ referee_name: "", referee_phone: "", referee_email: "" });
 
 const form = ref(emptyForm());
+
+const canCreate = computed(() =>
+  Boolean(referrerPick.value?.value)
+  && form.value.referee_name.trim().length > 0
+  && form.value.referee_phone.trim().length > 0
+);
+
+const editStatusOptions = computed(() => {
+  const from = Math.max(0, STATUSES.indexOf(editingReferral.value?.status));
+  return STATUSES.slice(from).map((value) => ({ label: statusLabel(value), value }));
+});
 
 const counts = computed(() => {
   const tally = { all: referrals.value.length };
@@ -199,9 +230,8 @@ function statusLabel(status) {
 function statusSeverity(status) {
   return {
     pending: "warn",
-    contacted: "info",
-    converted: "success",
-    declined: "danger",
+    converted: "info",
+    rewarded: "success",
   }[status] || "secondary";
 }
 
@@ -212,6 +242,8 @@ function formatDate(value) {
   return formatTimestamp(value, 'date');
 }
 
+// The list resolves referrer_name server-side in one query; a referrer that
+// is not a live customer comes back null and shows as unknown.
 async function loadReferrals() {
   loading.value = true;
   try {
@@ -222,27 +254,74 @@ async function loadReferrals() {
   }
 }
 
-function openDialog(referral = null) {
-  editingReferral.value = referral;
-  form.value = referral ? { ...referral } : emptyForm();
-  showDialog.value = true;
+async function onCustomerComplete(event) {
+  const q = (event?.query || "").trim();
+  if (!q) {
+    customerSuggestions.value = [];
+    return;
+  }
+  try {
+    const rows = await api.get(`/api/customers/search?q=${encodeURIComponent(q)}`);
+    customerSuggestions.value = (Array.isArray(rows) ? rows : []).map((c) => ({
+      label: c.name || c.email || c.phone || c.id,
+      value: c.id,
+    }));
+  } catch {
+    customerSuggestions.value = [];
+  }
 }
 
-async function saveReferral() {
-  if (!form.value.referrer_customer.trim() || !form.value.referred_name.trim()) {
+function openCreate() {
+  form.value = emptyForm();
+  referrerPick.value = null;
+  customerSuggestions.value = [];
+  showCreate.value = true;
+}
+
+function openEdit(referral) {
+  editingReferral.value = referral;
+  editStatus.value = referral.status || "pending";
+  showEdit.value = true;
+}
+
+async function createReferral() {
+  if (!canCreate.value) return;
+  const pick = referrerPick.value;
+  const body = {
+    referrer_id: pick.value,
+    referee_name: form.value.referee_name.trim(),
+    referee_phone: form.value.referee_phone.trim(),
+  };
+  const email = form.value.referee_email.trim();
+  if (email) body.referee_email = email;
+  saving.value = true;
+  try {
+    await api.post("/api/referrals", body, { successMessage: "Referral added" });
+    showCreate.value = false;
+    await loadReferrals();
+  } catch {
+    // useApiWithToast has already shown the error; keep the dialog open.
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function saveStatus() {
+  const referral = editingReferral.value;
+  if (!referral) return;
+  if (editStatus.value === referral.status) {
+    showEdit.value = false;
     return;
   }
   saving.value = true;
   try {
-    if (editingReferral.value) {
-      await api.patch(`/api/referrals/${editingReferral.value.id}`, form.value, {
-        successMessage: "Referral updated",
-      });
-    } else {
-      await api.post("/api/referrals", form.value, { successMessage: "Referral added" });
-    }
+    await api.patch(`/api/referrals/${referral.id}`, { status: editStatus.value }, {
+      successMessage: "Referral updated",
+    });
+    showEdit.value = false;
     await loadReferrals();
-    showDialog.value = false;
+  } catch {
+    // useApiWithToast has already shown the error; keep the dialog open.
   } finally {
     saving.value = false;
   }
@@ -250,3 +329,30 @@ async function saveReferral() {
 
 onMounted(loadReferrals);
 </script>
+
+<style scoped>
+.muted {
+  color: var(--p-text-muted-color);
+}
+.form-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.form-field.full-width {
+  grid-column: 1 / -1;
+}
+.form-field label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--p-text-muted-color);
+}
+.w-full {
+  width: 100%;
+}
+</style>

@@ -585,8 +585,6 @@
           />
         </template>
       </Dialog>
-
-      <Toast data-testid="documents-toast" />
     </div>
     </section>
 </template>
@@ -610,7 +608,6 @@ import ProgressBar from 'primevue/progressbar';
 import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 import Textarea from 'primevue/textarea';
-import Toast from 'primevue/toast';
 import Toolbar from 'primevue/toolbar';
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB

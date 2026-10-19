@@ -27,17 +27,15 @@
             <EmptyState icon="pi pi-comments" title="No survey templates" message="Create a template to send NPS or post-job surveys." />
           </template>
           <Column field="name" header="Template" />
-          <Column field="kind" header="Type" />
+          <Column header="Type" style="width:130px">
+            <template #body="slotProps">{{ kindLabel(slotProps.data.kind) }}</template>
+          </Column>
           <Column field="question" header="Question" />
           <Column header="Active" style="width:90px">
-            <template #body="slotProps">
-              {{ slotProps.data.active ? 'Yes' : 'No' }}
-            </template>
+            <template #body="slotProps">{{ slotProps.data.active ? 'Yes' : 'No' }}</template>
           </Column>
           <Column header="Last Link">
-            <template #body="slotProps">
-              {{ formatDateValue(slotProps.data.last_sent_at) }}
-            </template>
+            <template #body="slotProps">{{ formatDateValue(slotProps.data.last_sent_at) }}</template>
           </Column>
           <Column header="Actions" style="width:230px">
             <template #body="slotProps">
@@ -247,6 +245,10 @@ const templateKindOptions = [
   { label: 'CSAT (1–5)', value: 'csat' },
   { label: 'Custom (0–10)', value: 'custom' },
 ];
+
+function kindLabel(kind) {
+  return templateKindOptions.find((o) => o.value === kind)?.label || kind || '—';
+}
 
 const responseFilterOptions = computed(() => [
   { label: 'All Templates', value: 'all' },

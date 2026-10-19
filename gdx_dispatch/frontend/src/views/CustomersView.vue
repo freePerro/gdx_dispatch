@@ -187,8 +187,6 @@
           />
         </template>
       </Dialog>
-
-      <Toast data-testid="customers-toast" />
     </section>
 </template>
 
@@ -209,7 +207,6 @@ import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
 import Select from "primevue/select";
 import Tag from "primevue/tag";
-import Toast from "primevue/toast";
 import Toolbar from "primevue/toolbar";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
 import CustomerTagChips from "../components/CustomerTagChips.vue";
