@@ -26,7 +26,7 @@ from sqlalchemy.pool import StaticPool
 # Every router driven below is imported at module load, before the fixture's
 # create_all, so each model it touches is registered on TenantBase.metadata.
 from gdx_dispatch.core import locations as locations_mod
-from gdx_dispatch.core import recommendation_routes as recommendations_mod
+from gdx_dispatch.core import next_action_routes as next_action_mod
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.modules.bank_feeds import router as bank_feeds_mod
 from gdx_dispatch.modules.error_sink import router as error_sink_mod
@@ -147,7 +147,7 @@ def test_a_manual_next_action_names_its_creator_and_reaches_their_queue(SessionL
     assigned to a real user would have been hidden from every queue."""
     from gdx_dispatch.core.next_action import NextAction
 
-    client = _client(SessionLocal, recommendations_mod.router, TECH)
+    client = _client(SessionLocal, next_action_mod.router, TECH)
     r = client.post("/api/next-actions", json={"title": "Call about the spring", "action_type": "follow_up"})
     assert r.status_code in (200, 201), r.text
     row = _one(SessionLocal, NextAction, title="Call about the spring")
@@ -406,7 +406,7 @@ def test_the_recommendation_key_reads_the_stashed_principal():
     """In production require_role stashes the RAW JWT claims — sub, no user_id."""
     raw_claims = {"sub": TECH["user_id"], "tenant_id": TENANT, "role": "technician", "jti": "j", "typ": "access"}
     request = SimpleNamespace(state=SimpleNamespace(current_user=raw_claims))
-    assert recommendations_mod._get_user_id(request) == TECH["user_id"]
+    assert next_action_mod._get_user_id(request) == TECH["user_id"]
     login_dict_route = SimpleNamespace(state=SimpleNamespace(user=dict(TECH)))
-    assert recommendations_mod._get_user_id(login_dict_route) == TECH["user_id"]
-    assert recommendations_mod._get_user_id(SimpleNamespace(state=SimpleNamespace())) == "anonymous"
+    assert next_action_mod._get_user_id(login_dict_route) == TECH["user_id"]
+    assert next_action_mod._get_user_id(SimpleNamespace(state=SimpleNamespace())) == "anonymous"

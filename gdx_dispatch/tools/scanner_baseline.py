@@ -44,7 +44,7 @@ Usage (``frontend_contract_scan`` needs the app to import, so use docker-app)::
 
 Re-freezing to make the gate pass is the one wrong answer, the same as for
 every other baseline here. Fix the finding, or mark it in source where the
-scanner supports a marker (``# noqa: silent-failure``).
+scanner supports a marker (``# noqa: SILENTFAIL1``).
 """
 import argparse
 import hashlib

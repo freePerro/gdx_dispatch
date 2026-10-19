@@ -59,10 +59,10 @@ def _make_payload(**overrides):
     return TemplateConfigIn(**defaults)
 
 
-def test_list_templates_returns_6_defaults(ctx):
+def test_list_templates_returns_rendered_types_only(ctx):
     db, req, user, _ = ctx
     result = list_templates(request=req, user=user, db=db)
-    assert len(result) == 6
+    assert [t["template_type"] for t in result] == ["estimate", "invoice"]
 
 
 def test_get_template_estimate_default_color(ctx):
@@ -79,14 +79,45 @@ def test_get_template_invalid_type_400(ctx):
     assert exc.value.status_code == 400
 
 
-def test_available_types_returns_6(ctx):
+# No renderer reads a template of these types (GDXA-1909; safety_checklist
+# went with its table in GDXA-1714).
+UNRENDERED_TYPES = ("work_order", "install_sheet", "purchase_order", "safety_checklist")
+
+
+def test_available_types_are_the_rendered_ones(ctx):
     _, _, user, _ = ctx
-    types = available_types(user=user)
-    assert len(types) == 6
-    keys = {t["key"] for t in types}
-    assert "estimate" in keys
-    assert "invoice" in keys
-    assert "work_order" in keys
+    keys = [t["key"] for t in available_types(user=user)]
+    assert keys == ["estimate", "invoice"]
+    assert not set(UNRENDERED_TYPES) & set(keys)
+
+
+@pytest.mark.parametrize("template_type", UNRENDERED_TYPES)
+def test_unrendered_type_is_refused_on_get_and_put(ctx, template_type):
+    """Saving a type no renderer reads would toast success and change no
+    document, so the editor API refuses it outright."""
+    db, req, user, _ = ctx
+    with pytest.raises(HTTPException) as exc:
+        get_template(template_type=template_type, request=req, user=user, db=db)
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        save_template(template_type=template_type, request=req,
+                      payload=_make_payload(), user=user, db=db)
+    assert exc.value.status_code == 400
+    count = db.execute(sa_text("SELECT COUNT(*) FROM pdf_templates")).scalar()
+    assert count == 0
+
+
+def test_orphan_row_of_unrendered_type_is_not_listed(ctx):
+    """Rows saved for a retired type before GDXA-1909 stay in the table but
+    never surface in the editor."""
+    db, req, user, _ = ctx
+    db.execute(sa_text(
+        "INSERT INTO pdf_templates (id, company_id, template_type, blocks) "
+        "VALUES ('orphan-1', 'tenant-pdf-test', 'work_order', '[]')"
+    ))
+    db.commit()
+    types = [t["template_type"] for t in list_templates(request=req, user=user, db=db)]
+    assert types == ["estimate", "invoice"]
 
 
 def test_save_template_returns_saved(ctx):
@@ -133,7 +164,8 @@ def test_list_shows_updated_after_save(ctx):
 
 def test_unsaved_type_returns_8_default_blocks(ctx):
     db, req, user, _ = ctx
-    t = get_template(template_type="work_order", request=req, user=user, db=db)
+    t = get_template(template_type="invoice", request=req, user=user, db=db)
+    assert t["id"] is None
     assert len(t["blocks"]) == 8
 
 

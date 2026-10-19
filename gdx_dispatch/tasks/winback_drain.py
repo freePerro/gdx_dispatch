@@ -13,8 +13,11 @@ What it guarantees, because a text or an email cannot be recalled:
    ``FOR UPDATE SKIP LOCKED``: SQLite has no row locks, and the guard is the
    same on both dialects.
 2. **Never resent.** A definite failure is ``failed``; an SMS whose outcome is
-   ambiguous (read timeout, 5xx), or a row a killed worker left ``sending``, is
-   ``unknown``. None is retried.
+   ambiguous (read timeout, 5xx, no answer within ``WORST_SEND``), or a row a
+   killed worker left ``sending``, is ``unknown``. None is retried. The one
+   row put back to ``queued`` is a text Phone.com provably never got (a 429
+   or no connection): it counts as ``not_reached``, stops this pass's texts,
+   and is ``failed`` after ``NOT_REACHED_TRIES`` passes.
 3. **Judged at send time.** The customer must still exist, must not have
    opted out of that channel (``email_opt_out`` / ``sms_opt_out`` — win-back is
    marketing), and texting must still be switched on. A refusal is
@@ -38,11 +41,15 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
@@ -54,11 +61,37 @@ from gdx_dispatch.models.tenant_models import AppSettings, Customer, WinbackCamp
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 25
-# Stop claiming after this long; what is left goes to the next pass. Kept well
-# under the minute because priority:low runs one task at a time and the
-# every-minute inbound SMS poll shares that slot (it expires after 50s).
-# Claims are per row, so an overlap is safe anyway.
-DRAIN_BUDGET = timedelta(seconds=20)
+# The priority:low worker is one slot in docker-compose.customer.yml (-c 1)
+# and the every-minute inbound SMS poll queues behind this drain there (it
+# expires after 50s), so a pass must hand the slot back in time. A row is
+# claimed only while the budget left still covers one whole text
+# (WORST_SEND), and a text is never waited on past WORST_SEND, so the texting
+# loop ends within DRAIN_BUDGET of its start. What is left goes to the next
+# pass; claims are per row, so an overlap is safe anyway.
+# Not bounded by this: an email. Its transport (Graph with its own timeout and
+# 429 retries, then SMTP at 15s) takes no deadline from the drain, so a slow
+# mailbox can still run a pass past the budget.
+DRAIN_BUDGET = timedelta(seconds=30)
+# The wall-clock cap on one Phone.com send. httpx's timeouts are per
+# operation (a response that dribbles in resets the read timeout on every
+# chunk), so the send runs on a thread the drain stops waiting for at
+# WORST_SEND; the outcome is then "unknown", never retried. SEND_TIMEOUT
+# makes httpx give up first in the ordinary slow case.
+WORST_SEND = timedelta(seconds=15)
+SEND_TIMEOUT = httpx.Timeout(connect=3.0, read=8.0, write=3.0, pool=1.0)
+# _send_sms returns this when Phone.com provably never got the text (429, no
+# connection): the row goes back to "queued" and this pass sends no more
+# texts (emails still go). After NOT_REACHED_TRIES passes it is "failed", so
+# an outage cannot hold a campaign open, or fill the customer's thread with
+# failed copies, forever. The try count rides in ``error``; no migration.
+NOT_REACHED = "queued"
+NOT_REACHED_TRIES = 5
+_TRY_RE = re.compile(r"^sms_not_reached \(try (\d+) of ")
+
+
+def _not_reached_tries(error: str | None) -> int:
+    m = _TRY_RE.match(error or "")
+    return int(m.group(1)) if m else 0
 # A row still "sending" after this long lost its worker mid-send (celery
 # workers are recreated on every deploy): it may have gone, so "unknown".
 STALE_SENDING = timedelta(minutes=15)
@@ -159,11 +192,20 @@ def _send_email(db: Session, campaign: WinbackCampaign, send: WinbackSend, custo
     return ("sent", None) if sent else ("failed", skip_reason or "send_failed")
 
 
+def _never_reached(exc: Exception) -> bool:
+    """Phone.com provably did not act: the client's own retry rule for a
+    request whose repeat would be a second text."""
+    return getattr(exc, "status_code", None) == 429 or isinstance(
+        exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    )
+
+
 def _send_sms(db: Session, campaign: WinbackCampaign, send: WinbackSend, customer: Customer) -> tuple[str, str | None]:
     """A Phone.com text with the link engine's rules: the message row is
     committed before Phone.com is called, and an ambiguous outcome is
-    ``unknown``, never retried."""
-    import httpx
+    ``unknown``, never retried. One attempt, waited on for WORST_SEND at
+    most: the client's own retries (up to five, with backoff) are off, and a
+    text Phone.com provably never got is handed back as NOT_REACHED."""
     from fastapi import HTTPException
 
     from gdx_dispatch.core import modules as core_modules
@@ -190,6 +232,8 @@ def _send_sms(db: Session, campaign: WinbackCampaign, send: WinbackSend, custome
         return "failed", "phone_com_not_configured"
     if len(body) > client._SMS_MAX_BODY:
         return "failed", "body_too_long"
+    client.retry_max_attempts = 0
+    client._client.timeout = SEND_TIMEOUT
 
     msg = PhoneComMessage(
         id=uuid4(),
@@ -207,8 +251,17 @@ def _send_sms(db: Session, campaign: WinbackCampaign, send: WinbackSend, custome
     )
     db.add(msg)
     db.commit()
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="winback_sms")
     try:
-        result = client.send_message(from_number=from_number, to_number=to, body=body)
+        result = pool.submit(client.send_message, from_number=from_number, to_number=to, body=body).result(
+            timeout=WORST_SEND.total_seconds()
+        )
+    except FuturesTimeout:
+        # Still in flight: it may yet arrive. The thread finishes on its own.
+        msg.delivery_status = "unknown"
+        msg.delivery_failed_reason = f"no answer within {WORST_SEND.total_seconds():g}s"
+        db.commit()
+        return "unknown", "sms_outcome_unknown"
     except (ValueError, TypeError):
         result = {}  # a 2xx whose body would not parse: Phone.com accepted it
     except (PhoneComAPIError, httpx.HTTPError) as exc:
@@ -217,7 +270,11 @@ def _send_sms(db: Session, campaign: WinbackCampaign, send: WinbackSend, custome
         msg.delivery_status = "failed" if definite else "unknown"
         msg.delivery_failed_reason = str(exc)[:500]
         db.commit()
+        if _never_reached(exc):
+            return NOT_REACHED, f"sms_not_reached: {exc}"[:500]
         return ("failed", f"sms_provider_error: {exc}"[:500]) if definite else ("unknown", "sms_outcome_unknown")
+    finally:
+        pool.shutdown(wait=False)
     if not isinstance(result, dict):
         result = {}
     adopt_message_id(db, msg, str(result.get("id") or msg.phone_com_message_id))
@@ -323,6 +380,7 @@ def drain(db: Session, *, now=None) -> dict[str, int]:
     """Deliver up to BATCH_SIZE rows, then settle every finished campaign.
     One row's failure never blocks the batch."""
     started = utcnow()
+    deadline = started + DRAIN_BUDGET
     now = now or started
     per_campaign: dict[UUID, Counter] = {}
     for campaign_id, n in reap_stale(db, now=now).items():
@@ -332,20 +390,24 @@ def drain(db: Session, *, now=None) -> dict[str, int]:
         WinbackCampaign.status == "sending", WinbackCampaign.deleted_at.is_(None)
     )
     due = db.execute(
-        select(WinbackSend.id)
+        select(WinbackSend.id, WinbackSend.channel)
         .where(WinbackSend.status == "queued", WinbackSend.campaign_id.in_(sending))
         .order_by(WinbackSend.created_at)
         .limit(BATCH_SIZE)
-    ).scalars().all()
+    ).all()
 
     totals: Counter = Counter()
-    for send_id in due:
-        if utcnow() - started > DRAIN_BUDGET:
-            break
+    texting_paused = False
+    for send_id, channel in due:
+        if deadline - utcnow() < WORST_SEND:
+            break  # one more text might not finish in budget
+        if texting_paused and channel == "sms":
+            continue  # Phone.com just refused one; email rows still go
         if not claim(db, send_id):
             continue  # another drain got it
         send = db.get(WinbackSend, send_id)
         campaign = db.get(WinbackCampaign, send.campaign_id)
+        prior_tries = _not_reached_tries(send.error)
         try:
             status, error = _deliver(db, campaign, send)
         except Exception as exc:  # noqa: BLE001 — one row must not stop the batch
@@ -354,9 +416,20 @@ def drain(db: Session, *, now=None) -> dict[str, int]:
             log.exception("winback_drain_deliver_crashed send=%s", send_id)
             # It crashed after the claim, possibly mid-transport: not provably unsent.
             status, error = "unknown", f"exception: {type(exc).__name__}"
+        counted = status
+        if status == NOT_REACHED:
+            texting_paused = True  # rate-limited or unreachable: texts wait for the next pass
+            tries = prior_tries + 1
+            reason = (error or "").removeprefix("sms_not_reached: ")
+            if tries >= NOT_REACHED_TRIES:
+                status = counted = "failed"
+                error = f"sms_not_reached after {tries} tries: {reason}"
+            else:
+                counted = "not_reached"
+                error = f"sms_not_reached (try {tries} of {NOT_REACHED_TRIES}): {reason}"
         _finish(db, send_id, status, (error or None) and error[:1000])
-        per_campaign.setdefault(campaign.id, Counter())[status] += 1
-        totals[status] += 1
+        per_campaign.setdefault(campaign.id, Counter())[counted] += 1
+        totals[counted] += 1
 
     tenants = dict(
         db.execute(

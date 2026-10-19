@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import calendar
 import functools
 import logging
 import re
@@ -36,8 +35,10 @@ from gdx_dispatch.core.time_off import (
 from gdx_dispatch.core.time_off import (
     MAX_MINUTES_PER_DAY,
     MIN_MINUTES_PER_DAY,
+    VACATION_YEAR_POLICIES,
     holiday_calendar,
     normalize_holiday_calendar,
+    vacation_year_policy_out,
 )
 from gdx_dispatch.models.tenant_models import AppSettings, CompanyModuleGrant
 
@@ -98,37 +99,9 @@ def allowance_hours_out(value: Decimal | None) -> float | None:
 
 
 # Which year a vacation allowance counts over (GDXA-1827, Doug 2026-10-19):
-# each company chooses. Calendar year is the default, and the anniversary
-# policy falls back to the calendar year for anyone with no hire date.
-VACATION_YEAR_CALENDAR = "calendar_year"
-VACATION_YEAR_ANNIVERSARY = "hire_anniversary"
-VACATION_YEAR_POLICIES = (VACATION_YEAR_CALENDAR, VACATION_YEAR_ANNIVERSARY)
+# each company chooses. The policies, their fallback and the year's first day
+# live in core/time_off, which every balance reader uses (GDXA-1855/1856).
 VacationYearPolicy = Literal["calendar_year", "hire_anniversary"]
-
-
-def vacation_year_policy_out(value: str | None) -> str:
-    """The stored policy, or the calendar year for a missing or unknown value."""
-    return value if value in VACATION_YEAR_POLICIES else VACATION_YEAR_CALENDAR
-
-
-def vacation_year_start(policy: str | None, hire_date: date | None, on: date) -> date:
-    """First day of the vacation year that contains ``on`` for one person.
-
-    ``hire_anniversary`` counts from the most recent anniversary of the hire
-    date on or before ``on`` (a 29 February hire date falls on 28 February in
-    other years). With no hire date, or one after ``on``, it is the calendar
-    year, as is every other policy.
-    """
-    if vacation_year_policy_out(policy) != VACATION_YEAR_ANNIVERSARY or hire_date is None or hire_date > on:
-        return date(on.year, 1, 1)
-
-    def anniversary(year: int) -> date:
-        if hire_date.month == 2 and hire_date.day == 29 and not calendar.isleap(year):
-            return date(year, 2, 28)
-        return hire_date.replace(year=year)
-
-    start = anniversary(on.year)
-    return start if start <= on else anniversary(on.year - 1)
 
 
 class SettingsPatchIn(BaseModel):

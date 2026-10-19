@@ -68,7 +68,12 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # of POST /api/phone-com/messages and gated the same way.
 # 367 → 345 (2026-10-16): twenty-two estimate and proposal-tier writes now
 # require estimates.send or estimates.write (GDXA-1314).
-BASELINE_SIZE = 345
+# 345 → 344 (2026-10-19): POST /api/safety/complete was deleted with the
+# retired safety checklist (GDXA-1833).
+# 344 → 342 (2026-10-19): POST /api/van-inventory and POST
+# /api/van-inventory/use were deleted with the retired van inventory router
+# (GDXA-1826).
+BASELINE_SIZE = 342
 
 
 def _baseline() -> set[str]:

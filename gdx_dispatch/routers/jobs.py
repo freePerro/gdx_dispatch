@@ -5795,7 +5795,7 @@ def cancel_job(
         if stage == "cancelled":
             return jsonable_response({"detail": "this job is already cancelled"}, 409)
         if stage == "completed":
-            # LIFECYCLE_TRANSITIONS: completed goes nowhere. Re-open it first,
+            # A completed job is not cancelled directly. Re-open it first,
             # which records why the finished job is being moved.
             return jsonable_response({
                 "detail": "This job is completed. Use Re-open on the job page "

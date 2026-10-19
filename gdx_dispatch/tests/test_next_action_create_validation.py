@@ -29,7 +29,7 @@ from sqlalchemy.pool import StaticPool
 # Imported before create_all so their models are on TenantBase.metadata.
 from gdx_dispatch.core import ai_quote as ai_quote_mod
 from gdx_dispatch.core import next_action as next_action_mod
-from gdx_dispatch.core import recommendation_routes as routes_mod
+from gdx_dispatch.core import next_action_routes as routes_mod
 from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.next_action import NextAction
 

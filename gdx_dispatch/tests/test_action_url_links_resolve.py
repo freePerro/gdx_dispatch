@@ -372,8 +372,11 @@ def test_the_sweep_actually_found_the_links() -> None:
     # floor is the *measured* post-deletion count, not 22 − 12 done on paper.
     # The floor is what turns a broken discovery pass red instead of letting it
     # slip by finding fewer; raise it when rules are added, and only lower it
-    # when a rule is deliberately removed.
-    assert len(DISCOVERED) >= 10, DISCOVERED
+    # when a rule is deliberately removed. 9 since GDXA-1862: the outlook
+    # sync-health action spelled its one "/inbox" link twice (create kwarg and
+    # refresh attribute); routed through upsert_system_action it is one dict
+    # key. Same link, still discovered — one literal fewer, not one rule.
+    assert len(DISCOVERED) >= 9, DISCOVERED
 
 
 def test_the_static_targets_these_links_point_at_still_exist() -> None:

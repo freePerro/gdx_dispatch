@@ -14,9 +14,8 @@
  *
  * Recovery: write `color: var(--text-on-interactive-primary);`.
  *
- * PENDING lists sites owned by other agents, fixed in the GDXA-1752 chain.
- * Each child removes its own entries; an entry that no longer violates fails
- * this spec, so the list can only shrink, and the last child leaves it empty.
+ * PENDING listed sites owned by other agents, fixed in the GDXA-1752 chain.
+ * The last child (GDXA-1758) left it empty; do not add to it — fix the rule.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -25,16 +24,7 @@ import { join, relative } from 'node:path';
 const SRC_DIR = join(__dirname, '..');
 
 // `<file relative to src/> <selector>` — keyed by selector, not line number.
-const PENDING = new Set([
-  'components/AIAssistantIntegrationCard.vue .btn-primary', // ai-mcp
-  'components/PhoneComIntegrationCard.vue .btn-primary', // comms-email-phone
-  'views/MobilePhoneView.vue .tab-chip.active', // comms-email-phone
-  'views/MobileSmsView.vue .unread-badge', // comms-email-phone
-  'views/MobileSmsView.vue .msg-out', // comms-email-phone
-  'views/PhoneComMessagesView.vue .thread-unread-badge', // comms-email-phone
-  'views/OnboardingView.vue .active .dot', // platform-core
-  'views/OnboardingView.vue .btn-primary', // platform-core
-]);
+const PENDING = new Set([]);
 
 const PRIMARY_FILL = /(?:^|[;\s])background(?:-color)?\s*:\s*var\(\s*--interactive-primary\s*[,)]/;
 const WHITE_TEXT = /(?:^|[;\s])color\s*:\s*(?:#fff(?:fff)?\b|white\b|rgba?\(\s*255\s*,\s*255\s*,\s*255\s*[,)])/i;

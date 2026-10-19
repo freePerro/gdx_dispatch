@@ -26,6 +26,7 @@ def _row(title: str = "Job", status: str = "scheduled") -> SimpleNamespace:
         id=str(uuid4()),
         title=title,
         status=status,
+        lifecycle_stage=status,
         customer_id=str(uuid4()),
         scheduled_at=None,
         completed_at=None,
