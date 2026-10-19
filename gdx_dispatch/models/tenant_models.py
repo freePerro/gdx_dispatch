@@ -213,6 +213,12 @@ class AppSettings(Base):
     # per calendar year, in hours. NULL = not set — no number is assumed.
     # `User.vacation_allowance_hours` overrides it per person.
     vacation_allowance_hours: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
+    # Which year that allowance counts over (GDXA-1827, migration 131):
+    # `calendar_year` or `hire_anniversary`, the latter falling back to the
+    # calendar year for a user with no `hire_date` (routers/settings.py).
+    vacation_year_policy: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="calendar_year", server_default="calendar_year"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
