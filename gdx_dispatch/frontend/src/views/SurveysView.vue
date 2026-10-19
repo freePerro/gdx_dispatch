@@ -27,12 +27,12 @@
             <EmptyState icon="pi pi-comments" title="No survey templates" message="Create a template to send NPS or post-job surveys." />
           </template>
           <Column field="name" header="Template" />
-          <Column field="template_type" header="Type" />
-          <Column field="send_channel" header="Channel" />
-          <Column header="Last Link">
-            <template #body="slotProps">
-              {{ formatDateValue(slotProps.data.last_sent_at) }}
-            </template>
+          <Column header="Type" style="width:100px">
+            <template #body="slotProps">{{ kindLabel(slotProps.data.kind) }}</template>
+          </Column>
+          <Column field="question" header="Question" />
+          <Column header="Active" style="width:90px">
+            <template #body="slotProps">{{ slotProps.data.active ? 'Yes' : 'No' }}</template>
           </Column>
           <Column header="Actions" style="width:230px">
             <template #body="slotProps">
@@ -97,7 +97,7 @@
             </Card>
             <Card class="metric-card">
               <div class="metric-label">CSAT Average</div>
-              <div class="metric-value">{{ metrics.csat_score ?? '—' }}</div>
+              <div class="metric-value">{{ metrics.csat_avg ?? '—' }}</div>
             </Card>
           </div>
           <div class="metric-row compact">
@@ -111,7 +111,7 @@
             </Card>
             <Card class="metric-card">
               <div class="metric-label">Response Rate</div>
-              <div class="metric-value">{{ metrics.response_rate ? `${metrics.response_rate}%` : '—' }}</div>
+              <div class="metric-value">{{ metrics.total_sent ? `${Math.round(metrics.response_rate * 100)}%` : '—' }}</div>
             </Card>
           </div>
         </div>
@@ -125,25 +125,29 @@
       >
         <div class="form-grid">
           <div class="form-field">
-            <label>Name</label>
-            <InputText v-model="templateForm.name" class="w-full" />
+            <label for="survey-tpl-name">Name</label>
+            <InputText id="survey-tpl-name" v-model="templateForm.name" maxlength="200" class="w-full" data-testid="survey-tpl-name" />
           </div>
           <div class="form-field">
-            <label>Survey Type</label>
-            <Select v-model="templateForm.template_type" :options="templateTypeOptions" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Channel</label>
-            <Select v-model="templateForm.send_channel" :options="channelOptions" class="w-full" />
+            <label for="survey-tpl-kind">Survey Type</label>
+            <Select id="survey-tpl-kind" v-model="templateForm.kind" :options="templateTypeOptions" optionLabel="label" optionValue="value" class="w-full" data-testid="survey-tpl-kind" />
           </div>
           <div class="form-field full-width">
-            <label>Message / Question</label>
-            <Textarea v-model="templateForm.message" rows="4" class="w-full" />
+            <label for="survey-tpl-question">Question</label>
+            <Textarea id="survey-tpl-question" v-model="templateForm.question" rows="3" maxlength="500" class="w-full" data-testid="survey-tpl-question" />
+          </div>
+          <div class="form-field full-width">
+            <label for="survey-tpl-follow-up">Follow-up question (optional)</label>
+            <Textarea id="survey-tpl-follow-up" v-model="templateForm.follow_up_question" rows="2" maxlength="500" class="w-full" data-testid="survey-tpl-follow-up" />
+          </div>
+          <div class="form-field">
+            <label for="survey-tpl-active">Active</label>
+            <ToggleSwitch inputId="survey-tpl-active" v-model="templateForm.active" data-testid="survey-tpl-active" />
           </div>
         </div>
         <template #footer>
           <Button label="Cancel" severity="secondary" @click="templateDialogVisible = false" />
-          <Button label="Save" icon="pi pi-check" :loading="templateSaving" @click="saveTemplate" />
+          <Button label="Save" icon="pi pi-check" :loading="templateSaving" :disabled="!templateForm.name.trim() || !templateForm.question.trim()" data-testid="survey-tpl-save" @click="saveTemplate" />
         </template>
       </Dialog>
 
@@ -185,6 +189,7 @@ import Tabs from 'primevue/tabs';
 import TabList from 'primevue/tablist';
 import Tab from 'primevue/tab';
 import Textarea from 'primevue/textarea';
+import ToggleSwitch from 'primevue/toggleswitch';
 import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
@@ -205,29 +210,33 @@ const editingTemplate = ref(null);
 const templateSaving = ref(false);
 const sendingTemplateId = ref(null);
 
-const templateForm = ref({
+// The template fields are SurveyTemplateIn's (routers/surveys.py). Until
+// GDXA-1693 the form sent {template_type, send_channel, message}: create was a
+// 422 every time (question is required) and an edit kept only the name.
+const emptyTemplateForm = () => ({
   name: '',
-  template_type: 'nps',
-  send_channel: 'email',
-  message: '',
+  kind: 'nps',
+  question: '',
+  follow_up_question: '',
+  active: true,
 });
+
+const templateForm = ref(emptyTemplateForm());
 
 const templateTypeOptions = [
   { label: 'NPS', value: 'nps' },
   { label: 'CSAT', value: 'csat' },
+  { label: 'Custom', value: 'custom' },
 ];
 
-const channelOptions = [
-  { label: 'Email', value: 'email' },
-  { label: 'SMS', value: 'sms' },
-];
+function kindLabel(kind) {
+  return templateTypeOptions.find((o) => o.value === kind)?.label || kind || '—';
+}
 
 const responseFilterOptions = computed(() => [
   { label: 'All Templates', value: 'all' },
   ...templates.value.map((template) => ({ label: template.name, value: template.id })),
 ]);
-
-const formatDateValue = (value) => (value ? value.split('T')[0] : '—');
 
 async function loadTemplates() {
   templatesLoading.value = true;
@@ -265,32 +274,35 @@ async function loadMetrics() {
 
 function openTemplateDialog() {
   editingTemplate.value = null;
-  templateForm.value = {
-    name: '',
-    template_type: 'nps',
-    send_channel: 'email',
-    message: '',
-  };
+  templateForm.value = emptyTemplateForm();
   templateDialogVisible.value = true;
 }
 
 function openEditTemplate(template) {
   editingTemplate.value = template;
   templateForm.value = {
-    name: template.name,
-    template_type: template.template_type || 'nps',
-    send_channel: template.send_channel || 'email',
-    message: template.message || template.body || '',
+    name: template.name || '',
+    kind: template.kind || 'nps',
+    question: template.question || '',
+    follow_up_question: template.follow_up_question || '',
+    active: template.active !== false,
   };
   templateDialogVisible.value = true;
 }
 
 async function saveTemplate() {
-  if (!templateForm.value.name.trim()) {
+  const f = templateForm.value;
+  if (!f.name.trim() || !f.question.trim()) {
     return;
   }
   templateSaving.value = true;
-  const payload = { ...templateForm.value };
+  const payload = {
+    name: f.name.trim(),
+    kind: f.kind,
+    question: f.question.trim(),
+    follow_up_question: f.follow_up_question.trim() || null,
+    active: Boolean(f.active),
+  };
   try {
     if (editingTemplate.value) {
       await api.patch(`/api/surveys/templates/${editingTemplate.value.id}`, payload, {
@@ -350,6 +362,27 @@ watch(responsesFilter, loadResponses);
 </script>
 
 <style scoped>
+.form-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.form-field.full-width {
+  grid-column: 1 / -1;
+}
+.form-field label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--p-text-muted-color);
+}
+.w-full {
+  width: 100%;
+}
 .survey-link-hint {
   margin-bottom: 0.75rem;
   color: var(--p-text-muted-color, #6b7280);
