@@ -7,7 +7,7 @@ from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid, live_job
 
 DESCRIPTOR = ToolDescriptor(
     name="estimates.create_draft",
@@ -62,26 +62,24 @@ async def handler(
     approval_ref: str | None = None,
     **_: Any,
 ) -> dict[str, Any]:
-    from gdx_dispatch.models.tenant_models import Customer, Job
+    from gdx_dispatch.models.tenant_models import Customer
     from gdx_dispatch.modules.proposals.models import Estimate
     from gdx_dispatch.modules.proposals.totals import new_estimate_tax_rate
 
+    # Raised, not returned: invoke_tool reports a returned error dict as a
+    # success, so Apply on a missing customer answered "Applied" and created
+    # nothing (GDXA-1881). A soft-deleted customer or job is not found
+    # (invariant #2).
     cid = coerce_uuid(customer_id)
     if cid is None:
-        return {"error": "invalid customer_id"}
-
+        raise ValueError(f"customer_id is not a UUID: {customer_id!r}")
     customer = db.get(Customer, cid)
-    if customer is None:
-        return {"error": "customer not found"}
+    if customer is None or customer.deleted_at is not None:
+        raise LookupError(f"customer not found: {customer_id}")
 
     jid: UUID | None = None
     if job_id is not None:
-        jid = coerce_uuid(job_id)
-        if jid is None:
-            return {"error": "invalid job_id"}
-        job = db.get(Job, jid)
-        if job is None:
-            return {"error": "job not found"}
+        jid = live_job(db, job_id).id
 
     tenant_id = getattr(principal, "tenant_id", None)
     if tenant_id is None:

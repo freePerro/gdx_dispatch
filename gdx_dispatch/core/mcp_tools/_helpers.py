@@ -21,6 +21,25 @@ def coerce_uuid(raw: str | None) -> UUID | None:
         return None
 
 
+def live_job(db: Any, job_id: str) -> Any:
+    """Load the ``Job`` for ``job_id`` or raise; a soft-deleted job is not found.
+
+    Raises rather than returning an error dict, because ``invoke_tool`` reports
+    a returned dict as a success and a yellow tool's Apply then answers
+    "Applied" having done nothing (GDXA-1881). The id is bound as a UUID:
+    SQLite stores the column as dashless hex, so a dashed string never matches.
+    """
+    from gdx_dispatch.models.tenant_models import Job
+
+    jid = coerce_uuid(job_id)
+    if jid is None:
+        raise ValueError(f"job_id is not a UUID: {job_id!r}")
+    job = db.get(Job, jid)
+    if job is None or job.deleted_at is not None:
+        raise LookupError(f"job not found: {job_id}")
+    return job
+
+
 def estimate_line_dict(
     line: Any,
     *,

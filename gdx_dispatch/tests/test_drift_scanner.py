@@ -191,18 +191,49 @@ def test_import_logging_finds_log_four_lines_past_except(scanner):
     assert not any("app.py" in v for v in mod.violations)
 
 
-def test_import_logging_respects_noqa_silent_failure_marker(scanner):
-    """noqa: silent-failure marker on the except line should skip."""
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "# noqa: SILENTFAIL1",
+        "# noqa: BLE001, SILENTFAIL1",
+        # Legacy spelling, still read until every site is converted (GDXA-1892).
+        "# noqa: silent-failure",
+    ],
+)
+def test_import_logging_respects_noqa_silent_failure_marker(scanner, marker):
+    """The silent-failure marker on the except line should skip."""
+    mod, tmp = scanner
+    _write(tmp, "gdx_dispatch/app.py", f"""
+        def f():
+            try:
+                risky()
+            except Exception:  {marker}
+                pass
+    """)
+    mod.check_import_logging()
+    assert not any("app.py" in v for v in mod.violations)
+
+
+def test_marker_pattern_matches_silent_failure_scanners():
+    """drift_scanner keeps its own copy so it runs as a bare script; the two
+    must change together when the legacy spelling is dropped."""
+    from gdx_dispatch.tools import drift_scanner, silent_failure_scanner
+
+    assert drift_scanner.NOQA_MARKER_RE.pattern == silent_failure_scanner.NOQA_MARKER_RE.pattern
+
+
+def test_import_logging_does_not_skip_on_lowercase_new_code(scanner):
+    """ruff rejects ``silentfail1``; the scanner must not accept it either."""
     mod, tmp = scanner
     _write(tmp, "gdx_dispatch/app.py", """
         def f():
             try:
                 risky()
-            except Exception:  # noqa: silent-failure
+            except Exception:  # noqa: silentfail1
                 pass
     """)
     mod.check_import_logging()
-    assert not any("app.py" in v for v in mod.violations)
+    assert any("app.py" in v for v in mod.violations)
 
 
 def test_import_logging_flags_genuine_silent_swallow(scanner):
