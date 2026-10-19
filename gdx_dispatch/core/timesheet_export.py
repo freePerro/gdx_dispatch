@@ -17,7 +17,10 @@ The CSV carries no such column on purpose: it is an hours file, and the
 sentence belongs to the reader, not the spreadsheet.
 
 Each person's TOTAL row (and, in the PDF, a line under their table) also
-carries their vacation balance for the calendar year — allowance, used and remaining hours through the period's last day, and
+carries their vacation balance for their vacation year containing the
+period's last day (the calendar year, or the year from their hire
+anniversary under ``hire_anniversary``) — allowance, used and remaining
+hours through the period's last day, and
 the hours already booked after it — when the caller built the sheet
 `with_vacation`. That is a statement of hours
 booked against a number the office set, not a payout: nothing here pays out
@@ -51,8 +54,12 @@ CSV_HEADER = [
     "time_off_hours",
     "needs_review",
     "note",
-    # Filled on the per-person TOTAL row only: the calendar year of the
-    # period's last day, as of that day (core/time_off.vacation_balances).
+    # Filled on the per-person TOTAL row only: the year the person's
+    # vacation year containing the period's last day STARTS in, as of that
+    # day (core/time_off.vacation_balances). Under `calendar_year` that is
+    # the calendar year of the period's last day; under `hire_anniversary`
+    # it is the year of the anniversary that opened it (2026 for a year
+    # running 2026-03-15 to 2027-03-14).
     # Used and remaining count vacation through the period's last day, so a
     # past period's file says the same thing when downloaded again; days
     # already booked after it are their own column.
@@ -94,13 +101,15 @@ def _vacation_cells(sheet: PeriodTimesheet, card: Timecard) -> list[Any]:
     if sheet.vacation_year is None:
         return ["", "", "", "", ""]
     if sheet.vacation_unreadable or card.vacation is None:
-        return [sheet.vacation_year, *[UNAVAILABLE] * 4]
+        # Under the anniversary policy the person's year is unknown too.
+        year = UNAVAILABLE if sheet.vacation_by_anniversary else sheet.vacation_year
+        return [year, *[UNAVAILABLE] * 4]
     bal = card.vacation
     taken, ahead = f"{bal.taken_hours:.2f}", f"{bal.scheduled_hours:.2f}"
     if bal.allowance_hours is None:
-        return [sheet.vacation_year, NO_ALLOWANCE, taken, NO_ALLOWANCE, ahead]
+        return [bal.year, NO_ALLOWANCE, taken, NO_ALLOWANCE, ahead]
     return [
-        sheet.vacation_year,
+        bal.year,
         f"{float(bal.allowance_hours):.2f}",
         taken,
         f"{bal.remaining_at_as_of_hours:.2f}",
@@ -186,6 +195,23 @@ def pdf_filename(period: PayPeriod) -> str:
     return f"timesheet_{period.start.isoformat()}_{period.end.isoformat()}.pdf"
 
 
+def _vacation_card_labels(sheet: PeriodTimesheet, card: Timecard) -> dict[str, Any]:
+    """Under ``hire_anniversary`` only: the card's own heading ("year from
+    Mar 15, 2026") and, when the period started before that year did, the
+    day before which vacation is not counted. Under ``calendar_year`` both are
+    None and the template prints the sheet's year and note as before."""
+    if not sheet.vacation_year or not sheet.vacation_by_anniversary:
+        return {"vacation_label": None, "vacation_cut": None}
+    window = card.vacation.window if card.vacation and not sheet.vacation_unreadable else None
+    if window is None:
+        return {"vacation_label": "year", "vacation_cut": None}
+    start = window[0]
+    return {
+        "vacation_label": f"year from {start.strftime('%b %-d, %Y')}",
+        "vacation_cut": start.strftime("%b %-d, %Y") if sheet.period.start < start else None,
+    }
+
+
 def pdf_context(
     sheet: PeriodTimesheet,
     *,
@@ -212,6 +238,7 @@ def pdf_context(
                 # last day (VacationBalance.as_dict), or None — see
                 # `vacation_unreadable` for which None it is.
                 "vacation": card.vacation.as_dict() if card.vacation else None,
+                **_vacation_card_labels(sheet, card),
                 "rows": [
                     {
                         "date": shift.day.strftime("%a %b %-d"),
@@ -250,15 +277,20 @@ def pdf_context(
         "total_paid_hours": sheet.paid_hours,
         "time_off_statement": sheet.time_off_statement,
         "vacation_year": sheet.vacation_year,
+        "vacation_policy": sheet.vacation_policy,
         "vacation_unreadable": sheet.vacation_unreadable,
         # The day the printed balance is taken through: the period's last day.
         "vacation_as_of": sheet.period.end.strftime("%b %-d, %Y"),
         # A period that crosses Jan 1 is balanced against its last day's year
         # only (core/timesheet_hours._attach_vacation); the PDF says so rather
         # than print December's vacation above a balance that left it out.
+        # Under the anniversary policy each card says it instead
+        # (`vacation_cut`), since each person's year starts on its own day.
         "vacation_prior_year": (
             sheet.period.start.year
-            if sheet.vacation_year and sheet.period.start.year != sheet.vacation_year
+            if sheet.vacation_year
+            and not sheet.vacation_by_anniversary
+            and sheet.period.start.year != sheet.vacation_year
             else None
         ),
         "people": sheet.people,
