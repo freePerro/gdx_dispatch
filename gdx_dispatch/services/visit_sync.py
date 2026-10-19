@@ -375,10 +375,11 @@ def _check_double_book(work: _Work, n: date, target: datetime) -> None:
 def _crew_change(work: _Work, n: date | None, before: list, after: list, fields: dict, minutes: int) -> list:
     """C1–C7, removals first, one tech at a time. Returns the crew it leaves."""
     crew = list(before)
-    n_start = None
+    n_start = n_length = None
     if n is not None:
         on_n = [v for v in work.on(n) if is_current(v)]
         n_start = min(_as_utc(v.start_at) for v in on_n) if on_n else None
+        n_length = max((_as_utc(v.end_at) - _as_utc(v.start_at) for v in on_n if v.end_at is not None), default=None)
     for tech in [t for t in before if t not in after]:
         crew.remove(tech)
         if n is None:
@@ -413,7 +414,9 @@ def _crew_change(work: _Work, n: date | None, before: list, after: list, fields:
                 continue
         if n_start is None:
             continue
-        work.insert(tech, n_start, n_start + timedelta(minutes=minutes), fields, "crew_added")  # C2
+        # C2: the new tech joins day N at that day's length, not the job's
+        # total — a job split over days still holds all of its hours.
+        work.insert(tech, n_start, n_start + (n_length or timedelta(minutes=minutes)), fields, "crew_added")
     return crew
 
 
@@ -788,9 +791,21 @@ def visit_fields(db: Any, title: str | None, customer_id: Any) -> dict:
     }
 
 
-def default_duration(db: Any, job: Any) -> int:
+def default_duration(db: Any, job: Any, hours: Any = UNSET) -> int:
+    """A new visit's length in minutes. The job's own hours come first: they
+    are the wall-clock figure the office confirmed for the crew, and the
+    board draws the job at that length. Only a job with none falls back to
+    the estimate's man-hours, then an hour. ``hours`` is the figure a save is
+    about to write, since the planner runs before the job is updated. A tech
+    added to a day already booked takes that day's length instead (C2 in
+    ``_crew_change``). Until 2026-10-18 the man-hours won even over saved
+    hours, so an 8 h job with a 21 man-hour estimate was booked as one 21 h
+    visit through the night."""
     from gdx_dispatch.routers.appointments import compute_man_hour_duration_minutes  # noqa: PLC0415
 
+    own = job.scheduled_duration_hours if hours is UNSET else hours
+    if own is not None and float(own) > 0:
+        return max(15, round(float(own) * 60))
     return compute_man_hour_duration_minutes(db, job.id) or 60
 
 
@@ -858,7 +873,8 @@ def apply_visit_plan(db: Any, job: Any, plan: VisitPlan, user_id: str | None) ->
             rows[action.key] = appt
             _audit(db, job, user_id, "visit_added", {
                 "visit_id": str(appt.id), "tech_id": action.tech_id,
-                "start_at": _iso(action.start_at), "reason": action.reason,
+                "start_at": _iso(action.start_at), "end_at": _iso(action.end_at),
+                "reason": action.reason,
             })
             continue
         appt = rows.get(action.visit_id)
@@ -941,15 +957,17 @@ def recompute_job_schedule(db: Any, job: Any, user_id: str | None, reason: str) 
 
 
 def plan_for_job(
-    db: Any, job: Any, *, crew_before: list | None = None, **kwargs: Any,
+    db: Any, job: Any, *, crew_before: list | None = None,
+    duration_minutes: int | None = None, **kwargs: Any,
 ) -> VisitPlan:
-    """Read the job's visits and plan an edit against them."""
+    """Read the job's visits and plan an edit against them. A visit it books
+    is ``duration_minutes`` long, else ``default_duration``."""
     kwargs.setdefault("stored_scheduled_at", job.scheduled_at)
     kwargs.setdefault("job_state", _job_state(job))
     edit = VisitEdit(
         tz_name=shop_tz(db),
         crew_before=tuple(crew_before if crew_before is not None else job_crew(db, job)),
-        duration_minutes=default_duration(db, job),
+        duration_minutes=duration_minutes or default_duration(db, job),
         **kwargs,
     )
     return plan_visit_sync([as_value(a) for a in visit_rows(db, job.id)], edit)

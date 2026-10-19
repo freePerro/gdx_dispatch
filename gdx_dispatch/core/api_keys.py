@@ -445,7 +445,6 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         except Exception:
             # Redis unavailable — fail open (don't block requests)
             logging.getLogger(__name__).exception("dispatch caught exception")
-            pass
 
         # --- Set request state ---
         request.state.api_key_tenant_id = str(api_key.tenant_id)

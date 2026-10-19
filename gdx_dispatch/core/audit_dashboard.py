@@ -407,14 +407,12 @@ def list_audit_logs(
                 q = q.where(AuditLog.created_at >= start_dt)
             except ValueError:
                 logging.getLogger(__name__).exception("list_audit_logs caught exception")
-                pass
         if end:
             try:
                 end_dt = datetime.fromisoformat(end).replace(tzinfo=timezone.utc)
                 q = q.where(AuditLog.created_at <= end_dt)
             except ValueError:
                 logging.getLogger(__name__).exception("list_audit_logs caught exception")
-                pass
 
         count_q = select(func.count()).select_from(q.subquery())
         with contained_read(db):  # see module docstring — covers both reads
@@ -505,7 +503,6 @@ def compliance_summary(db: Session = Depends(get_db)) -> JSONResponse:
             last_backup_age_hours = round((now.timestamp() - ts) / 3600, 2)
         except (ValueError, TypeError):
             logging.getLogger(__name__).exception("compliance_summary caught exception")
-            pass
 
     # Active sessions
     active_session_count: int = 0
@@ -525,7 +522,6 @@ def compliance_summary(db: Session = Depends(get_db)) -> JSONResponse:
             ).scalar_one_or_none() or 0
     except Exception:
         logging.getLogger(__name__).exception("compliance_summary caught exception")
-        pass
 
     return JSONResponse({
         "mfa_adoption_pct": mfa_adoption_pct,
