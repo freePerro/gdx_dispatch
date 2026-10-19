@@ -7,7 +7,7 @@
          switch to Settings and back — the operator doesn't lose their login. -->
     <Tabs v-if="screens.length" v-model:value="activeTab">
       <TabList>
-        <Tab v-for="(screen, i) in screens" :key="i" :value="String(i)">{{ screen.title }}</Tab>
+        <Tab v-for="(screen, i) in screens" :key="i" :value="String(i)">{{ screenLabel(screen, i) }}</Tab>
       </TabList>
       <TabPanels>
         <TabPanel v-for="(screen, i) in screens" :key="i" :value="String(i)" class="plugin-screen__screen">
@@ -250,7 +250,7 @@ import InputNumber from 'primevue/inputnumber';
 import BrowserStream from './BrowserStream.vue';
 import MeasurementDiagram from './MeasurementDiagram.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { cellValue, usePluginScreen } from '../composables/usePluginScreen';
+import { cellValue, screenLabel, usePluginScreen } from '../composables/usePluginScreen';
 import { useViewMode } from '../composables/useViewMode';
 
 const props = defineProps({ pluginKey: { type: String, required: true } });

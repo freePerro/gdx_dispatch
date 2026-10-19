@@ -26,6 +26,25 @@ export function cellValue(row, field) {
   return field.split('.').reduce((acc, part) => (acc == null ? acc : acc[part]), row);
 }
 
+// Tab text per screen type when the manifest omits `title` (it is optional:
+// the eventlog and cellcomms help screens ship without one).
+const _TYPE_LABELS = {
+  list: 'List', settings: 'Settings', upload: 'Upload', help: 'Help', browser: 'Workspace',
+};
+
+/**
+ * Tab label for a manifest screen. A missing or blank `title` used to render
+ * an empty tab nobody could find; fall back to the screen's type, then to its
+ * position.
+ *
+ * Exported for the unit spec.
+ */
+export function screenLabel(screen, index = 0) {
+  const title = typeof screen?.title === 'string' ? screen.title.trim() : '';
+  if (title) return title;
+  return _TYPE_LABELS[screen?.type] || `Screen ${index + 1}`;
+}
+
 export function usePluginScreen(pluginKey, api) {
   const screens = ref([]);
   // Rows PER list screen, keyed by the screen's endpoint — a plugin may declare

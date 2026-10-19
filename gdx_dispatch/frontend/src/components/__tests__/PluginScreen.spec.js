@@ -214,4 +214,19 @@ describe('PluginScreen.vue', () => {
     await flushPromises();
     expect(wrapper.emitted('captured')).toBeUndefined();
   });
+
+  // The eventlog plugin's manifest shape: neither screen declares a title.
+  // Each tab must still carry readable text, not an empty strip.
+  it('labels an untitled screen tab by its type', async () => {
+    apiMock.manifest = {
+      screens: [
+        { type: 'list', endpoint: '/api/plugins/example/items', columns: [{ field: 'id', label: 'ID' }] },
+        { type: 'help', sections: [{ heading: 'What this is', body: ['A reference plugin.'] }] },
+      ],
+    };
+    const wrapper = mount(PluginScreen, { props: { pluginKey: 'example' }, global: { stubs } });
+    await flushPromises();
+    const tabs = wrapper.findAll('[role="tab"]').map((t) => t.text());
+    expect(tabs).toEqual(['List', 'Help']);
+  });
 });
