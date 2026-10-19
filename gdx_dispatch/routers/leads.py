@@ -81,9 +81,9 @@ DEFAULT_LEAD_SOURCES = [
 ]
 
 def business_today() -> date:
-    """The shop's local calendar day — the same "today" the planner uses
-    (services.planner_today, GDX_BUSINESS_TZ). A lead due today and a task due
-    today must agree on which day that is."""
+    """The shop's local day; a lead and a task due today must agree. The planner reads AppSettings.timezone
+    via core.pay_periods; holding no session, this gets planner_today's session-less fallback
+    (GDX_BUSINESS_TZ, default America/Chicago) until it is passed one."""
     from gdx_dispatch.services.planner_today import calendar_today_utc
 
     return calendar_today_utc().date()

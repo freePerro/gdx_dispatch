@@ -275,12 +275,12 @@ def test_quick_capture_default_due_is_business_local_today(ctx):
     # tomorrow after ~7pm CDT. Must be the business-local calendar date.
     from datetime import datetime
 
-    from gdx_dispatch.routers.planner import _BUSINESS_TZ
+    from gdx_dispatch.services.planner_today import shop_zone
 
     db, req, user, _ = ctx
     create_task(body=TaskIn(title="Capture", source="quick_capture"), request=req, user=user, db=db)
     items = _items(list_tasks(request=req, user=user, db=db))
-    assert items[0]["due_date"] == datetime.now(_BUSINESS_TZ).date().isoformat()
+    assert items[0]["due_date"] == datetime.now(shop_zone(db)).date().isoformat()
 
 
 def test_date_helpers_direct():

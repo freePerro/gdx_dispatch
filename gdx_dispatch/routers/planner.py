@@ -27,7 +27,6 @@ from gdx_dispatch.routers.auth import get_current_user
 # stay importable from here for the outlook capture writer and the tests.
 from gdx_dispatch.services import planner_today as today_svc
 from gdx_dispatch.services.planner_today import (  # noqa: F401
-    _BUSINESS_TZ,
     _date_out,
     _now,
     _ts_out,
@@ -223,8 +222,9 @@ def list_tasks(
     else:  # newest
         q = q.order_by(PlannerTask.created_at.desc().nullslast())
     rows = db.execute(q).scalars().all()
-    today = calendar_today_utc()
-    return {"items": [today_svc.task_out(t, today) for t in rows]}
+    today = calendar_today_utc(db)
+    tz = today_svc.shop_zone(db)
+    return {"items": [today_svc.task_out(t, today, tz) for t in rows]}
 
 
 @router.post("/tasks", status_code=201)
@@ -245,7 +245,7 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
     # client to send today's date. Was `_now()` — a real evening timestamp
     # whose UTC calendar day is tomorrow (audit 2026-08-03).
     if due_dt is None and body.source == "quick_capture":
-        due_dt = calendar_today_utc()
+        due_dt = calendar_today_utc(db)
     # Today is the caller's own list: a task handed to someone else cannot be
     # created on it, or it would land pinned on THEIR Today unasked.
     assigned_to = body.assigned_to or None  # "" is unassigned, as the outlook writer treats it
@@ -285,7 +285,7 @@ def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current
         phone_com_call_id=(body.phone_com_call_id or None),
         source=(body.source or None),
         created_at=_now(),
-        today_date=calendar_today_utc() if body.today else None,
+        today_date=calendar_today_utc(db) if body.today else None,
         remind_at=remind_dt,
         # "Remind me": the reminder buzzes whoever set it, not the assignee.
         remind_user_id=uid if remind_dt else None,
@@ -781,12 +781,13 @@ def get_plan(plan_id: str, request: Request, user: dict = Depends(get_current_us
     steps = db.execute(select(PlanStep).where(PlanStep.plan_id == plan.id).order_by(PlanStep.sort_order)).scalars().all()
     total = len(steps)
     done = sum(1 for s in steps if s.status == "done")
+    tz = today_svc.shop_zone(db)
     return {
         **{"id": str(plan.id), "title": plan.title, "description": plan.description,
            "is_template": plan.is_template, "created_by": plan.created_by,
            "created_at": _ts_out(plan.created_at)},
         "steps": [{"id": str(s.id), "title": s.title, "assigned_to": s.assigned_to,
-                   "status": s.status, "due_date": _date_out(s.due_date),
+                   "status": s.status, "due_date": _date_out(s.due_date, tz),
                    "sort_order": s.sort_order} for s in steps],
         "total_steps": total, "done_steps": done,
         "progress": round(done / max(total, 1) * 100),

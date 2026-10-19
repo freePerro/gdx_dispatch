@@ -53,10 +53,12 @@ def send_planner_digest(tenant_id: str = "", to_email: str = "") -> dict[str, An
             .all()
         )
 
-        # Same shop-local "today" as the planner and the leads list.
-        from gdx_dispatch.routers.leads import CLOSED_STAGES, business_today
+        # Same shop-local "today" as the planner: AppSettings.timezone through
+        # the shared reader, not the session-less fallback leads still uses.
+        from gdx_dispatch.routers.leads import CLOSED_STAGES
+        from gdx_dispatch.services.planner_today import calendar_today_utc
 
-        today = business_today()
+        today = calendar_today_utc(db).date()
 
         leads_to_call = (
             db.execute(
