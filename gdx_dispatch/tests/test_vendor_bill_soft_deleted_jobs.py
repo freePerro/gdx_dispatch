@@ -9,6 +9,7 @@ confirm, and the per-job variance report all accepted it.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -137,22 +138,16 @@ def test_variance_report_404s_a_soft_deleted_job(tenant_db):
 
 
 def test_variance_summary_omits_a_soft_deleted_job(tenant_db):
-    """The summary swallows SQL errors into ``[]``, so the live job must be
-    present too: an empty result would also pass a bare absence check."""
-    from gdx_dispatch.models.tenant_models import VanInventoryItem, VanInventoryLog
+    """The live job must be present too: an empty result would also pass a
+    bare absence check."""
     from gdx_dispatch.routers.variance_report import variance_summary
 
     live = _job(tenant_db, "live job")
     gone = _job(tenant_db, "deleted job", deleted=True)
-    van = VanInventoryItem(company_id=TID, truck_id="truck-1", name="Spring", quantity=5)
-    tenant_db.add(van)
-    tenant_db.flush()
-    bind = tenant_db.get_bind().dialect.name
     for job in (live, gone):
-        # The query compares CAST(j.id AS text): dashless hex on SQLite.
-        jid = job.id.hex if bind == "sqlite" else str(job.id)
-        tenant_db.add(VanInventoryLog(van_inventory_id=van.id, job_id=jid,
-                                      quantity_change=-2, created_by="tech"))
+        tenant_db.add(JobPartNeeded(id=str(uuid.uuid4()), company_id=TID, job_id=str(job.id),
+                                    part_name="Spring", quantity=2, status="used",
+                                    source="mobile"))
     tenant_db.commit()
 
     out = variance_summary(_Req(), OFFICE, tenant_db, start_date=None,

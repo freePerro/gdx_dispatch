@@ -20,6 +20,8 @@ from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync, re
 from gdx_dispatch.core.database import contained_read, get_db
 from gdx_dispatch.core.email_attachments import AttachmentRef, attachment_audit_meta, resolve_attachment_refs
 from gdx_dispatch.core.invoice_delivery import require_deliverable
+from gdx_dispatch.core.invoice_void import InvoiceVoidRefused
+from gdx_dispatch.core.invoice_void import void_invoice as _void_invoice
 from gdx_dispatch.core.link_sms import SendLinkSmsIn as SendInvoiceSmsIn  # one composer model for every SMS route
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.pay_periods import shop_today_for, shop_today_from_settings
@@ -49,8 +51,6 @@ from gdx_dispatch.modules.ledger.rules import (
     post_refund,
     repost_invoice_issuance,
     resettle_invoice_payments,
-    reverse_invoice_adjustments,
-    settle_opening_on_void,
 )
 from gdx_dispatch.modules.ledger.service import (
     ledger_posting_enabled,
@@ -4701,131 +4701,13 @@ def void_invoice(
     first — voiding a bill while keeping its money would silently orphan the
     cash. Voided stays void (/send and /mobile resend both 409). Reverses the
     live P1 entry when ledger posting is on; draft voids have nothing posted.
+    Every effect lives in `core/invoice_void.py`, shared with the MCP tool.
     """
-    invoice = _get_invoice_or_404(invoice_id, db)
-    if invoice.status == "void":
-        return _serialize_invoice(invoice)  # idempotent
-
-    has_payments = db.execute(
-        select(func.count())
-        .select_from(Payment)
-        .where(Payment.invoice_id == invoice.id, Payment.voided_at.is_(None))
-    ).scalar_one()
-    if has_payments:
-        raise HTTPException(
-            status_code=409,
-            detail="invoice has recorded payments — void or remove them first",
-        )
-
-    transition_invoice_status(db, invoice, "void", actor=_actor_id(_))
-    # GL S7: the P1 reversal alone would strand adjustment entries on AR.
-    # GL S10: a pre-cutover-era invoice has no P1 to reverse — the void
-    # posts its own entry clearing whatever AR it still holds (spec §5.7).
-    # Ledger refusals surface as 409s with the reason, never bare 500s.
     try:
-        reverse_invoice_adjustments(db, invoice, actor=_actor_id(_))
-        settle_opening_on_void(db, invoice, actor=_actor_id(_))
-    except PeriodLockedError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=f"void posts into a locked accounting period — {exc}",
-        ) from exc
-    invoice.balance_due = _money(0)
-    # A void is dead money — `core/billing_predicates.py` excludes voided
-    # invoices from "is this job billed" for exactly that reason. But the parts
-    # and change orders it claimed stayed stamped with its id, so they read
-    # "billed" while no LIVE invoice bills them: gone from
-    # `parts-needed?unbilled=true`, absent from Ready-for-Billing, and
-    # unbillable forever. Money that was going to be charged silently stops
-    # being charged.
-    #
-    # This is the same reasoning an auditor already applied to the soft-delete
-    # path (see `delete_invoice`), and `void_untouched_autodraft` in
-    # core/closeout_billing.py releases on its own void too. This was the one
-    # void that did not — three void paths, two releases.
-    released_parts = db.execute(
-        update(JobPartNeeded)
-        .where(JobPartNeeded.billed_invoice_id == invoice.id)
-        .values(billed_invoice_id=None)
-    ).rowcount
-    from gdx_dispatch.routers.change_orders import ChangeOrder as _CO
-
-    released_cos = db.execute(
-        update(_CO)
-        .where(_CO.billed_invoice_id == invoice.id)
-        .values(billed_invoice_id=None)
-    ).rowcount
-    # The day rows it billed (migration 110) go back the same way, with their
-    # own audit row staged into this same commit.
-    from gdx_dispatch.core.closeout_billing import release_day_rows
-
-    released_time_entries = release_day_rows(
-        db, invoice, actor=_actor_id(_), why="invoice_voided",
-    )
-    # M39 audit round 2: a void kills what is owed — an ACTIVE payment plan
-    # scheduling money on a void invoice would be a standing lie. Cancel it
-    # in the same transaction, with its own trail.
-    _plan = _live_plan(db, invoice.id)
-    if _plan is not None:
-        _plan.status = "cancelled"
-        _plan.cancelled_at = datetime.now(UTC)
-        _plan.cancelled_by = _actor_id(_)
-        log_audit_event_sync(
-            db=db, tenant_id=None, user_id=_actor_id(_),
-            action="payment_plan_cancelled", entity_type="invoice",
-            entity_id=str(invoice.id),
-            details={"plan_id": str(_plan.id), "why": "invoice voided"},
-        )
-    # ONE commit, and the audit row is staged into it -- deliberately not the
-    # commit-then-log-then-commit shape `delete_invoice` uses. Releasing a
-    # claim puts billable work back on the checklist, so a release that lands
-    # while its trail does not is a silent write, the defect class this repo
-    # ranks highest. Staging both means the database decides them together:
-    # either the void, the releases and the record of them are all durable, or
-    # none of them are. (Adversarial review 2026-08-23 caught the two-commit
-    # window; `delete_invoice` swallows the same failure into a log line.)
-    # M12. A void is the ONE event after which the invoice can never owe
-    # anything again, so every open intent on it is stale by definition. This
-    # was the call site an adversarial review found missing: a voided invoice
-    # whose customer still had the pay page open could be paid, and the webhook
-    # would book that payment onto a void whose parts and change orders had
-    # already gone back to the unbilled checklist.
-    #
-    # Enqueued AFTER the commit below, unlike its three siblings which each
-    # already have a commit behind them at this point. `void_invoice`
-    # deliberately uses a SINGLE transaction — an earlier review forced the
-    # void, its part/change-order releases and its audit row to land or roll
-    # back together — so enqueueing here would let a `priority:high` worker
-    # cancel the customer's live PaymentIntent at Stripe *before* the void is
-    # durable. If the audit write or the commit then failed, the invoice would
-    # still not be void and the intent would already be irreversibly cancelled:
-    # the money side committed and the record rolled back, which is the exact
-    # inversion of "the money commits first".
-    log_audit_event_sync(
-        db=db,
-        tenant_id=None,
-        user_id=_actor_id(_),
-        action="invoice_voided",
-        entity_type="invoice",
-        entity_id=str(invoice.id),
-        # The release counts belong in the trail: voiding an invoice puts work
-        # back on the unbilled checklist, and "what changed" has to include
-        # that, not just the invoice total.
-        details={
-            "total": _to_float(invoice.total),
-            "released_parts": int(released_parts or 0),
-            "released_change_orders": int(released_cos or 0),
-            "released_time_entries": released_time_entries,
-        },
-    )
-    db.commit()
-    db.refresh(invoice)
-    # Now that the void is durable. No `queued` flag in the audit row above:
-    # it cannot be known before the commit, and inventing one there is what the
-    # first version of this call site did. The sweep writes its own
-    # `stale_payment_intents_canceled` row, so the trail exists either way.
-    enqueue_stale_intent_sweep(invoice, why="invoice_voided", settled=True)
-    return _serialize_invoice(invoice)
+        result = _void_invoice(db, invoice_id, actor=_actor_id(_))
+    except InvoiceVoidRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return _serialize_invoice(result.invoice)
 
 
 @router.post("/{invoice_id}/finalize", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])

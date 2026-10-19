@@ -600,9 +600,9 @@ def bare_pg_db():
         _drop_db(name)
 
 
-def _pave(url: str, cwd: Path, **env: str) -> tuple[int, str]:
+def _pave(url: str, cwd: Path, flags: tuple[str, ...] = (), **env: str) -> tuple[int, str]:
     child = {k: v for k, v in _child_env(url, **env).items() if k != "PYTHONPATH"}
-    r = subprocess.run([sys.executable, str(PAVE_SCRIPT), "--yes", url],
+    r = subprocess.run([sys.executable, str(PAVE_SCRIPT), *flags, "--yes", url],
                        cwd=str(cwd), env=child, capture_output=True, text=True)
     return r.returncode, f"{r.stdout}\n{r.stderr}"
 
@@ -1065,6 +1065,143 @@ def test_a_non_superuser_paver_is_refused_with_nothing_dropped(bare_pg_db, tmp_p
         assert _untouched(url)
     finally:
         _drop_paver(url, paver)
+
+
+# --- GDXA-1811: other writers ------------------------------------------------
+# From the DROP to the end of the reload every table exists and is empty; a
+# client still connected (celery-beat drains outboxes every minute) can write
+# a row the reload's COPY collides with, aborting it after the DROP.
+
+
+def _stamp_at_head(url: str) -> None:
+    from gdx_dispatch.tools import pave_tenant_db
+
+    _exec(url, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
+    for head in pave_tenant_db.alembic_heads():
+        _exec(url, f"INSERT INTO alembic_version VALUES ('{head}')")  # noqa: S608 — head comes from the migration scripts
+
+
+def _connlimit(url: str) -> int:
+    return _sql(url, "SELECT datconnlimit FROM pg_database WHERE datname = current_database()")[0][0]
+
+
+def test_another_client_on_the_database_refuses_the_pave_with_nothing_dropped(bare_pg_db, tmp_path):
+    """The database is at head, so every earlier refusal passes: what stops
+    this run is the client holding a connection, named in the output."""
+    url = bare_pg_db
+    _seed_unpaveable(url)
+    _stamp_at_head(url)
+    holder = psycopg2.connect(url, application_name="beat_holder_1811")
+    try:
+        rc, output = _pave(url, tmp_path)
+    finally:
+        holder.close()
+    assert rc == 1, output[-4000:]
+    assert "other client(s) are connected" in output
+    assert "application_name=beat_holder_1811" in output
+    assert "NOTHING has been dropped" in output
+    assert "Dropping schema" not in output
+    assert _untouched(url)
+
+
+def test_a_client_that_connects_after_the_preflight_stops_the_drop(bare_pg_db):
+    """The dumps take long enough for a restarted worker to connect; the DROP's
+    own transaction checks again."""
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    _seed_unpaveable(url)
+    holder = psycopg2.connect(url, application_name="late_holder_1811")
+    engine = create_engine(url)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            pave_tenant_db.drop_and_recreate_schema(engine)
+        assert exc.value.code == 1
+    finally:
+        engine.dispose()
+        holder.close()
+    assert _untouched(url)
+
+
+def test_the_drop_gives_up_on_a_held_lock_with_nothing_dropped(bare_pg_db, monkeypatch):
+    """With the client check blinded, a session holding any lock in public
+    used to park the DROP forever; under lock_timeout it rolls back."""
+    import time
+
+    from sqlalchemy import create_engine, text
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    _seed_unpaveable(url)
+    monkeypatch.setattr(pave_tenant_db, "_OTHER_BACKENDS_SQL",
+                        text("SELECT 1, '', '', '' WHERE false"))
+    monkeypatch.setattr(pave_tenant_db, "DROP_LOCK_TIMEOUT", "1s")
+    holder = psycopg2.connect(url)
+    engine = create_engine(url)
+    try:
+        holder.cursor().execute("LOCK TABLE keep_me IN ACCESS SHARE MODE")
+        started = time.monotonic()
+        with pytest.raises(SystemExit) as exc:
+            pave_tenant_db.drop_and_recreate_schema(engine)
+        assert exc.value.code == 1
+        assert time.monotonic() - started < 30
+    finally:
+        engine.dispose()
+        holder.rollback()
+        holder.close()
+    assert _untouched(url)
+
+
+def test_terminate_others_fences_non_superusers_terminates_and_lifts(bare_pg_db):
+    from sqlalchemy import create_engine
+
+    from gdx_dispatch.tools import pave_tenant_db
+
+    url = bare_pg_db
+    dbname = url.rsplit("/", 1)[1]
+    worker = f"gdx_pave_worker_{uuid.uuid4().hex[:8]}"
+    worker_url = url.replace(f"{PG_USER}:{PG_PASSWORD}@", f"{worker}:x@")
+    _exec(url, f"CREATE ROLE {worker} LOGIN NOSUPERUSER PASSWORD 'x';"
+               f"ALTER DATABASE {dbname} CONNECTION LIMIT 7")  # noqa: S608 — names generated above
+    holder = psycopg2.connect(worker_url, application_name="worker_holder_1811")
+    engine = create_engine(url)
+    try:
+        assert [b[1] for b in pave_tenant_db.other_backends(engine)] == ["worker_holder_1811"]
+        fenced_name, limit = pave_tenant_db.fence_database(engine, pave_tenant_db.parse_db_url(url))
+        assert (fenced_name, limit) == (dbname, 7)
+        pave_tenant_db.terminate_other_backends(engine)
+        assert pave_tenant_db.other_backends(engine) == []
+        with pytest.raises(psycopg2.OperationalError, match="too many connections"):
+            psycopg2.connect(worker_url).close()
+        # A superuser is not held off, which is why the compose services,
+        # all POSTGRES_USER, have to be stopped rather than fenced.
+        psycopg2.connect(url).close()
+        pave_tenant_db.lift_fence(url, dbname, limit)
+        assert _connlimit(url) == 7
+        psycopg2.connect(worker_url).close()
+    finally:
+        engine.dispose()
+        holder.close()
+        _exec(url, f"DROP ROLE {worker}")
+
+
+def test_terminate_others_lifts_the_fence_when_the_pave_refuses(bare_pg_db, tmp_path):
+    """A refusal is a sys.exit inside the fenced run; the fence must not
+    outlive it, and it goes back to the limit it had, not to unlimited."""
+    url = bare_pg_db
+    dbname = url.rsplit("/", 1)[1]
+    _seed_unpaveable(url)
+    _exec(url, f"ALTER DATABASE {dbname} CONNECTION LIMIT 7")
+    rc, output = _pave(url, tmp_path, flags=("--terminate-others",))
+    assert rc == 1, output[-4000:]
+    assert "CONNECTION LIMIT 0 (was 7)" in output
+    assert "this tree's head is" in output
+    assert "Fence lifted" in output
+    assert _connlimit(url) == 7
+    assert _untouched(url)
 
 
 # --- client resolution (GDXA-1169). No Postgres needed: the binaries are fakes
