@@ -77,12 +77,10 @@ class LogShipper:
                 client.create_log_group(logGroupName=group_name)
             except Exception:
                 log.exception("_ship_cloudwatch_failed")
-                pass
             try:
                 client.create_log_stream(logGroupName=group_name, logStreamName=stream_name)
             except Exception:
                 log.exception("_ship_cloudwatch_failed")
-                pass
             events = [
                 {"timestamp": int(datetime.now(UTC).timestamp() * 1000), "message": json.dumps(row, sort_keys=True)}
                 for row in entries

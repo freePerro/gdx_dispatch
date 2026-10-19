@@ -68,7 +68,6 @@ def scan_file(path: Path, pattern: str, msg: str, severity: str = "ERROR") -> in
                 count += 1
     except Exception:
         logging.getLogger(__name__).debug("scan_file: swallowed S110 — suppressed exception", exc_info=True)
-        pass
     return count
 
 
@@ -297,7 +296,6 @@ def check_env_template_drift() -> None:
                     used_vars.add(m.group(1))
             except Exception:
                 logging.getLogger(__name__).debug("check_env_template_drift: swallowed S110 — suppressed exception", exc_info=True)
-                pass
 
     # Ignore common/standard vars
     ignore = {"PATH", "HOME", "USER", "PYTHONPATH", "GDX_ENV", "REDIS_URL",
@@ -326,7 +324,6 @@ def check_audit_logging_coverage() -> None:
                 warnings.append(f"gdx_dispatch/routers/{f.name}: has INSERT/UPDATE/DELETE but no log_audit_event() calls")
         except Exception:
             logging.getLogger(__name__).debug("check_audit_logging_coverage: swallowed S110 — suppressed exception", exc_info=True)
-            pass
 
 
 def check_container_dep_sync() -> None:
@@ -378,7 +375,6 @@ def check_container_dep_sync() -> None:
                             third_party_imports.add(pkg)
             except Exception:
                 logging.getLogger(__name__).debug("check_container_dep_sync: swallowed S110 — suppressed exception", exc_info=True)
-                pass
 
     for imp in sorted(third_party_imports):
         pip_name = import_to_pip.get(imp, imp).lower()
