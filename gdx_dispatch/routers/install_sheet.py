@@ -277,7 +277,6 @@ def install_specs(
                 break
         except Exception:
             logging.getLogger(__name__).exception("install_specs caught exception")
-            pass
 
     return {
         # The captured door(s), role-split, one per door — the UI renders these
