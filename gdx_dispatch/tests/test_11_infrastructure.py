@@ -3,7 +3,6 @@ test_11_infrastructure.py — Sprint 1 infrastructure verification tests.
 
 Covers:
   - Celery config has high/low priority queues, acks_late, reject_on_worker_lost
-  - gdx_dispatch.core.webhook_delivery module is importable
   - deliver_webhook sets X-GDX-Signature on outbound HTTP requests (HMAC-SHA256)
   - RETRY_DELAYS has exactly 8 entries (5s, 30s, 2m, 10m, 30m, 2h, 6h, 24h)
   - Per-tenant rate limiting (Starter 120/min, Professional 600/min) wired in app
@@ -52,16 +51,9 @@ def test_celery_config_has_priority_queues():
 # TASK 2 — Outbound webhook retry system
 # ---------------------------------------------------------------------------
 
-def test_webhook_delivery_module_exists():
-    """gdx_dispatch.core.webhook_delivery must be importable and export deliver_webhook."""
-    from gdx_dispatch.core.webhook_delivery import deliver_webhook  # noqa: F401
-
-    assert callable(deliver_webhook)
-
-
 def test_retry_schedule_length():
     """RETRY_DELAYS must contain exactly 8 entries."""
-    from gdx_dispatch.core.webhook_delivery import RETRY_DELAYS
+    from gdx_dispatch.core.webhooks.delivery import RETRY_DELAYS
 
     assert len(RETRY_DELAYS) == 8, (
         f"Expected 8 retry delays, got {len(RETRY_DELAYS)}: {RETRY_DELAYS}"
@@ -70,7 +62,7 @@ def test_retry_schedule_length():
 
 def test_retry_schedule_values():
     """RETRY_DELAYS must match the plan: 5s, 30s, 2m, 10m, 30m, 2h, 6h, 24h."""
-    from gdx_dispatch.core.webhook_delivery import RETRY_DELAYS
+    from gdx_dispatch.core.webhooks.delivery import RETRY_DELAYS
 
     expected = [5, 30, 120, 600, 1800, 7200, 21600, 86400]
     assert list(RETRY_DELAYS) == expected, (
