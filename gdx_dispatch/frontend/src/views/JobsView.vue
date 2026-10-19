@@ -548,8 +548,6 @@
           />
         </div>
       </Dialog>
-
-      <Toast data-testid="jobs-toast" />
     </section>
 </template>
 
@@ -580,7 +578,6 @@ import PhoneInput from "../components/PhoneInput.vue";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
-import Toast from "primevue/toast";
 import Toolbar from "primevue/toolbar";
 
 const api = useApiWithToast();
