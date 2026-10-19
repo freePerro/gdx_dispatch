@@ -233,7 +233,7 @@ ON = date(2026, 10, 19)
     ],
 )
 def test_vacation_year_start(policy, hire, on, start) -> None:
-    from gdx_dispatch.routers.settings import vacation_year_start
+    from gdx_dispatch.core.time_off import vacation_year_start
 
     assert vacation_year_start(policy, hire, on) == start
 
