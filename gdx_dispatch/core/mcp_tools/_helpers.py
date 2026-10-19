@@ -21,6 +21,41 @@ def coerce_uuid(raw: str | None) -> UUID | None:
         return None
 
 
+def estimate_line_dict(
+    line: Any,
+    *,
+    with_id: bool = True,
+    with_estimate_id: bool = False,
+    with_sort_order: bool = False,
+) -> dict[str, Any]:
+    """Serialize one ``EstimateLine`` row the way the estimate tools return it.
+
+    One shape for every tool, so the money fields cannot drift apart:
+    ``quantity`` is an int, ``unit_price`` and ``line_total`` are floats.
+    Extracted under GDXA-1683 from four hand-written copies in
+    ``estimates.get``, ``estimates.update_line`` (preview ``before`` and the
+    commit result) and ``estimates.add_line`` (commit result); one of them
+    returned ``quantity`` raw instead of ``int(...)``.
+
+    The flags add or drop keys without moving the others, so each caller's
+    key order is the one it had before: ``id``, ``estimate_id``,
+    ``description``, ``quantity``, ``unit_price``, ``line_total``,
+    ``sort_order``. Pinned per tool by ``tests/test_tool_estimates_line_shape.py``.
+    """
+    out: dict[str, Any] = {}
+    if with_id:
+        out["id"] = str(line.id)
+    if with_estimate_id:
+        out["estimate_id"] = str(line.estimate_id)
+    out["description"] = line.description
+    out["quantity"] = int(line.quantity)
+    out["unit_price"] = float(line.unit_price)
+    out["line_total"] = float(line.line_total)
+    if with_sort_order:
+        out["sort_order"] = line.sort_order
+    return out
+
+
 def agent_visible_message(db: Any, mid: UUID) -> Any:
     """Load one ``OutlookMessage`` an agent principal is allowed to see, or None.
 
