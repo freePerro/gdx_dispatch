@@ -190,3 +190,77 @@ def test_the_storefront_routes_are_owner_only():
         assert "_require_owner" in deps or any(
             "_require_owner" in str(d.call) for d in routes[path].dependant.dependencies
         ), f"{path} is not owner-gated"
+
+
+# ── host-version gate (GDXA-1742) ────────────────────────────────────────────
+
+@pytest.fixture
+def _requires(monkeypatch):
+    """Point the catalog at an entry with the given `requires`, and make any
+    download fail the test: an incompatible plugin must be refused BEFORE it."""
+    def _set(requires, *, forbid_download=True):
+        monkeypatch.setattr(store, "find_entry",
+                            lambda key, version=None: {**ENTRY, "requires": requires})
+        if forbid_download:
+            monkeypatch.setattr(store, "download_wheel",
+                                lambda entry: pytest.fail("downloaded an incompatible plugin"))
+    return _set
+
+
+def test_a_plugin_the_host_cannot_run_is_refused_with_nothing_written(db, monkeypatch, _requires):
+    monkeypatch.setenv("APP_VERSION", "1.2.0")
+    _requires("gdx>=9.0")
+    audits = []
+    monkeypatch.setattr(ap, "_audit", lambda *a, **k: audits.append(a))
+
+    with pytest.raises(ap.HTTPException) as e:
+        _install(db)
+    assert e.value.status_code == 409
+    assert "gdx>=9.0" in e.value.detail and "1.2.0" in e.value.detail
+    assert "Nothing was installed" in e.value.detail
+    assert db.sql == [], "no plugin_artifact row for a plugin plugin-host would skip"
+    assert audits == [], "no audit row asserting an install that did not happen"
+
+
+def test_an_unpinned_host_refuses_a_version_pinned_plugin(db, monkeypatch, _requires):
+    """plugin-host reads APP_VERSION=latest as version 0 and skips it."""
+    monkeypatch.setenv("APP_VERSION", "latest")
+    _requires("gdx>=1.0")
+    with pytest.raises(ap.HTTPException) as e:
+        _install(db)
+    assert e.value.status_code == 409
+    assert "APP_VERSION" in e.value.detail
+    assert db.sql == []
+
+
+def test_a_constraint_the_host_cannot_parse_fails_closed(db, monkeypatch, _requires):
+    monkeypatch.setenv("APP_VERSION", "9.9.9")
+    _requires("gdx~=1.2")
+    with pytest.raises(ap.HTTPException) as e:
+        _install(db)
+    assert e.value.status_code == 409
+    assert db.sql == []
+
+
+def test_a_plugin_the_host_meets_still_installs(db, monkeypatch, _requires):
+    monkeypatch.setenv("APP_VERSION", "1.10.0")
+    _requires("gdx>=1.9", forbid_download=False)
+    out = _install(db)
+    assert out["status"] == "pending_restart"
+    assert "insert into plugin_artifact" in " ".join(db.sql).lower()
+
+
+def test_browse_reports_compatibility_per_card(db, monkeypatch):
+    monkeypatch.setenv("APP_VERSION", "1.2.0")
+    monkeypatch.setattr(store, "fetch_catalog", lambda force=False: [
+        {**ENTRY, "requires": "gdx>=1.0"},
+        {**ENTRY, "key": "later", "distribution": "gdx-plugin-later", "requires": "gdx>=2.0"},
+    ])
+    monkeypatch.setattr(ap, "_desired_versions", lambda db: {})
+    monkeypatch.setattr(ap, "_running_versions", lambda: {})
+
+    out = ap.browse_storefront(_={"role": "owner"}, db=db)
+    by_key = {p["key"]: p for p in out["plugins"]}
+    assert by_key["n8n"]["compatible"] is True
+    assert by_key["later"]["compatible"] is False
+    assert "gdx>=2.0" in by_key["later"]["incompatible_reason"]

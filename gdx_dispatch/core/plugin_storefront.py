@@ -381,8 +381,33 @@ def _is_newer(candidate: str, current: str) -> bool:
         return candidate != current
 
 
+def incompatibility(requires: str, host: str) -> str | None:
+    """Why plugin-host would skip a plugin with this `requires`, or None if it
+    would load it.
+
+    The verdict is `plugin_api.is_compatible` itself, the predicate plugin-host
+    applies at boot, so the store can never accept what the boot then drops.
+    Only the wording is decided here, for the owner. A constraint the grammar
+    does not cover fails closed, as it does at boot.
+    """
+    from gdx_dispatch.plugin_api.discovery import REQUIRES_RE, _ver_tuple, is_compatible
+
+    if is_compatible(requires, host):
+        return None
+    requires = (requires or "").strip()
+    if not REQUIRES_RE.match(requires):
+        return (f"It requires {requires!r}, a constraint this GDX build does not "
+                "understand, so plugin-host would not load it.")
+    if not _ver_tuple(host):
+        return (f"It requires {requires}, and this server is not pinned to a release "
+                f"(APP_VERSION is {host!r}), so plugin-host would not load it. Pin "
+                "APP_VERSION to a release to install it.")
+    return (f"It requires {requires}, and this server runs GDX {host}. Update GDX "
+            "to install it.")
+
+
 def merge_install_state(entries: list[dict], installed: dict[str, str],
-                        running: dict[str, str]) -> list[dict]:
+                        running: dict[str, str], host: str | None = None) -> list[dict]:
     """Annotate catalog entries with what this instance actually has.
 
     `installed` — {canonical distribution: version} the operator has asked for.
@@ -392,8 +417,14 @@ def merge_install_state(entries: list[dict], installed: dict[str, str],
     recorded immediately but only takes effect on the next plugin-host restart.
     Collapsing them into one "installed" flag is what would let the UI claim a
     plugin is running before it is.
+
+    `compatible` is whether plugin-host, at version `host`, would load the
+    entry at all; `incompatible_reason` says why not.
     """
+    from gdx_dispatch.plugin_api.discovery import host_version
     from gdx_dispatch.plugin_host.reconcile import _canon, _versions_equal
+
+    host = host_version() if host is None else host
 
     out = []
     for entry in entries:
@@ -402,6 +433,9 @@ def merge_install_state(entries: list[dict], installed: dict[str, str],
         item = dict(entry)
         item["installed_version"] = have
         item["running_version"] = live
+        reason = incompatibility(entry["requires"], host)
+        item["compatible"] = reason is None
+        item["incompatible_reason"] = reason
         # Only a NEWER catalog version is an update. A plain "differs" check
         # labels a rollback — an instance deliberately pinned ahead of, or
         # behind, the catalog — as "Update to 1.0.0", which is a downgrade
