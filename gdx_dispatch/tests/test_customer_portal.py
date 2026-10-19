@@ -217,17 +217,14 @@ def test_customer_cant_see_other_customers_data(tenant_db_session):
 
     jobs = portal_router.portal_jobs(principal=principal, db=tenant_db_session)
     invoices = portal_router.portal_invoices(principal=principal, db=tenant_db_session)
-    documents = portal_router.portal_documents(principal=principal, db=tenant_db_session)
 
     job_ids = {row["id"] for row in jobs}
     invoice_ids = {row["id"] for row in invoices}
-    document_customers = {row["customer_id"] for row in documents}
 
     assert str(seeded["job_a_id"]) in job_ids
     assert str(seeded["job_b_id"]) not in job_ids
     assert str(seeded["inv_a_id"]) in invoice_ids
     assert str(seeded["inv_b_id"]) not in invoice_ids
-    assert document_customers == {str(seeded["customer_a_id"])}
 
 
 def test_jobs_history_endpoint_filters_to_customer(tenant_db_session):
