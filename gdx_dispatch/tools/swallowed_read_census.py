@@ -99,9 +99,8 @@ The prose recipe excluded a session parameter defaulted to ``Depends(...)`` but
 not the equivalent ``Annotated[Session, Depends(get_db)]`` form, which is the
 same framework-injected ownership. All three spellings are excluded here — the
 default, the inline ``Annotated``, and a module-level alias for it
-(``TenantDB = Annotated[Session, Depends(get_db)]``, live in ``core/gdpr.py``
-and ``core/ai_quote.py``; without alias resolution the next endpoint written
-that way is a false positive indistinguishable from a real defect). Measured
+(``TenantDB = Annotated[Session, Depends(get_db)]``, live in ``core/ai_quote.py``;
+without alias resolution the next endpoint written that way is a false positive indistinguishable from a real defect). Measured
 cost on ``efb031a2``: it drops ``api/public_router.py::list_public_listings``,
 which IS in the recorded 73-row table — the one recorded site this tool refuses
 on purpose rather than by accident.
@@ -238,9 +237,9 @@ def _annotation_injects(
     """True for ``Annotated[Session, Depends(get_db)]`` — framework-injected.
 
     ``aliases`` carries the module's own names for that annotation, because
-    ``TenantDB = Annotated[Session, Depends(get_db)]`` (``core/gdpr.py:22``,
-    ``core/ai_quote.py:781``) hides the ``Depends`` behind a Name and would
-    otherwise read as a caller-owned session.
+    ``TenantDB = Annotated[Session, Depends(get_db)]`` (``core/ai_quote.py:803``)
+    hides the ``Depends`` behind a Name and would otherwise read as a
+    caller-owned session.
     """
     if annotation is None:
         return False

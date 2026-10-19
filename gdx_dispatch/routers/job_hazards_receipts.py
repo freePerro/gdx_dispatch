@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import Job, JobHazard, JobReceipt
 from gdx_dispatch.routers.auth import get_current_user
@@ -133,7 +134,6 @@ def create_hazard(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> HazardOut:
-    _ = request
     job_uuid = _validate_uuid(job_id, "Job")
     _validate_severity(payload.severity)
 
@@ -157,6 +157,19 @@ def create_hazard(
             updated_at=datetime.now(UTC),
         )
         db.add(haz)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=haz.created_by,
+            action="create_job_hazard",
+            entity_type="job_hazard",
+            entity_id=str(haz.id),
+            details={
+                "job_id": str(job_uuid),
+                "severity": haz.severity,
+                "applies_to_customer": bool(haz.applies_to_customer),
+            },
+        )
         db.commit()
         db.refresh(haz)
         return _hazard_to_response(haz)
@@ -173,8 +186,6 @@ def delete_hazard(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    _ = current_user
-    _ = request
     haz_uuid = _validate_uuid(hazard_id, "Hazard")
     try:
         haz = db.execute(
@@ -185,6 +196,15 @@ def delete_hazard(
         if not haz:
             raise HTTPException(status_code=404, detail="Hazard not found")
         haz.deleted_at = datetime.now(UTC)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=_user_id(current_user),
+            action="delete_job_hazard",
+            entity_type="job_hazard",
+            entity_id=str(haz.id),
+            details={"job_id": str(haz.job_id), "severity": haz.severity},
+        )
         db.commit()
         return {"deleted": True}
     except SQLAlchemyError:
@@ -264,7 +284,6 @@ def create_receipt(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ReceiptOut:
-    _ = request
     job_uuid = _validate_uuid(job_id, "Job")
     try:
         rec = JobReceipt(
@@ -280,6 +299,15 @@ def create_receipt(
             updated_at=datetime.now(UTC),
         )
         db.add(rec)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=rec.created_by,
+            action="create_job_receipt",
+            entity_type="job_receipt",
+            entity_id=str(rec.id),
+            details={"job_id": str(job_uuid), "vendor": rec.vendor, "amount": rec.amount},
+        )
         db.commit()
         db.refresh(rec)
         return _receipt_to_response(rec)
@@ -296,8 +324,6 @@ def delete_receipt(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    _ = current_user
-    _ = request
     rec_uuid = _validate_uuid(receipt_id, "Receipt")
     try:
         rec = db.execute(
@@ -308,6 +334,15 @@ def delete_receipt(
         if not rec:
             raise HTTPException(status_code=404, detail="Receipt not found")
         rec.deleted_at = datetime.now(UTC)
+        log_audit_event_sync(
+            db,
+            request=request,
+            user_id=_user_id(current_user),
+            action="delete_job_receipt",
+            entity_type="job_receipt",
+            entity_id=str(rec.id),
+            details={"job_id": str(rec.job_id), "vendor": rec.vendor, "amount": rec.amount},
+        )
         db.commit()
         return {"deleted": True}
     except SQLAlchemyError:

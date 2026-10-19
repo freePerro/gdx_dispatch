@@ -57,6 +57,20 @@ jobs:
         # anything are documented and guarded in that script.
         run: bash gdx_dispatch/tools/ruff_ratchet.sh
 
+      - name: No tracked file matches an ignore rule
+        # Once a path is tracked its .gitignore line does nothing, so a run
+        # artifact committed by accident is refreshed by every later run and
+        # drifts in diffs (GDXA-1595: frontend/e2e-route-report.json). Here,
+        # not in pytest: the docker-app image has no git binary, and matching
+        # .gitignore in python would only approximate what git decides.
+        run: |
+          offenders="$(git ls-files -ci --exclude-standard)"
+          if [ -n "$offenders" ]; then
+            echo "::error::tracked files that .gitignore ignores — git rm --cached them, or narrow the ignore rule:"
+            echo "$offenders"
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
     # Backstop for wedged shards: a hung test used to sit at the default

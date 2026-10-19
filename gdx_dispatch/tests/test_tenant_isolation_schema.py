@@ -8,36 +8,30 @@ every query gets scoped") expressed at the schema layer.
 
 WHY THIS TEST EXISTS
 --------------------
-On 2026-04-11, the drift_scanner flagged four tables in ``gdx_dispatch/models/tenant_models.py``
-with ``company_id nullable=True`` — ClientError, MobileSyncAction, User, Technician.
-Cerebras (architecture review via the an earlier session multi-agent coverage pass) called
-this "one query away from a data leak." An immediate production query confirmed
-1 actual row in the live GDX tenant's ``users`` table with ``company_id IS NULL``
-(a ``qa-test@example.com`` artifact created 2026-04-08 during earlier QA work).
+On 2026-04-11 the drift_scanner flagged four models in
+``gdx_dispatch/models/tenant_models.py`` with ``company_id nullable=True``:
+ClientError, MobileSyncAction, User, Technician. An architecture review called
+this "one query away from a data leak", and a production query that day found
+one row in the live ``users`` table with ``company_id IS NULL`` (a
+``qa-test@example.com`` artifact from QA work on 2026-04-08). The four were
+pinned in ``KNOWN_XFAIL_NULLABLE_COMPANY_IDS`` until fixed.
 
-The four known violations are tracked via ``pytest.mark.xfail`` — they are NOT
-hidden, they are pinned and visible in every test run, and they will flip to
-passing automatically once the schema is fixed and the migration is landed.
+All four have since been resolved: ClientError, User and Technician now declare
+``company_id`` ``nullable=False``, and MobileSyncAction was removed as a model
+with #739 (migration 095 drops ``mobile_sync_actions``). As of 2026-10-18 the
+pinned set is empty and nothing is xfailed.
 
-This is the SCHEMA-layer check. The DATA-layer check (count NULL rows in every
-tenant DB) lives at ``gdx_dispatch/tools/tenant_isolation_audit.py`` and is intended to
-run as a cron/scheduled task. Schema enforcement and data enforcement are two
-different failure modes and they need two different tests.
+This is the SCHEMA-layer check only. The 2026-04-11 plan also named a DATA-layer
+check (count NULL rows per tenant DB) at
+``gdx_dispatch/tools/tenant_isolation_audit.py``; that tool was never committed
+and no data-layer check exists (checked 2026-10-18).
 
 HOW TO USE
 ----------
 ``.venv/bin/pytest gdx_dispatch/tests/test_tenant_isolation_schema.py -v``
 
-Expected output after 2026-04-11 an earlier session:
-    - test_all_company_id_columns_not_null PASSED
-        with 4 xfailed entries (ClientError, MobileSyncAction, User, Technician)
-
-Once the schema migration is landed:
-    1. Flip the four ``nullable=True`` attributes in ``gdx_dispatch/models/tenant_models.py``
-       to ``nullable=False``
-    2. Remove the xfail_ids set below
-    3. This test should be 100% green, with no xfails
-    4. Any NEW model that adds ``company_id nullable=True`` breaks this test loud
+Both tests pass with no xfails. Any model that adds ``company_id nullable=True``
+fails ``test_all_company_id_columns_not_null``.
 
 DO NOT fix this test by widening the xfail set. That is the ConsoleErrorTracker
 anti-pattern from 2026-04-11 session_lessons.md: don't filter, fix.
@@ -51,14 +45,9 @@ pytestmark = pytest.mark.schema
 # Import the ORM metadata so the test can walk every mapped class
 from gdx_dispatch.models.tenant_models import Base
 
-# Known violations pinned in place until the migration lands.
-# Each entry is ``<tablename>.company_id``. Remove from this set once the
-# corresponding row in tenant_models.py is changed to ``nullable=False``
-# AND a matching Alembic migration has been run in production.
-#
-# See sprint 0.6 an earlier session discussion item "NULL company_id in production users
-# table" — the migration is blocked on deciding what to do with the existing
-# row that has ``company_id IS NULL``.
+# Table names allowed to keep a nullable company_id. It held the four 2026-04-11
+# violations until each was fixed or removed; it is empty and must stay empty.
+# A new nullable company_id is fixed in the model, never added here.
 KNOWN_XFAIL_NULLABLE_COMPANY_IDS: set[str] = set()
 
 
@@ -96,8 +85,7 @@ def test_all_company_id_columns_not_null() -> None:
                     f"tenant isolation schema violation (Build Rule #5)"
                 )
 
-    # The 4 known-bad tables are expected failures — flag them loudly so
-    # nobody forgets they exist, but don't fail the test on them.
+    # Pinned tables (none since the set emptied) are reported, not failed.
     if xfailed:
         print(f"\n[xfail] {len(xfailed)} tables with pinned nullable=True "
               f"(pending migration): {sorted(xfailed)}")
@@ -115,7 +103,7 @@ def test_known_xfail_set_is_current() -> None:
     """Safety net: if the xfail set contains a table that is already fixed,
     flag it so we can remove the xfail entry and tighten the gate.
 
-    This catches the drift where someone fixes one of the four violations but
+    This catches the drift where someone fixes a pinned violation but
     forgets to shrink the xfail set — which would silently hide regressions
     because the test would keep allowing nullable=True for that table name.
     """

@@ -34,7 +34,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, Enum, Integer, String, text
+from sqlalchemy import Column, Integer, String, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 _Base = declarative_base()
@@ -67,12 +67,11 @@ def _caller_survives(pg_test_engine, table: str | None, call):
     pending work, and assert BOTH halves: the helper still degrades to its
     default, AND the caller can still commit.
 
-    ``table=None`` means the read already fails on this fixture unaided —
-    ``tests/fixtures/structure.sql`` is a stale ``TenantBase``-scoped dump, so
-    some tables and columns migration head creates are simply absent from it.
-    Each caller below says which, and whether that absence is the production
-    failure mode or a fixture artifact that merely exercises the same
-    containment.
+    ``table=None`` means the caller has already broken the schema some other
+    way (a dropped column) and says how. Until GDXA-1558 a stale
+    ``tests/fixtures/structure.sql`` lacked several of these tables and the
+    tests leaned on that absence; the dump is the ORM now, so each test breaks
+    the schema itself.
     """
     Session = _sessions(pg_test_engine)
     if table is not None:
@@ -113,14 +112,16 @@ def test_pg_delete_sync_gate_cannot_poison_the_pull(pg_test_engine, monkeypatch)
     caller's mid-pull session. Highest-value site in this file: the caller acts
     on the degraded verdict and only discovers the transaction is dead later.
 
-    The injected failure is the real production mode, not a fixture artifact:
-    ``structure.sql``'s ``qb_connections`` has no ``delete_sync_enabled`` column
-    at all, so the ORM's SELECT of it raises 42703 — which is exactly what a
-    pre-migration schema does to this statement. Hence ``table=None``.
+    The injected failure is the real production mode: with no
+    ``delete_sync_enabled`` column on ``qb_connections`` the ORM's SELECT of it
+    raises 42703 — exactly what a pre-migration schema does to this statement.
+    The column is dropped here, hence ``table=None``.
     """
     from gdx_dispatch.modules.quickbooks.sync import _delete_sync_enabled
 
     monkeypatch.setenv("QB_DELETE_SYNC_ENABLED", "0")
+    with pg_test_engine.begin() as c:
+        c.execute(text("ALTER TABLE qb_connections DROP COLUMN delete_sync_enabled"))
     enabled = _caller_survives(
         pg_test_engine, None, lambda db: _delete_sync_enabled("t-165", db)
     )
@@ -137,10 +138,7 @@ def test_pg_pnl_last_synced_at_cannot_poison_the_request(pg_test_engine):
     P&L pull". That is false and the comment on the fix in ``routers/budgets.py``
     retracts it at length: it is an ORM model (``models/tenant_models.py``,
     ``__tablename__ = "qb_pnl_monthly"``) that migration head creates, and prod
-    has it populated. It is missing only from the TenantBase-scoped
-    ``tests/fixtures/structure.sql`` dump — a fixture artifact, not a tenant
-    state, which is why this test passes ``table=None`` and lets that absence be
-    the injected failure rather than renaming anything.
+    has it populated, so the failure is injected by renaming it.
 
     So this is cheap insurance on a real mechanism (a migration window, a future
     statement_timeout), not the repair of an observed loss. Honest about
@@ -151,7 +149,7 @@ def test_pg_pnl_last_synced_at_cannot_poison_the_request(pg_test_engine):
     """
     from gdx_dispatch.routers.budgets import _pnl_last_synced_at
 
-    assert _caller_survives(pg_test_engine, None, _pnl_last_synced_at) is None
+    assert _caller_survives(pg_test_engine, "qb_pnl_monthly", _pnl_last_synced_at) is None
 
 
 def test_pg_load_qb_accounts_cannot_poison_the_request(pg_test_engine):
@@ -159,11 +157,15 @@ def test_pg_load_qb_accounts_cannot_poison_the_request(pg_test_engine):
     ``list_anomalies`` calls ``get_qb_client(tenant_id, db)`` two statements
     later, which reads the token store and can persist a refreshed OAuth token.
 
-    ``qb_accounts`` exists in the fixture, so this one injects a real 42P01 by
-    renaming it rather than relying on an absence.
+    ``qb_accounts`` is runtime DDL (``pull_accounts`` creates it), not an ORM
+    table, so the fixture does not carry it: build it from that same DDL, then
+    inject a real 42P01 by renaming it rather than relying on an absence.
     """
+    from gdx_dispatch.modules.quickbooks.sync import _QB_ACCOUNTS_DDL
     from gdx_dispatch.routers.budgets import _load_qb_accounts
 
+    with pg_test_engine.begin() as c:
+        c.execute(text(_QB_ACCOUNTS_DDL))
     assert _caller_survives(pg_test_engine, "qb_accounts", _load_qb_accounts) == []
 
 
@@ -189,10 +191,8 @@ def test_pg_annotate_gl_accounts_cannot_cost_the_expense_list(pg_test_engine):
     list" — but the list endpoint holds a request-scoped session that goes on to
     do more work.
 
-    ``gl_settings`` is absent from the fixture dump (a different-Base table), so
-    ``ledger_service.get_gl_settings`` fails first and unaided: ``table=None``.
-    That is a fixture artifact rather than a production state, and it exercises
-    the containment identically — but do not cite it as the prod failure mode.
+    Renaming ``gl_settings`` makes ``ledger_service.get_gl_settings``, the
+    block's first read, the one that fails.
 
     ``rows`` is a stand-in carrying only the two attributes the function reads
     (``company_id``, ``category``); every DB statement it makes is real, which is
@@ -206,7 +206,8 @@ def test_pg_annotate_gl_accounts_cannot_cost_the_expense_list(pg_test_engine):
 
     payloads: list[dict] = [{}]
     _caller_survives(
-        pg_test_engine, None, lambda db: _annotate_gl_accounts(db, [_Expense()], payloads)
+        pg_test_engine, "gl_settings",
+        lambda db: _annotate_gl_accounts(db, [_Expense()], payloads),
     )
     assert payloads == [{}], "a failed read must leave the payload unannotated"
 
@@ -234,14 +235,13 @@ def _narrow(engine, table: str, column: str, width: int = 3) -> None:
 
 def test_pg_pull_accounts_one_bad_row_does_not_zero_the_pull(pg_test_engine):
     from gdx_dispatch.core.quickbooks import QBConnection
-    from gdx_dispatch.modules.quickbooks.sync import pull_accounts
+    from gdx_dispatch.modules.quickbooks.sync import _QB_ACCOUNTS_DDL, pull_accounts
 
     Session = _sessions(pg_test_engine)
-    # The fixture's qb_connections predates delete_sync_enabled; _touch_sync_success
-    # SELECTs the whole ORM row after the loop, so without this the pull dies on an
-    # unrelated 42703 and the test could not see its own subject.
+    # qb_accounts is runtime DDL, not ORM: create it as pull_accounts would, so
+    # there is a column to narrow before the pull runs.
     with pg_test_engine.begin() as c:
-        c.execute(text("ALTER TABLE qb_connections ADD COLUMN delete_sync_enabled boolean"))
+        c.execute(text(_QB_ACCOUNTS_DDL))
     _narrow(pg_test_engine, "qb_accounts", "name")
     assert QBConnection is not None  # import is the point: keeps the ORM shape honest
 
@@ -277,13 +277,9 @@ def _deposit_rows():
 
 
 def test_pg_pull_deposits_one_bad_row_does_not_zero_the_pull(pg_test_engine):
-    """``qb_deposits`` is absent from the fixture dump, so the table is built
-    from the ORM here — hand-written DDL in a fixture once hid a feature that
-    could not be inserted at all."""
-    from gdx_dispatch.modules.quickbooks.banking import QBDeposit, pull_deposits
+    from gdx_dispatch.modules.quickbooks.banking import pull_deposits
 
     Session = _sessions(pg_test_engine)
-    QBDeposit.__table__.create(pg_test_engine)
     _narrow(pg_test_engine, "qb_deposits", "deposit_to_account_name")
 
     db = Session()
@@ -304,10 +300,9 @@ def test_pg_pull_deposits_one_bad_row_does_not_zero_the_pull(pg_test_engine):
 
 
 def test_pg_pull_transfers_one_bad_row_does_not_zero_the_pull(pg_test_engine):
-    from gdx_dispatch.modules.quickbooks.banking import QBTransfer, pull_transfers
+    from gdx_dispatch.modules.quickbooks.banking import pull_transfers
 
     Session = _sessions(pg_test_engine)
-    QBTransfer.__table__.create(pg_test_engine)
     _narrow(pg_test_engine, "qb_transfers", "from_account_name")
 
     db = Session()
@@ -344,10 +339,9 @@ def test_pg_banking_entry_upsert_one_bad_row_does_not_zero_the_pull(pg_test_engi
     caller's per-row ``except`` — the swallow that makes this class dangerous —
     is the one doing the catching.
     """
-    from gdx_dispatch.modules.quickbooks.banking import QBBankingEntry, pull_bill_payments
+    from gdx_dispatch.modules.quickbooks.banking import pull_bill_payments
 
     Session = _sessions(pg_test_engine)
-    QBBankingEntry.__table__.create(pg_test_engine)
     _narrow(pg_test_engine, "qb_banking_entries", "account_name")
 
     db = Session()
@@ -376,15 +370,11 @@ def test_pg_banking_entry_upsert_one_bad_row_does_not_zero_the_pull(pg_test_engi
 def test_pg_apply_qbo_deletes_never_audits_a_delete_that_did_not_happen(pg_test_engine, monkeypatch):
     """The soft-DELETE loop must never audit a deletion that did not happen.
 
-    Every row's ``db.get(model, ...)`` fails here, so NO row is deleted. Be
-    precise about WHY, because the obvious reading is wrong: the ``_rename`` of
-    ``customers`` below is belt-and-braces, not the cause. The fixture's
-    ``customers`` already lacks ``local_edit_at``, a column the ORM selects, so
-    the load raises 42703 with or without the rename — removing the rename
-    leaves this test passing on the identical error (measured, GDXA-165 audit
-    pass 2). The rename is kept so the test keeps failing the same way if that
-    fixture gap is ever closed, and this paragraph exists so nobody "cleans up"
-    the rename believing it is what breaks the read.
+    Every row's ``db.get(model, ...)`` fails here, so NO row is deleted: the
+    ``_rename`` of ``customers`` below is the cause. Until GDXA-1558 it was
+    belt-and-braces, because the stale fixture's ``customers`` lacked
+    ``local_edit_at`` and the load raised 42703 without it; the dump is the ORM
+    now, so the rename is load-bearing.
 
     Three things then have to hold at once, and each fails against a different
     ancestor of this code:
@@ -404,7 +394,11 @@ def test_pg_apply_qbo_deletes_never_audits_a_delete_that_did_not_happen(pg_test_
       ``SELECT qb_entity_maps`` at the top of ``_apply_qbo_deletes`` raises
       InternalError out of the call itself, before any commit. Right verdict,
       earlier mechanism — stated exactly because pass 2 of the audit caught this
-      docstring claiming the commit was what raised.
+      docstring claiming the commit was what raised. That was measured on the
+      stale fixture, whose ``qb_connections`` had no ``delete_sync_enabled``;
+      since GDXA-1558 that read succeeds here, so an uncontained gate no longer
+      reddens this test. ``test_pg_delete_sync_gate_cannot_poison_the_pull``
+      guards it instead.
 
     Not asserting ``deleted``: it counts locals actually tombstoned, which is 0
     here for the same reason ``audited`` is.
@@ -417,8 +411,8 @@ def test_pg_apply_qbo_deletes_never_audits_a_delete_that_did_not_happen(pg_test_
     Session = _sessions(pg_test_engine)
     # qb_entity_maps IS in the fixture dump (plural — the ORM's __tablename__),
     # so it is not built here.
-    # qb_connections has no delete_sync_enabled column here, so the gate falls
-    # through to the env var — which is the branch this test wants ON.
+    # No qb_connections row, so the gate falls through to the env var — which is
+    # the branch this test wants ON.
     monkeypatch.setenv("QB_DELETE_SYNC_ENABLED", "1")
 
     db = Session()
@@ -456,28 +450,6 @@ def test_pg_apply_qbo_deletes_never_audits_a_delete_that_did_not_happen(pg_test_
     )
 
 
-def _align_customers_to_orm(engine) -> None:
-    """Add the columns the stale fixture dump's ``customers`` lacks, so the
-    ``db.get(Customer, ...)`` in ``_apply_qbo_deletes`` can succeed and the
-    failure under test is the one this test injects, not a fixture gap."""
-    from gdx_dispatch.models.tenant_models import Customer
-
-    with engine.begin() as c:
-        have = set(c.execute(text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'customers'"
-        )).scalars())
-        for col in Customer.__table__.columns:
-            if col.name not in have:
-                # A named PG enum would need its CREATE TYPE first; no row here
-                # populates these columns, so a nullable varchar stands in.
-                ddl_type = (
-                    "varchar" if isinstance(col.type, Enum)
-                    else col.type.compile(dialect=engine.dialect)
-                )
-                c.execute(text(f'ALTER TABLE customers ADD COLUMN "{col.name}" {ddl_type}'))
-
-
 def test_pg_apply_qbo_deletes_a_failed_audit_write_costs_one_row_not_the_pull(
     pg_test_engine, monkeypatch,
 ):
@@ -507,7 +479,6 @@ def test_pg_apply_qbo_deletes_a_failed_audit_write_costs_one_row_not_the_pull(
 
     Session = _sessions(pg_test_engine)
     monkeypatch.setenv("QB_DELETE_SYNC_ENABLED", "1")
-    _align_customers_to_orm(pg_test_engine)
     # "QB-1" fits in four characters; "QB-22" overflows — so exactly one row's
     # audit write fails, whichever order the loop visits them in.
     with pg_test_engine.begin() as c:

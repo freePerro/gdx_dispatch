@@ -194,22 +194,10 @@ def test_a_failed_first_audit_write_on_a_fresh_engine_takes_the_stamp_with_it(tm
 
 
 @pytest.fixture
-def pg_chat(pg_template_db):
-    """A throwaway Postgres database holding just the two tables this handler
-    writes. `structure.sql` predates `job_chat_messages`, so the template clone
-    cannot be used; depending on `pg_template_db` still gives this test the
-    shared reachability gate (skip on a laptop with no test PG)."""
-    from gdx_dispatch.tests.fixtures.pg import PG_HOST, PG_PASSWORD, PG_PORT, PG_USER, _create_db, _drop_db
-
-    name = f"chat_read_{uuid4().hex[:12]}"
-    _create_db(name)
-    engine = create_engine(f"postgresql+psycopg2://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{name}", future=True)
-    TenantBase.metadata.create_all(engine, tables=[JobChatMessage.__table__, AuditLog.__table__])
-    try:
-        yield sessionmaker(bind=engine, future=True)
-    finally:
-        engine.dispose()
-        _drop_db(name)
+def pg_chat(pg_test_engine):
+    """A clone of the PG-truth template, which carries `job_chat_messages`
+    since structure.sql was regenerated from the ORM (GDXA-1558)."""
+    return sessionmaker(bind=pg_test_engine, future=True)
 
 
 def test_two_dispatchers_racing_on_one_message_leave_one_row_and_an_intact_chain(pg_chat):

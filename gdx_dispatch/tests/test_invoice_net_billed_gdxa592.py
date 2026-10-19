@@ -173,21 +173,26 @@ def test_raw_sql_alias_must_be_an_identifier(alias):
 
 
 def _pg_invoice(session, *, total, status, paid=False):
-    inv_id = str(uuid.uuid4())
+    inv_id, cust_id = str(uuid.uuid4()), str(uuid.uuid4())
+    # invoices.customer_id is NOT NULL with an FK to customers.
+    session.execute(
+        text("INSERT INTO customers (id, name, company_id) VALUES (:id, 'GDXA-592', :company)"),
+        {"id": cust_id, "company": COMPANY},
+    )
     session.execute(
         text(
             """
-            INSERT INTO invoices (id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date, paid_at)
-            VALUES (:id, :num, CAST(:status AS invoice_status),
+            VALUES (:id, :cust, :num, CAST(:status AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, :total, 0, :total, 0, false, :tok, :company,
                     now(), CURRENT_DATE, CASE WHEN :paid THEN now() END)
             """
         ),
-        {"id": inv_id, "num": f"INV-{uuid.uuid4().hex[:6]}", "status": status,
+        {"id": inv_id, "cust": cust_id, "num": f"INV-{uuid.uuid4().hex[:6]}", "status": status,
          "total": total, "tok": uuid.uuid4().hex, "company": COMPANY, "paid": paid},
     )
     return inv_id
@@ -228,11 +233,6 @@ def test_pg_helper_nets_inside_an_aggregate(pg_test_session):
 def test_pg_paid_this_month_counts_the_credited_invoice_at_80(pg_test_session):
     """Billing dashboard KPI: 100 invoiced, 20 credited, 80 paid → 80, not 100.
     Fails on the old SUM(Invoice.total)."""
-    # tests/fixtures/structure.sql predates migration 055; billing_summary's
-    # ready-for-billing count reads the column it added.
-    pg_test_session.execute(
-        text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS not_billable_at TIMESTAMPTZ")
-    )
     inv = _pg_invoice(pg_test_session, total=100, status="paid", paid=True)
     _pg_adjustment(pg_test_session, inv, "credit_memo", 20)
     pg_test_session.commit()

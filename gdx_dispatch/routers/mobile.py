@@ -2168,10 +2168,14 @@ def get_mobile_job_detail(
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     # 2026-07-16: + url/kind/caption so the mobile job-detail view can render
     # the photo strip, not just count attachments.
+    # content_type/file_size keep their response names but read mime_type and
+    # size_bytes: the same-named columns were never written and are dropped by
+    # migration 130 (GDXA-1587).
     photos = db.execute(
         _text(
             """
-            SELECT id, filename, url, kind, caption, content_type, file_size, created_at
+            SELECT id, filename, url, kind, caption, mime_type AS content_type,
+                   size_bytes AS file_size, created_at
             FROM job_photos
             WHERE job_id = :job_id
               AND deleted_at IS NULL

@@ -12,8 +12,9 @@ the Postgres enum rejects; Fleet sent `plate_number/mileage` for
 
 Absence is asserted against the mounted route table, never source text. The
 models are deliberately KEPT and still registered: the tables exist, nothing
-creates them but the ORM, and `core/gdpr.py` still reads equipment service
-history. Vehicle inspections are a separate surface and stay served.
+creates them but the ORM, and nothing reads them: `core/gdpr.py`, the last
+reader of equipment service history, was imported only by a test and was
+deleted (GDXA-1586). Vehicle inspections are a separate surface and stay served.
 """
 
 from __future__ import annotations
