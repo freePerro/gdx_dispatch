@@ -6,7 +6,6 @@ The smallest complete demonstration of the event platform (Sprint 2): declare
 results in a declarative list screen. Consent-gated on the `events` permission.
 """
 from gdx_dispatch.plugin_api import PluginManifest
-
 from gdx_plugin_eventlog import models  # noqa: F401 — registers the table on PluginBase
 from gdx_plugin_eventlog.handler import handle_event
 from gdx_plugin_eventlog.router import router
