@@ -342,3 +342,171 @@ describe('InboxView — Outlook flag (2026-08-27)', () => {
     expect(wrapper.findAll('[data-test="inbox-row"]')[0].text()).toContain('Second subject');
   });
 });
+
+
+// GDXA-1753 — phone width. jsdom applies no media queries, so these prove the
+// state the @media block keys off (which pane is "current"), not the layout;
+// the layout itself is proven in a real browser at 390px.
+describe('InboxView phone-width pane state', () => {
+  it('starts on the list: neither pane-open nor folders-open', async () => {
+    globalThis.fetch = defaultFetch();
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    const layout = wrapper.find('.inbox-layout');
+    expect(layout.classes()).not.toContain('pane-open');
+    expect(layout.classes()).not.toContain('folders-open');
+  });
+
+  it('opening a message marks the pane open; its close returns to the list', async () => {
+    globalThis.fetch = defaultFetch();
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    await wrapper.findAll('[data-test="inbox-row"]')[0].trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.inbox-layout').classes()).toContain('pane-open');
+    await wrapper.find('[data-test="inbox-detail"] .pane-header .btn-link').trigger('click');
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+  });
+
+  it('a failed message load drops back to the list, not to an empty pane', async () => {
+    const base = defaultFetch();
+    globalThis.fetch = vi.fn(async (url, init) => {
+      if (url.includes(`/api/outlook/messages/${FAKE_MESSAGES[0].id}`)) {
+        return mkResponse({ detail: 'boom' }, { ok: false, status: 500 });
+      }
+      return base(url, init);
+    });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    await wrapper.findAll('[data-test="inbox-row"]')[0].trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+  });
+
+  it('New opens the compose pane and closes the folder panel', async () => {
+    globalThis.fetch = defaultFetch();
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    await wrapper.find('[data-test="inbox-folders-toggle"]').trigger('click');
+    expect(wrapper.find('.inbox-layout').classes()).toContain('folders-open');
+    await wrapper.find('[data-test="inbox-new"]').trigger('click');
+    const layout = wrapper.find('.inbox-layout');
+    expect(layout.classes()).toContain('pane-open');
+    expect(layout.classes()).not.toContain('folders-open');
+  });
+
+  it('Move from a row menu targets that row without opening a pane', async () => {
+    const moves = [];
+    const base = defaultFetch();
+    globalThis.fetch = vi.fn(async (url, init) => {
+      if (url.includes('/move')) { moves.push(url); return mkResponse({ ok: true }); }
+      return base(url, init);
+    });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    const row = wrapper.vm.sortedMessages[1];
+    wrapper.vm.promptMoveMessageFor(row);
+    await flushPromises();
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+    expect(wrapper.find('[data-test="inbox-detail"]').exists()).toBe(false);
+    wrapper.vm.moveTargetFolderKey = 'g-inbox';
+    await wrapper.vm.moveMessage();
+    expect(moves).toHaveLength(1);
+    expect(moves[0]).toContain(`/api/outlook/messages/${row.id}/move`);
+  });
+
+  it('Move from the open message moves that message and closes its pane', async () => {
+    const moves = [];
+    const base = defaultFetch();
+    globalThis.fetch = vi.fn(async (url, init) => {
+      if (url.includes('/move')) { moves.push(url); return mkResponse({ ok: true }); }
+      return base(url, init);
+    });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    await wrapper.findAll('[data-test="inbox-row"]')[0].trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-test="inbox-move"]').trigger('click');
+    wrapper.vm.moveTargetFolderKey = 'g-inbox';
+    await wrapper.vm.moveMessage();
+    await flushPromises();
+    expect(moves).toHaveLength(1);
+    expect(moves[0]).toContain(`/api/outlook/messages/${FAKE_MESSAGES[0].id}/move`);
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+  });
+
+  // A slow message load that the reader walks away from must not pin the
+  // pane open: openMessage's finally only clears detailLoading while the
+  // selection still matches (re-audit, GDXA-1753).
+  function heldDetailFetch() {
+    const base = defaultFetch();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const fetch = vi.fn(async (url, init) => {
+      if (url.endsWith(`/api/outlook/messages/${FAKE_MESSAGES[0].id}`)) {
+        await gate;
+        return mkResponse(FAKE_DETAIL);
+      }
+      return base(url, init);
+    });
+    return { fetch, release: () => release() };
+  }
+
+  it('New during a slow load, then cancel, lands on the list', async () => {
+    const held = heldDetailFetch();
+    globalThis.fetch = held.fetch;
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    wrapper.findAll('[data-test="inbox-row"]')[0].trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.inbox-layout').classes()).toContain('pane-open');
+    await wrapper.find('[data-test="inbox-new"]').trigger('click');
+    held.release();
+    await flushPromises();
+    await wrapper.find('[data-test="inbox-compose"] .pane-header .btn-link').trigger('click');
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+  });
+
+  it('picking a folder during a slow load lands on the list', async () => {
+    const held = heldDetailFetch();
+    globalThis.fetch = held.fetch;
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    wrapper.findAll('[data-test="inbox-row"]')[0].trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-test="inbox-folders-toggle"]').trigger('click');
+    await wrapper.findAll('[data-test="folder-row"]')[0].trigger('click');
+    held.release();
+    await flushPromises();
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+  });
+
+  it('the loading pane has a way back to the list', async () => {
+    const held = heldDetailFetch();
+    globalThis.fetch = held.fetch;
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    wrapper.findAll('[data-test="inbox-row"]')[0].trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-test="inbox-loading-back"]').trigger('click');
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+    held.release();
+    await flushPromises();
+    expect(wrapper.find('[data-test="inbox-detail"]').exists()).toBe(false);
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('pane-open');
+  });
+
+  it('the Folders toggle opens the rail and picking a folder closes it', async () => {
+    globalThis.fetch = defaultFetch();
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    const toggle = wrapper.find('[data-test="inbox-folders-toggle"]');
+    expect(toggle.text()).toBe('Folders');
+    await toggle.trigger('click');
+    expect(wrapper.find('.inbox-layout').classes()).toContain('folders-open');
+    expect(wrapper.find('[data-test="inbox-folders-toggle"]').text()).toBe('Messages');
+    await wrapper.findAll('[data-test="folder-row"]')[0].trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.inbox-layout').classes()).not.toContain('folders-open');
+  });
+});

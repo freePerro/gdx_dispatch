@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import { useAuthStore } from '../stores/auth'
@@ -70,6 +70,43 @@ const bodyFrameType = computed(() =>
 )
 
 const composeMode = ref(null)   // null | 'new' | 'reply'
+// Phone width (GDXA-1753): the three panes stack into one column and show one
+// at a time. These two drive which; on desktop the CSS ignores both. The pane
+// counts as open while its message loads so the list does not flash back, and
+// a failed load drops back to the list, where the error renders.
+const foldersOpen = ref(false)
+// Loading counts only while a message is still selected: openMessage's
+// finally clears detailLoading only when the selection still matches, so
+// anything that drops the selection mid-load must not leave the pane stuck.
+const paneOpen = computed(() =>
+  !!composeMode.value || !!detail.value || (detailLoading.value && selectedMsgId.value !== null),
+)
+function closePane() {
+  detail.value = null
+  selectedMsgId.value = null
+  detailLoading.value = false
+}
+// At phone width the page scrolls, not the list, so swapping list and pane
+// would land the reader mid-message on the way in and back at the top of the
+// list on the way out. Keep their place: remember it before the pane renders
+// (flush 'pre' runs ahead of the DOM update), open the pane at its top, and
+// put the list back where it was.
+const rootEl = ref(null)
+let listScrollTop = 0
+function pageScroller() {
+  for (let el = rootEl.value?.parentElement; el; el = el.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(el).overflowY)) return el
+  }
+  return document.scrollingElement
+}
+watch(paneOpen, (open) => {
+  if (!window.matchMedia?.('(max-width: 768px)').matches) return
+  const scroller = pageScroller()
+  if (!scroller) return
+  if (open) listScrollTop = scroller.scrollTop
+  const target = open ? 0 : listScrollTop
+  nextTick(() => { scroller.scrollTop = target })
+}, { flush: 'pre' })
 const composeForm = ref({ to: '', cc: '', subject: '', body: '' })
 const composeStatus = ref(null)
 const composeSending = ref(false)
@@ -290,9 +327,11 @@ function loadMoreMessages() {
 }
 
 async function selectFolder(folder) {
+  foldersOpen.value = false
   selectedFolderId.value = folder?.graph_folder_id || null
   selectedFolderName.value = folder?.display_name || 'All Mail'
   selectedMsgId.value = null
+  detailLoading.value = false
   detail.value = null
   composeMode.value = null
   if (folder?.is_system && LIVE_FETCH_FOLDERS.has(folder.well_known_name)) {
@@ -388,7 +427,9 @@ async function togglePersonal() {
 // ── compose ──────────────────────────────────────────────────────────
 
 function startNewCompose() {
+  foldersOpen.value = false
   selectedMsgId.value = null
+  detailLoading.value = false
   detail.value = null
   composeMode.value = 'new'
   composeStatus.value = null
@@ -921,10 +962,10 @@ async function toggleMessageFlag(msg) {
 
 function promptMoveMessageFor(msg) {
   // Open the existing move dialog targeting this msg without requiring
-  // detail pane to be open.
-  detail.value = msg
-  selectedMsgId.value = msg.id
-  promptMoveMessage()
+  // detail pane to be open. It used to do that by setting `detail` to the
+  // list row, which opened a pane built from row data (empty body, or the
+  // last message's) — on a phone that pane replaces the list (GDXA-1753).
+  promptMoveMessage(msg)
 }
 
 async function deleteMessage(msg) {
@@ -1074,25 +1115,33 @@ async function markAllRead(folder) {
 
 // ── move message ─────────────────────────────────────────────────────
 
-function promptMoveMessage() {
+// The message the move dialog acts on: the open one, or a list row's.
+const moveMsg = ref(null)
+
+function promptMoveMessage(msg = detail.value) {
+  moveMsg.value = msg
   moveTargetFolderKey.value = null
   moveMessageDialogOpen.value = true
 }
 
 async function moveMessage() {
-  if (!detail.value || !moveTargetFolderKey.value) return
+  const msg = moveMsg.value
+  if (!msg || !moveTargetFolderKey.value) return
   // TreeSelect provides a {key: true} object; extract the first key.
   const destId = typeof moveTargetFolderKey.value === 'object'
     ? Object.keys(moveTargetFolderKey.value)[0]
     : moveTargetFolderKey.value
   if (!destId) return
   try {
-    await api.post(`/api/outlook/messages/${detail.value.id}/move`, {
+    await api.post(`/api/outlook/messages/${msg.id}/move`, {
       destination_folder_id: destId,
     })
     moveMessageDialogOpen.value = false
-    detail.value = null
-    selectedMsgId.value = null
+    moveMsg.value = null
+    if (detail.value?.id === msg.id) {
+      detail.value = null
+      selectedMsgId.value = null
+    }
     await fetchMessages()
     await fetchFolders()
   } catch (err) {
@@ -1161,10 +1210,22 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="inbox-view view-card">
+  <div ref="rootEl" class="inbox-view view-card">
     <div class="inbox-header">
       <h1>{{ selectedFolderName }}</h1>
       <div class="header-actions">
+        <!-- Phone width only (hidden by CSS above it): the folder rail has no
+             column of its own there, so this is the way to it. -->
+        <Button
+          :label="foldersOpen ? 'Messages' : 'Folders'"
+          :icon="foldersOpen ? 'pi pi-list' : 'pi pi-folder'"
+          outlined
+          size="small"
+          class="inbox-folders-toggle"
+          data-test="inbox-folders-toggle"
+          :aria-expanded="foldersOpen"
+          @click="foldersOpen = !foldersOpen"
+        />
         <Button label="New" icon="pi pi-pencil" data-test="inbox-new" size="small" @click="startNewCompose" />
         <Button label="New folder" icon="pi pi-folder-plus" outlined size="small" @click="promptNewFolder(null)" />
         <Button v-tooltip="'Refresh'" icon="pi pi-refresh" outlined size="small" aria-label="Refresh" @click="fetchFolders().then(() => fetchMessages())" />
@@ -1206,7 +1267,7 @@ onMounted(async () => {
       </span>
     </div>
 
-    <div class="inbox-layout">
+    <div class="inbox-layout" :class="{ 'pane-open': paneOpen, 'folders-open': foldersOpen }">
       <!-- ── folder rail ── -->
       <aside class="folder-rail" data-test="folder-rail">
         <div v-if="loadingFolders" class="muted center">Loading folders…</div>
@@ -1505,7 +1566,7 @@ onMounted(async () => {
             data-test="inbox-create-task"
             @click="createTaskFromEmail"
           />
-          <Button label="Move" icon="pi pi-folder-open" outlined data-test="inbox-move" @click="promptMoveMessage" />
+          <Button label="Move" icon="pi pi-folder-open" outlined data-test="inbox-move" @click="promptMoveMessage()" />
           <!-- Owner-only: the per-message privacy override. Server 403s
                non-owners; viewer_is_owner hides the control from them. -->
           <Button
@@ -1522,7 +1583,12 @@ onMounted(async () => {
 
       <div class="msg-pane empty" v-else>
         <div class="muted center">
-          <p v-if="detailLoading">Loading…</p>
+          <template v-if="detailLoading && selectedMsgId !== null">
+            <p>Loading…</p>
+            <!-- At phone width this pane replaces the list; a slow load must
+                 not leave the reader without a way back. -->
+            <Button label="Back to list" icon="pi pi-arrow-left" text size="small" data-test="inbox-loading-back" @click="closePane" />
+          </template>
           <p v-else>Select a message to read.</p>
         </div>
       </div>
@@ -1710,6 +1776,7 @@ onMounted(async () => {
   flex: 1;
   min-height: 0;
 }
+.inbox-folders-toggle { display: none; }
 
 /* ── folder rail ── */
 .folder-rail {
@@ -2162,5 +2229,51 @@ onMounted(async () => {
 .sync-health-banner .pi {
   color: var(--color-warning-500);
   margin-top: 0.15rem;
+}
+
+/* Phone width (GDXA-1753): 240px + 280px + the reading pane is ~800px, twice a
+   phone. A layout fix, not a redirect to /mobile/inbox — see the
+   MOBILE_COMPANION_PATHS note in useViewMode.js. One column, one pane at a
+   time: folders behind the header toggle, the list by default, the message or
+   compose pane once one is open; its ✕ is the way back to the list.
+   The desktop panes are height-bound and scroll inside themselves; a phone
+   has no height to spare after the header, search and sync banner (the list
+   got 146px and Reply was clipped out of the pane), so here the card grows
+   and the app's main area scrolls the page instead. */
+@media (max-width: 768px) {
+  .inbox-view { height: auto; }
+  .inbox-layout { flex: none; }
+  .folder-rail,
+  .msg-list,
+  .msg-pane { overflow: visible; }
+  .msg-pane .email-body-frame :deep(.ebf-iframe) { min-height: 60vh; }
+  .inbox-header { flex-wrap: wrap; gap: 0.5rem; }
+  .inbox-header h1 { font-size: 1.25rem; margin: 0; }
+  .header-actions { flex-wrap: wrap; }
+  .inbox-folders-toggle { display: inline-flex; }
+  .inbox-layout { grid-template-columns: minmax(0, 1fr); }
+  .folder-rail,
+  .msg-pane { display: none; }
+  .inbox-layout.pane-open .msg-pane { display: flex; }
+  .inbox-layout.pane-open .msg-list { display: none; }
+  .inbox-layout.folders-open .folder-rail { display: flex; }
+  .inbox-layout.folders-open .msg-list,
+  .inbox-layout.folders-open .msg-pane { display: none; }
+  .folder-row { min-height: 44px; }
+  .pane-header .btn-link { min-width: 44px; min-height: 44px; }
+  /* The row ⋯ is the only way to Move or Delete from the list here, and
+     there is no hover on a phone to raise its opacity. */
+  .msg-menu-trigger,
+  .folder-menu-trigger {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.85;
+  }
+  .row-top { align-items: center; }
+  .pane-header h2 { min-width: 0; overflow-wrap: anywhere; }
+  .compose-actions { flex-wrap: wrap; }
 }
 </style>
