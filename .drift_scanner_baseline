@@ -316,14 +316,10 @@ gdx_dispatch/routers/support.py|except-block-swallows-error-sile|d02f00e419c9e06
 gdx_dispatch/routers/surveys.py|except-block-swallows-error-sile|1a8d9d3c77054ee7
 gdx_dispatch/routers/technicians.py|except-block-swallows-error-sile|ee65f09549a4ebc9
 gdx_dispatch/routers/timeclock.py|except-block-swallows-error-sile|76f83f17ee55d80a
-gdx_dispatch/routers/timeclock.py|postgresql-cast-type-use-python-|5b74c7e78894f885
-gdx_dispatch/routers/timeclock.py|postgresql-cast-type-use-python-|8416bdeab85311d7
-gdx_dispatch/routers/timeclock.py|postgresql-cast-type-use-python-|8416bdeab85311d7
 gdx_dispatch/routers/tours.py|except-block-swallows-error-sile|c68273ff0c496cd0
 gdx_dispatch/routers/ui_compat.py|except-block-swallows-error-sile|b819dc0d88335cfb
 gdx_dispatch/routers/ui_compat.py|except-block-swallows-error-sile|ee65f09549a4ebc9
 gdx_dispatch/routers/users.py|except-block-swallows-error-sile|76f83f17ee55d80a
 gdx_dispatch/routers/users.py|except-block-swallows-error-sile|b819dc0d88335cfb
-gdx_dispatch/tasks/payroll_timesheet.py|postgresql-cast-type-use-python-|8416bdeab85311d7
 gdx_dispatch/tasks/tech_locations_prune.py|postgresql-cast-type-use-python-|f69af568dfccf421
 gdx_dispatch/tasks/tech_locations_prune.py|postgresql-only-now-use-python-d|b196863747def380
