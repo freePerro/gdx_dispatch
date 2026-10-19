@@ -12,10 +12,13 @@ from gdx_dispatch.modules.distributor.models import DealerOrder, DistributorAnal
 def create_dealer_order(
     dealer_tenant_id: str,
     distributor_tenant_id: str,
-    line_items: list[dict],
+    line_items: list[dict] | dict,
     idempotency_key: str | None,
     db: Session,
 ) -> DealerOrder:
+    """``line_items`` is a bare list of items, or the ``{"items": [...], "_meta": {...}}``
+    envelope order_portal stores when the order carries a PO number or ship-to.
+    Either shape is stored as given; the total is taken from the items alone."""
     # Check idempotency
     if idempotency_key:
         existing = db.execute(
@@ -24,7 +27,8 @@ def create_dealer_order(
         if existing:
             return existing
 
-    total = sum(item.get("qty", 1) * item.get("unit_price", 0) for item in line_items)
+    items = (line_items.get("items") or []) if isinstance(line_items, dict) else line_items
+    total = sum(item.get("qty", 1) * item.get("unit_price", 0) for item in items)
     order = DealerOrder(
         dealer_tenant_id=dealer_tenant_id,
         distributor_tenant_id=distributor_tenant_id,
