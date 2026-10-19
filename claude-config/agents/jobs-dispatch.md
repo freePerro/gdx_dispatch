@@ -18,7 +18,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispa
   `job_assignments`, `job_costing`, `job_diagnosis`, `job_hazards_receipts`,
   `dispatch_scheduling`, `scheduling`, `appointments`,
   `planner`, `tasks`, `service_calls`, `service_triggers`,
-  `service_agreements`, `holding_areas`, `checklists`, `safety_checklist`,
+  `service_agreements`, `holding_areas`, `checklists`,
   `install_sheet`, `maintenance`, `notes`, `labor`, `labor_variance`,
   `tech_locations`, `gps`, `maps`, `warranties`, `warranty_claims`,
   `vehicle_inspections`
@@ -82,8 +82,7 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner jobs-dispa
   `dispatch`, `service_`, `maintenance`, `maps`, `drive_time`, `labor`,
   `notes`, `tasks`, `warrant`, `phase14_multi_tech`, `stale_job_timer`; plus
   `gdx_dispatch/tests/serial/test_planner.py`, `serial/test_planner_capture.py`,
-  `serial/test_gps.py`, `serial/test_safety_checklist.py` (serial: run them
-  as single files).
+  `serial/test_gps.py` (serial: run them as single files).
 - Baseline scans, after `git merge origin/main` and before the matrix:
   `gdx_dispatch/tools/run_tests_split.sh --scans` (~30 s). On red,
   `run_tests_split.sh --refreeze-baselines` re-freezes the line-keyed
