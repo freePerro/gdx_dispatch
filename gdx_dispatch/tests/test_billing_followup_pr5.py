@@ -22,7 +22,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
-from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.next_action import NextAction
 from gdx_dispatch.models.tenant_models import (
     ChangeOrderLine,
@@ -324,8 +324,8 @@ def test_followup_upserts_one_action_and_clears_itself(tenant_db_session):
     ready_job = _seed_leaks(db)
 
     assert _upsert_action(db, TENANT, _compute_counts(db)) == "created"
-    # Second run updates IN PLACE — never a second nag row.
-    assert _upsert_action(db, TENANT, _compute_counts(db)) == "updated"
+    # Second run with the same numbers writes nothing — never a second nag row.
+    assert _upsert_action(db, TENANT, _compute_counts(db)) == "unchanged"
     actions = db.execute(select(NextAction)).scalars().all()
     assert len(actions) == 1
     assert "change order" in (actions[0].description or "")
@@ -455,6 +455,45 @@ def test_upsert_respects_snooze_and_refreshes_value(tenant_db_session):
     _upsert_action(db, TENANT, counts)
     db.refresh(action)
     assert action.status == "pending"
+
+
+def _next_action_audits(db) -> list[AuditLog]:
+    return list(
+        db.execute(
+            select(AuditLog)
+            .where(AuditLog.entity_type == "next_action")
+            .order_by(AuditLog.created_at)
+        ).scalars()
+    )
+
+
+def test_followup_writes_audit_rows_under_its_system_actor(tenant_db_session):
+    """GDXA-1860: create, refresh and clear each land a committed AuditLog
+    row under system:billing_followup; a tick that changes nothing adds none."""
+    db = tenant_db_session
+    _seed_leaks(db)
+    counts = _compute_counts(db)
+
+    assert _upsert_action(db, TENANT, counts) == "created"
+    action = db.execute(select(NextAction)).scalars().one()
+    assert _upsert_action(db, TENANT, counts) == "unchanged"
+    counts["stale_draft_total"] = counts["stale_draft_total"] + 50.0
+    assert _upsert_action(db, TENANT, counts) == "updated"
+    zero = {k: 0 for k in counts}
+    assert _upsert_action(db, TENANT, zero) == "cleared"
+    assert _upsert_action(db, TENANT, zero) == "clean"
+
+    # Committed by the task, not merely flushed: a rollback keeps them.
+    db.rollback()
+    audits = _next_action_audits(db)
+    assert [a.action for a in audits] == [
+        "next_action.create", "next_action.update", "next_action.complete",
+    ]
+    for a in audits:
+        assert a.user_id == "system:billing_followup"
+        assert a.tenant_id == TENANT
+        assert a.entity_id == str(action.id)
+    assert audits[1].details["changed"]["estimated_value"]["to"] == action.estimated_value
 
 
 def test_zero_dollar_drafts_do_not_double_nag(tenant_db_session):

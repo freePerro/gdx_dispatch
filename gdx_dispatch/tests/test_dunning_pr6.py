@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
-from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.next_action import NextAction
 from gdx_dispatch.models.tenant_models import (
     Customer,
@@ -370,6 +370,57 @@ def test_weekly_nudge_monday_only_and_permanent_dismiss(tenant_db_session, monke
     db.commit()
     monkeypatch.setattr("gdx_dispatch.tasks.invoice_reminders_auto.datetime", _FakeDT)
     assert _weekly_nudge(db, TENANT, settings) is False
+
+
+def test_weekly_nudge_writes_audit_rows_under_its_system_actor(tenant_db_session, monkeypatch):
+    """GDXA-1860: the nudge's create and refresh each land a committed
+    AuditLog row under system:invoice_reminders_auto; a refresh leaves the
+    status alone even when the snooze has run out (wake=False), and one that
+    changes nothing adds no row."""
+    db = tenant_db_session
+    cust = _seed_customer(db)
+    _seed_overdue(db, cust, days=20, balance=750.0)
+    settings = _get_or_create_settings(db, TENANT)
+
+    _monday = date.today() - timedelta(days=date.today().weekday())
+    _mon_now = datetime(_monday.year, _monday.month, _monday.day, 13, 0, tzinfo=UTC)
+
+    class _Mon(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _mon_now
+
+    monkeypatch.setattr("gdx_dispatch.tasks.invoice_reminders_auto.datetime", _Mon)
+    assert _weekly_nudge(db, TENANT, settings) is True
+    action = db.execute(select(NextAction)).scalars().one()
+    # Expired snooze: wake=True would flip it to pending, wake=False must not.
+    action.status = "snoozed"
+    action.snoozed_until = _mon_now - timedelta(days=1)
+    db.commit()
+
+    # Same numbers: nothing written.
+    assert _weekly_nudge(db, TENANT, settings) is True
+    # More overdue money: refreshed in place, still snoozed.
+    _seed_overdue(db, cust, days=20, balance=250.0)
+    assert _weekly_nudge(db, TENANT, settings) is True
+    db.rollback()
+    db.refresh(action)
+    assert action.status == "snoozed"
+    assert action.estimated_value == 1000.0
+
+    audits = list(
+        db.execute(
+            select(AuditLog)
+            .where(AuditLog.entity_type == "next_action")
+            .order_by(AuditLog.created_at)
+        ).scalars()
+    )
+    assert [a.action for a in audits] == ["next_action.create", "next_action.update"]
+    for a in audits:
+        assert a.user_id == "system:invoice_reminders_auto"
+        assert a.tenant_id == TENANT
+        assert a.entity_id == str(action.id)
+    assert "status" not in audits[1].details["changed"]
 
 
 def test_beat_and_includes_wired():

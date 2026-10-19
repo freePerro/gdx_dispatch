@@ -216,7 +216,5 @@
   "gdx_dispatch/routers/webhooks.py:T6:WebhookSubscription.company_id:270",
   "gdx_dispatch/routers/winback.py:T6:FollowUp.company_id:187",
   "gdx_dispatch/routers/winback.py:T6:WinbackCampaign.company_id:174",
-  "gdx_dispatch/tasks/billing_followup.py:T5:NextAction.tenant_id:140",
-  "gdx_dispatch/tasks/invoice_reminders_auto.py:T5:NextAction.tenant_id:117",
-  "gdx_dispatch/tasks/invoice_reminders_auto.py:T5:NextAction.tenant_id:152"
+  "gdx_dispatch/tasks/invoice_reminders_auto.py:T5:NextAction.tenant_id:118"
 ]
