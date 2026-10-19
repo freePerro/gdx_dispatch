@@ -26,11 +26,6 @@ const SRC_DIR = join(__dirname, '..');
 
 // `<file relative to src/> <selector>` — keyed by selector, not line number.
 const PENDING = new Set([
-  'components/PhoneComIntegrationCard.vue .btn-primary', // comms-email-phone
-  'views/MobilePhoneView.vue .tab-chip.active', // comms-email-phone
-  'views/MobileSmsView.vue .unread-badge', // comms-email-phone
-  'views/MobileSmsView.vue .msg-out', // comms-email-phone
-  'views/PhoneComMessagesView.vue .thread-unread-badge', // comms-email-phone
   'views/OnboardingView.vue .active .dot', // platform-core
   'views/OnboardingView.vue .btn-primary', // platform-core
 ]);
