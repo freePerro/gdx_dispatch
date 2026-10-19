@@ -30,7 +30,8 @@ anything is dropped. Pave used to rebuild only kind 1 while dumping all of
 them, so the reload hit a table that no longer existed and —
 ``ON_ERROR_STOP=on`` — stopped there, leaving an empty database.
 
-Usage (inside the app container):
+Usage (in a one-off app container, with every other database client stopped —
+see USAGE below; the preflight refuses while any other client is connected):
     python -m gdx_dispatch.tools.pave_tenant_db --yes                 # pave DATABASE_URL
     python -m gdx_dispatch.tools.pave_tenant_db --yes <database_url>  # pave one DB by direct URL
 
@@ -49,13 +50,17 @@ a narrower role has to pass a superuser URL as the argument.
 Flags:
     --strict     (default) ON_ERROR_STOP=on; aborts on first reload error. Safe.
     --no-strict  legacy ON_ERROR_STOP=off; logs errors and continues. Risk: silent data loss.
+    --terminate-others  CONNECTION LIMIT 0 for the run and terminate other
+                 clients, instead of refusing while they are connected. Not a
+                 fence against a superuser client (see "Other writers" below).
 
 Steps per database:
     0.  Pre-pave row counts and table list
     0b. Preflight: refuse outright when TENANT_AI_*_PASSWORD is set (there is
         no role bootstrap to consume it), when the paving role is not a
         superuser (step 5 needs it, see below), when the database's alembic
-        stamp is not this tree's head, on an object kind or property pave has
+        stamp is not this tree's head, while any other client is connected to
+        the database, on an object kind or property pave has
         no DDL for, or on a comment it cannot re-issue. Then record the schema inventory, the owners, ACLs,
         schema default privileges and comments, and capture the DDL of every
         table create_all() will not rebuild plus every non-table object.
@@ -63,7 +68,9 @@ Steps per database:
     1.  Dump data to /tmp/<dbname>_data.sql (alembic_version excluded — step 4b
         restamps it, and reloading the old stamp on top is a duplicate key)
     2.  Full backup to /tmp/<dbname>_full.sql
-    3.  DROP SCHEMA public CASCADE; CREATE SCHEMA public
+    3.  DROP SCHEMA public CASCADE; CREATE SCHEMA public — in one transaction
+        that first refuses if a client has connected since 0b, and takes its
+        locks under lock_timeout (a refusal there drops nothing)
     4.  TenantBase.metadata.create_all() — the ORM's tables
     4b. alembic upgrade head — the Alembic-base tables and the stamp
     4c. Replay captured DDL for whatever is still missing (plugin tables, the
@@ -78,7 +85,9 @@ Steps per database:
         populated-looking, empty matview as restored
     7.  Verify the schema inventory, the row counts, whether each matview is
         populated, and the owners, privileges, default privileges and
-        comments against the pre-pave state; mismatches exit non-zero
+        comments against the pre-pave state, and any client connected at that
+        moment (it came in during the rebuild; one that has already left is
+        not seen); mismatches exit non-zero
 
 Steps 4c, 4d and 4e run AFTER the drop. The preflight removes what can be known in
 advance — an object of a kind pave has no DDL for — not the possibility of
@@ -90,13 +99,16 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, make_url, text
+from sqlalchemy.exc import OperationalError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -111,9 +123,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-USAGE = """Usage (inside the app container):
-  python -m gdx_dispatch.tools.pave_tenant_db [--strict|--no-strict] --yes                 # DATABASE_URL
-  python -m gdx_dispatch.tools.pave_tenant_db [--strict|--no-strict] --yes <database_url>
+USAGE = """Usage (in a one-off app container, every other database client stopped).
+Use the compose invocation of the deployment that owns the database; for the
+self-hosted stack that is update.sh's, from the repo root:
+  C="docker compose -p gdx --env-file ./.env -f gdx_dispatch/docker/docker-compose.yml \\
+     -f gdx_dispatch/docker/docker-compose.selfhost.yml"
+  $C stop app plugin-host celery-high celery-low celery-beat   # every DB client it defines
+  $C run --no-deps --entrypoint python app \\
+      -m gdx_dispatch.tools.pave_tenant_db --yes        # no --rm: /tmp holds the backup
+  $C start app plugin-host celery-high celery-low celery-beat
+A `stop` aimed at the wrong project stops nothing and still exits 0; the
+preflight then refuses, naming the clients still connected.
+
+  python -m gdx_dispatch.tools.pave_tenant_db [--strict|--no-strict] [--terminate-others] --yes
+  python -m gdx_dispatch.tools.pave_tenant_db [--strict|--no-strict] [--terminate-others] --yes <database_url>
 
   --yes        REQUIRED. This tool DROPS EVERY TABLE in the target database and
                rebuilds it from the ORM + `alembic upgrade head` (data reloaded
@@ -123,7 +146,15 @@ USAGE = """Usage (inside the app container):
                `ALTER TABLE ... DISABLE TRIGGER ALL` (pg_dump --disable-triggers).
                Any other role is refused before anything is dropped.
   --strict     (default) abort on any reload error; preserves full backup.
-  --no-strict  legacy behavior; logs errors but continues. Risk: silent data loss."""
+  --no-strict  legacy behavior; logs errors but continues. Risk: silent data loss.
+  --terminate-others
+               Any other client connected to the database refuses the pave,
+               with nothing dropped: it could write into the empty tables
+               before the reload. This flag sets CONNECTION LIMIT 0 for the
+               run and terminates them instead. Superusers ignore a
+               connection limit, and every compose service connects as one,
+               so a service still running reconnects and is refused again:
+               stop the services."""
 
 # Answered before the ORM import below, because that import pulls in the app's
 # routers and so needs JWT_SECRET et al: `--help` is the one invocation that
@@ -1413,11 +1444,174 @@ def log_restore(db_info: dict, full_backup_path: str, level=logging.ERROR,
         log.log(level, "  %s", shlex.join(step))
 
 
+# --------------------------------------------------------------------------
+# Other writers (GDXA-1811). From step 3 to the end of step 5 every table
+# exists and is empty, so anything else connected to the database — the app,
+# plugin-host, the celery workers, celery-beat's every-minute outbox drains —
+# can write a row the step 5 COPY then collides with, and ON_ERROR_STOP aborts
+# the reload after the DROP. Pave therefore refuses, with nothing dropped,
+# while any other client backend is connected, checks again inside the DROP's
+# own transaction, and reports at step 7 any client that connected meanwhile.
+#
+# --terminate-others fences with CONNECTION LIMIT 0 and terminates the rest.
+# A connection limit does not apply to superusers, and neither does REVOKE
+# CONNECT; ALLOW_CONNECTIONS false would apply, but it also refuses pave's own
+# pg_dump, alembic and psql connections. Every service in
+# docker/docker-compose.yml connects as POSTGRES_USER, a superuser, so against
+# them the fence is detection, not prevention: a terminated client that comes
+# back before the DROP is refused like any other. Stop them first.
+# --------------------------------------------------------------------------
+
+# The database clients the compose files define; demo has only the first two,
+# and the customer file adds a read-only `backup` sidecar.
+DB_CLIENT_SERVICES = ("app", "plugin-host", "celery-high", "celery-low", "celery-beat", "backup")
+DROP_LOCK_TIMEOUT = "10s"
+TERMINATE_WAIT_SECONDS = 10
+
+# Pave's own sessions carry this name. One pid is not enough to exclude: an
+# engine can hold two pooled connections at once (get_row_counts inspects
+# inside an open connection). The random part keeps another client from
+# passing as pave by name.
+SELF_APPLICATION_NAME = f"gdx_pave_{os.getpid()}_{secrets.token_hex(4)}"
+
+
+def _own_url(db_url: str):
+    return make_url(db_url).update_query_dict({"application_name": SELF_APPLICATION_NAME})
+
+
+_OTHER_BACKENDS_SQL = text("""
+    SELECT pid,
+           COALESCE(NULLIF(application_name, ''), '(no application_name)'),
+           usename,
+           COALESCE(host(client_addr), 'local socket')
+      FROM pg_stat_activity
+     WHERE datname = current_database()
+       AND pid <> pg_backend_pid()
+       AND application_name IS DISTINCT FROM :me
+       AND backend_type = 'client backend'
+     ORDER BY pid
+""").bindparams(me=SELF_APPLICATION_NAME)
+
+
+def other_backends(engine) -> list[tuple[int, str, str, str]]:
+    """(pid, application_name, role, client address) of every other client on this database.
+
+    Read as the paving role, which refuse_unless_superuser() has made a
+    superuser, so pg_stat_activity shows every session and not just its own.
+    """
+    with engine.connect() as conn:
+        return [tuple(row) for row in conn.execute(_OTHER_BACKENDS_SQL)]
+
+
+def _log_backends(backends: list[tuple[int, str, str, str]]) -> None:
+    for pid, app, role, addr in backends:
+        log.error("  pid %s  application_name=%s  role=%s  client=%s", pid, app, role, addr)
+
+
+def refuse_while_others_connected(engine) -> None:
+    others = other_backends(engine)
+    if not others:
+        log.info("  no other client is connected to the database")
+        return
+    log.error("%d other client(s) are connected to the database:", len(others))
+    _log_backends(others)
+    log.error("Any of them can write into the empty tables between the DROP and the reload, "
+              "and a row the reload's COPY collides with aborts it with the schema dropped.")
+    log.error("Refusing to pave: NOTHING has been dropped. The database is untouched.")
+    log.error("Stop every client first — in the compose project that owns this database, "
+              "the services among %s (run --help for the commands) — and re-run, or pass "
+              "--terminate-others to fence the database and terminate them; a client that "
+              "connects as a superuser is not fenced and will be refused again if it reconnects.",
+              ", ".join(DB_CLIENT_SERVICES))
+    sys.exit(1)
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _connlimit_sql(dbname: str, limit: int) -> str:
+    return f"ALTER DATABASE {_quote_ident(dbname)} CONNECTION LIMIT {int(limit)}"
+
+
+def fence_database(engine, db_info: dict) -> tuple[str, int]:
+    """CONNECTION LIMIT 0 on the target database. Returns (dbname, the limit it had)."""
+    with engine.connect() as conn:
+        dbname, limit = conn.execute(text(
+            "SELECT datname, datconnlimit FROM pg_database "
+            "WHERE datname = current_database()")).one()
+        conn.execute(text(_connlimit_sql(dbname, 0)))
+        conn.commit()
+    restore = ["psql", "-h", db_info["host"], "-p", db_info["port"], "-U", db_info["user"],
+               "-d", dbname, "-c", _connlimit_sql(dbname, limit)]
+    log.warning("Fenced %s: CONNECTION LIMIT 0 (was %s); superusers are not held off by it.",
+                dbname, limit)
+    log.warning("Pave lifts the fence when it exits. If it is killed first, lift it with:")
+    log.warning("  %s", shlex.join(restore))
+    return dbname, limit
+
+
+def lift_fence(db_url: str, dbname: str, limit: int) -> None:
+    engine = create_engine(_own_url(db_url))
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(_connlimit_sql(dbname, limit)))
+            conn.commit()
+        log.info("Fence lifted: %s CONNECTION LIMIT %s", dbname, limit)
+    finally:
+        engine.dispose()
+
+
+def terminate_other_backends(engine) -> None:
+    others = other_backends(engine)
+    if not others:
+        return
+    log.warning("Terminating %d other client(s):", len(others))
+    for pid, app, role, addr in others:
+        log.warning("  pid %s  application_name=%s  role=%s  client=%s", pid, app, role, addr)
+    with engine.connect() as conn:
+        for pid, *_ in others:
+            conn.execute(text("SELECT pg_terminate_backend(:pid)").bindparams(pid=pid))
+        conn.commit()
+    # pg_terminate_backend returns once the signal is sent, not once the
+    # backend has gone; wait for exactly those pids to leave.
+    targets = {pid for pid, *_ in others}
+    for _ in range(TERMINATE_WAIT_SECONDS * 10):
+        if not targets & {pid for pid, *_ in other_backends(engine)}:
+            return
+        time.sleep(0.1)
+
+
 def drop_and_recreate_schema(engine) -> None:
-    """DROP SCHEMA public CASCADE; CREATE SCHEMA public;"""
+    """DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+
+    One transaction. It first re-checks for other clients, since the dumps
+    give one time to connect, and then takes the DROP's locks under
+    lock_timeout: a session holding a lock on any table would otherwise park
+    the DROP indefinitely. Either refusal rolls back with nothing dropped.
+    """
     log.info("Dropping schema...")
     with engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text(f"SET LOCAL lock_timeout = '{DROP_LOCK_TIMEOUT}'"))
+        others = [tuple(row) for row in conn.execute(_OTHER_BACKENDS_SQL)]
+        if others:
+            conn.rollback()
+            log.error("%d client(s) connected while the dumps were taken:", len(others))
+            _log_backends(others)
+            log.error("Refusing to pave: NOTHING has been dropped. The database is untouched.")
+            log.error("Stop every client (the services among %s; run --help) and re-run.",
+                      ", ".join(DB_CLIENT_SERVICES))
+            sys.exit(1)
+        try:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+        except OperationalError as e:
+            if getattr(e.orig, "pgcode", None) != "55P03":  # lock_not_available
+                raise
+            conn.rollback()
+            log.error("DROP SCHEMA could not take its locks within %s: another session holds "
+                      "a lock on a table in public.", DROP_LOCK_TIMEOUT)
+            log.error("Refusing to pave: NOTHING has been dropped. The database is untouched.")
+            sys.exit(1)
         conn.execute(text("CREATE SCHEMA public"))
         conn.commit()
     log.info("Schema dropped and recreated.")
@@ -1609,9 +1803,42 @@ def _bypass_proxy_host(db_url: str) -> str:
     return rewritten
 
 
-def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
-    """Pave a single database. Returns True on success."""
+def pave_one(db_url: str, label: str, strict: bool = True, terminate_others: bool = False) -> bool:
+    """Pave a single database. Returns True on success.
+
+    terminate_others: fence the database (CONNECTION LIMIT 0) and terminate
+    every other client before the preflight checks for them; the fence is
+    lifted on every exit that runs Python's `finally`, success or not.
+    """
     db_url = _bypass_proxy_host(db_url)
+    if not terminate_others:
+        return _pave_one(db_url, label, strict, terminate_others=False)
+    engine = create_engine(_own_url(db_url))
+    try:
+        # ALTER DATABASE and pg_terminate_backend on another role's session
+        # both need it, and it is what exempts pave from its own fence.
+        refuse_unless_superuser(engine)
+        dbname, limit = fence_database(engine, parse_db_url(db_url))
+    finally:
+        engine.dispose()
+    ok = False
+    lifted = False
+    try:
+        ok = _pave_one(db_url, label, strict, terminate_others=True)
+    finally:
+        # A fence left up refuses every non-superuser connection afterwards:
+        # not a successful pave, whatever step 7 found. Caught here so a
+        # failure to lift cannot replace an exception already propagating.
+        try:
+            lift_fence(db_url, dbname, limit)
+            lifted = True
+        except Exception as e:
+            log.error("Could not lift the fence on %s (%s). Run: %s;", dbname, e,
+                      _connlimit_sql(dbname, limit))
+    return ok and lifted
+
+
+def _pave_one(db_url: str, label: str, strict: bool, terminate_others: bool) -> bool:
     db_info = parse_db_url(db_url)
     dbname = db_info["dbname"]
 
@@ -1619,7 +1846,7 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
     log.info("PAVE TARGET: %s (%s)", label, dbname)
     log.info("=" * 60)
 
-    engine = create_engine(db_url)
+    engine = create_engine(_own_url(db_url))
 
     # Step 0: Pre-pave row counts
     log.info("--- Step 0: Pre-pave row counts ---")
@@ -1648,6 +1875,9 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
     refuse_ai_role_bootstrap_env()
     refuse_unless_superuser(engine)
     refuse_unless_at_head(engine)
+    if terminate_others:
+        terminate_other_backends(engine)
+    refuse_while_others_connected(engine)
     uncounted = sorted(t for t, c in pre_counts.items() if c == -1)
     if uncounted:
         # Step 7 cannot compare a table it could not count, so the pave would
@@ -1718,18 +1948,18 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
 
     # Step 4: create_all from ORM
     engine.dispose()
-    engine = create_engine(db_url)
+    engine = create_engine(_own_url(db_url))
     create_all_from_orm(engine)
 
     # Step 4b: alembic upgrade head — the other half of entrypoint.sh's pairing.
     engine.dispose()
     alembic_upgrade_head(db_url)
-    engine = create_engine(db_url)
+    engine = create_engine(_own_url(db_url))
 
     # Step 4c: replay the DDL of anything neither of those brought back.
     replay_table_schemas(db_info, engine, captured, full_backup_path=full_path)
     engine.dispose()
-    engine = create_engine(db_url)
+    engine = create_engine(_own_url(db_url))
 
     # Step 4d: refuse to reload into a schema that is missing anything the
     # pre-pave database had. For a table the reload would abort on its COPY
@@ -1773,7 +2003,7 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
 
     # Step 6: Fix sequences
     engine.dispose()
-    engine = create_engine(db_url)
+    engine = create_engine(_own_url(db_url))
     seq_failures = fix_sequences(engine)
 
     # Step 6b: matviews were created WITH NO DATA before the rows existed.
@@ -1805,13 +2035,23 @@ def pave_one(db_url: str, label: str, strict: bool = True) -> bool:
     for line in priv_mismatches:
         log.error("  MISMATCH %s", line)
 
+    # The DROP's transaction found no other client, so anyone here now
+    # connected during the rebuild and may have written into it: a row in a
+    # table that was empty before passes verify_counts unnoticed. A snapshot:
+    # a client that connected, wrote and left in between is not seen here.
+    intruders = other_backends(engine)
+    if intruders:
+        log.error("  %d client(s) connected during the pave and may have written to it:",
+                  len(intruders))
+        _log_backends(intruders)
+
     # get_row_counts records -1 for a table it could not count, and on Postgres
     # every later table on that connection goes -1 too; verify_counts skips
     # them, so an uncounted table is not a match.
     counts_match = (verify_counts(pre_counts, post_counts)
                     and -1 not in pre_counts.values() and -1 not in post_counts.values())
     ok = (counts_match
-          and not seq_failures and not lost_objects
+          and not seq_failures and not lost_objects and not intruders
           and not mv_failures and not mv_mismatch
           and not default_acl_failures and not priv_failures and not priv_mismatches)
     if ok:
@@ -1842,6 +2082,9 @@ def main():
         args.remove("--no-strict")
     if "--strict" in args:
         args.remove("--strict")  # default; flag is accepted for explicitness
+    terminate_others = "--terminate-others" in args
+    if terminate_others:
+        args.remove("--terminate-others")
 
     confirmed = "--yes" in args
     if confirmed:
@@ -1860,10 +2103,10 @@ def main():
     # so `pave && restart` treated "⚠ PAVE COMPLETE WITH MISMATCHES" — rows
     # lost, a sequence unset, a matview empty — as success.
     if args:
-        ok = pave_one(args[0], "direct", strict=strict)
+        ok = pave_one(args[0], "direct", strict=strict, terminate_others=terminate_others)
     else:
         label, url = default_target()
-        ok = pave_one(url, label, strict=strict)
+        ok = pave_one(url, label, strict=strict, terminate_others=terminate_others)
         log.info("  %-20s %s", label, "✅" if ok else "⚠ MISMATCHES")
     if not ok:
         sys.exit(1)

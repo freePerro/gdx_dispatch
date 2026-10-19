@@ -2435,7 +2435,7 @@ onBeforeUnmount(() => {
 }
 .chip-on {
   background: var(--p-primary-color);
-  border-color: var(--p-primary-color); color: #fff; font-weight: 600;
+  border-color: var(--p-primary-color); color: var(--text-on-p-primary); font-weight: 600;
 }
 .suggest-list {
   list-style: none; margin: 0; padding: 0;
