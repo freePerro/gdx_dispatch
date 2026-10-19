@@ -11,6 +11,15 @@ a SignalR WebSocket as DOM diffs, there is no REST endpoint, and login is Azure
 AD B2C — which needs a *human*. On a headless VPS there is no screen for that
 human to log in on.
 
+> **Correction (2026-09-16):** "no API" and "no REST endpoint" were wrong about
+> CHI. CHI runs a REST order-entry API at `orderentry-api.chiohd.com` (OpenAPI
+> "Order Entry API" v1.0.0, which includes `api/price/door/buildAndPrice`). It is
+> not public: each call needs a bearer token from machine-to-machine credentials
+> plus an `Ocp-Apim-Subscription-Key`, and CHI has not issued either to us. So the
+> accurate claim is "no API we can use". What the operator sees in HubX is still
+> priced server-side and pushed over SignalR. The decision below does not change:
+> without those credentials, the browser stream is still how we reach HubX.
+
 ADR-013 deliberately forbids plugins shipping browser JavaScript (manifest-driven
 UI only). That keeps untrusted plugins safe but also blocks any "let me log into
 this site from inside GDX" capability.

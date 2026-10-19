@@ -32,6 +32,10 @@ leads area.
 Prior art: a web search found no public HubX integration or API
 (chiohd.com, orderentry.chiohd.com, the HubX mobile app listings;
 searched 2026-09-29). The email is the only signal.
+(Note 2026-10-18: CHI does run a REST order-entry API, `orderentry-api.chiohd.com`,
+but it is not public and needs credentials plus an API-gateway key that CHI has
+not issued to us, which is why the search above did not find it. The email is
+still the only signal we can use. See ADR-014's correction.)
 
 ## Evidence from production (read-only, 2026-09-29)
 
