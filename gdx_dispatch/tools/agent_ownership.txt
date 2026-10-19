@@ -162,7 +162,6 @@ gdx_dispatch/core/denylist.py                                platform-core
 gdx_dispatch/core/deprecation_registry.py                    platform-core
 gdx_dispatch/core/error_handler.py                           platform-core
 gdx_dispatch/core/feature_defaults.py                        platform-core
-gdx_dispatch/core/gdpr.py                                    platform-core
 gdx_dispatch/core/integrations.py                            platform-core
 gdx_dispatch/core/internal_auth.py                           platform-core
 gdx_dispatch/core/jwks.py                                    platform-core

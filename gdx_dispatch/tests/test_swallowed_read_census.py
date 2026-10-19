@@ -559,8 +559,8 @@ def test_an_annotated_depends_session_is_not_a_finding():
 def test_a_module_level_annotated_depends_alias_is_not_a_finding():
     """The third spelling of the same framework-injected ownership.
 
-    `TenantDB = Annotated[Session, Depends(get_db)]` is live in `core/gdpr.py:22`
-    and `core/ai_quote.py:781`. Without resolving the alias the `Depends` hides
+    `TenantDB = Annotated[Session, Depends(get_db)]` is live in
+    `core/ai_quote.py:803`. Without resolving the alias the `Depends` hides
     behind a Name, and the next endpoint written that way is a false positive
     indistinguishable from a real defect. Nothing in the tree hits it today, so
     only a synthetic test can hold the line.

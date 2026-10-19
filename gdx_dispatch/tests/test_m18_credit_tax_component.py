@@ -187,11 +187,11 @@ def test_pg_report_nets_credited_tax(pg_test_session):
     pg_test_session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
-            VALUES (:id, :job_id, :num, CAST('sent' AS invoice_status),
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num, CAST('sent' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, 1000, 100, 1100, 1100, false, :tok, :company,
                     now(), CAST(:when AS DATE))
@@ -235,11 +235,11 @@ def test_pg_backfill_matches_the_helper(pg_test_session):
     pg_test_session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
-            VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num, CAST('paid' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, 9539.55, 570.79, 10110.34, 0, false, :tok, :company,
                     now(), CAST(:when AS DATE))
@@ -307,11 +307,11 @@ def test_pg_a_voided_invoices_credit_does_not_net(pg_test_session):
     pg_test_session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
-            VALUES (:id, :job_id, :num, CAST('void' AS invoice_status),
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num, CAST('void' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, 1000, 100, 1100, 0, false, :tok, :company,
                     now(), CAST(:when AS DATE))

@@ -1,11 +1,14 @@
 """Tests for the custom fields router (gdx_dispatch/routers/custom_fields.py)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
+from gdx_dispatch.core.custom_fields import validate_custom_fields
 from gdx_dispatch.routers import custom_fields as cf
 from gdx_dispatch.routers.custom_fields import (
     CustomFieldDefinition,
@@ -264,3 +267,13 @@ def test_soft_delete_definition(session_factory):
         assert not any(d["id"] == def_id for d in after)
     finally:
         db.close()
+
+
+def test_custom_fields_cx_prefix_validation():
+    """Moved from test_05_sprint4_compliance.py when core/gdpr.py and that
+    file were deleted (GDXA-1586)."""
+    d = SimpleNamespace(field_key="cx_color", required=False, field_type="text")
+    db = SimpleNamespace(execute=lambda *_a, **_k: SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [d])))
+    assert validate_custom_fields({"cx_color": "red"}, "job", db) == {"cx_color": "red"}
+    with pytest.raises(ValueError):
+        validate_custom_fields({"bad_key": "value"}, "job", db)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import pathlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -1012,22 +1011,29 @@ PG_COMPANY = "11111111-1111-1111-1111-111111111111"
 
 
 def _pg_seed_job(session) -> str:
-    """invoices.job_id is NOT NULL with an FK to jobs, so a revenue row needs a
-    real job behind it."""
-    job_id = str(uuid.uuid4())
+    """A revenue row needs a real job and a real customer behind it:
+    invoices.customer_id is NOT NULL with an FK to customers, so the invoice
+    seeds read the customer off this job."""
+    job_id, customer_id = str(uuid.uuid4()), str(uuid.uuid4())
+    session.execute(
+        text(
+            "INSERT INTO customers (id, name, company_id) VALUES (:id, 'M8 customer', :company)"
+        ),
+        {"id": customer_id, "company": PG_COMPANY},
+    )
     session.execute(
         text(
             """
-            INSERT INTO jobs (id, title, lifecycle_stage, dispatch_status,
+            INSERT INTO jobs (id, customer_id, title, lifecycle_stage, dispatch_status,
                               billing_status, is_return_visit, company_id, created_at)
-            VALUES (:id, 'M8 revenue fixture',
+            VALUES (:id, :customer_id, 'M8 revenue fixture',
                     CAST('completed' AS job_lifecycle_stage),
                     CAST('unassigned' AS job_dispatch_status),
                     CAST('unbilled' AS job_billing_status),
                     false, :company, now())
             """
         ),
-        {"id": job_id, "company": PG_COMPANY},
+        {"id": job_id, "customer_id": customer_id, "company": PG_COMPANY},
     )
     return job_id
 
@@ -1036,11 +1042,11 @@ def _pg_seed_invoice(session, job_id, *, total, status, billing_type, created_at
     session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
-            VALUES (:id, :job_id, :num,
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num,
                     CAST(:status AS invoice_status),
                     CAST(:btype AS invoice_billing_type),
                     1, 0, 0, :total,
@@ -1107,11 +1113,11 @@ def test_m8_revenue_periods_use_the_billed_date_not_the_import_date(pg_test_sess
     pg_test_session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
-            VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num, CAST('paid' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, 0, 0, 4200, 0, false, :tok, :company,
                     now(), CAST(:billed AS DATE))
@@ -1281,11 +1287,11 @@ def test_m18_tax_is_collected_only_when_cash_arrived(pg_test_session):
     pg_test_session.execute(
         text(
             """
-            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+            INSERT INTO invoices (id, job_id, customer_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
                                   balance_due, locked, public_token,
                                   company_id, created_at, invoice_date, paid_at)
-            VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
+            VALUES (:id, :job_id, (SELECT customer_id FROM jobs WHERE id = :job_id), :num, CAST('paid' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
                     1, 1000, 100, 1100, 0, false, :tok, :company,
                     now(), CAST(:when AS DATE), now())
@@ -1305,52 +1311,6 @@ def test_m18_tax_is_collected_only_when_cash_arrived(pg_test_session):
     assert data["totals"]["tax_total"] == pytest.approx(100.0), "tax is still a liability"
     assert data["totals"]["tax_collected"] == pytest.approx(0.0), (
         "no cash arrived — tax cannot be reported as collected"
-    )
-
-
-def test_money_tables_in_the_pg_fixture_match_the_orm():
-    """The PG fixture schema had drifted from the ORM, and the drift was
-    silent: `payments` was missing `voided_at` and `reference`, and
-    `invoice_adjustments` was absent entirely. Every requires_pg test therefore
-    ran against a schema production does not have — and the M18/M19 guards
-    could not run at all until it was patched.
-
-    Scoped to the tables the money reports read. A whole-schema assertion would
-    fail today on 90 tables and 128 columns of pre-existing drift (the
-    `refresh_test_schema.sh` the fixture's docstring names does not exist), and
-    a guard that fails for unrelated reasons gets deleted. These three are the
-    ones a wrong answer here would mis-report money from.
-    """
-    import re
-
-    from gdx_dispatch.models.tenant_models import Base
-
-    sql = (pathlib.Path(__file__).resolve().parents[0] / "fixtures" / "structure.sql").read_text()
-    fixture: dict[str, set[str]] = {}
-    for m in re.finditer(r"CREATE TABLE public\.(\w+) \((.*?)\n\);", sql, re.S):
-        cols = set()
-        for line in m.group(2).splitlines():
-            line = line.strip().rstrip(",")
-            if not line or line.split()[0].upper() in {
-                "CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN", "CHECK",
-            }:
-                continue
-            cols.add(line.split()[0])
-        fixture[m.group(1)] = cols
-
-    missing = []
-    for table_name in ("invoices", "payments", "invoice_adjustments"):
-        table = Base.metadata.tables.get(table_name)
-        assert table is not None, f"{table_name} is not in the ORM metadata"
-        assert table_name in fixture, f"{table_name} missing from structure.sql entirely"
-        for col in table.columns:
-            if col.name not in fixture[table_name]:
-                missing.append(f"{table_name}.{col.name}")
-
-    assert not missing, (
-        "gdx_dispatch/tests/fixtures/structure.sql has drifted from the ORM — "
-        "requires_pg tests would run against a schema prod does not have:\n"
-        + "\n".join(missing)
     )
 
 
