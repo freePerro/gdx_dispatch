@@ -154,6 +154,7 @@ gdx_dispatch/core/auth_revoke.py                             platform-core
 gdx_dispatch/core/cache.py                                   platform-core
 gdx_dispatch/core/celery_app.py                              platform-core
 gdx_dispatch/core/circuit_breaker.py                         platform-core
+gdx_dispatch/core/client_ip.py                               platform-core
 gdx_dispatch/core/custom_fields.py                           platform-core
 gdx_dispatch/core/data_access_logger.py                      platform-core
 gdx_dispatch/core/database.py                                platform-core
@@ -454,6 +455,7 @@ gdx_dispatch/frontend/src/components/CrewChangeDialog.vue     jobs-dispatch
 gdx_dispatch/frontend/src/composables/useCrewChange.js       jobs-dispatch
 gdx_dispatch/frontend/src/components/ScheduleDropDialog.vue   jobs-dispatch
 gdx_dispatch/frontend/src/composables/useScheduleDrop.js      jobs-dispatch
+gdx_dispatch/frontend/src/components/DayOverflowDialog.vue    jobs-dispatch
 gdx_dispatch/frontend/src/utils/dayClose.js                  jobs-dispatch
 # The e2e suite's dispatch/jobs checks, so a fix to them routes here
 # (GDXA-1509). The rest of tests/e2e/ is unclaimed: most files cross domains.

@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase
-from gdx_dispatch.models.tenant_models import PlannerTask
+from gdx_dispatch.models.tenant_models import AppSettings, PlannerTask
 from gdx_dispatch.routers import planner as planner_mod
 from gdx_dispatch.services import planner_today as svc
 
@@ -36,6 +36,7 @@ D = datetime(2026, 9, 28, tzinfo=timezone.utc)  # a business day, D@00:00 UTC
 def SessionLocal():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     TenantBase.metadata.create_all(engine, checkfirst=True)
+    AppSettings.__table__.create(engine, checkfirst=True)
     yield sessionmaker(bind=engine, autoflush=False, autocommit=False)
     engine.dispose()
 
@@ -94,7 +95,8 @@ def test_pin_puts_the_task_on_today_and_leaves_one_audit_row(client, SessionLoca
 
     today = client.get("/api/planner/today").json()
     assert [t["id"] for t in today["tasks"]] == [tid]
-    assert today["date"] == svc.calendar_today_utc().date().isoformat()
+    with SessionLocal() as db:
+        assert today["date"] == svc.calendar_today_utc(db).date().isoformat()
     listed = client.get("/api/planner/tasks").json()["items"]
     assert listed[0]["on_today"] is True
 
@@ -410,7 +412,9 @@ def test_assigning_a_pinned_task_to_yourself_keeps_the_pin(client, SessionLocal)
 
 
 def test_unassigning_a_task_someone_else_created_hands_it_back_and_drops_the_pin(client, SessionLocal):
-    tid = _task(SessionLocal, title="theirs, handed to me", created_by=OTHER, assigned_to=ME["user_id"], today_date=svc.calendar_today_utc())
+    with SessionLocal() as db:
+        pinned_on = svc.calendar_today_utc(db)
+    tid = _task(SessionLocal, title="theirs, handed to me", created_by=OTHER, assigned_to=ME["user_id"], today_date=pinned_on)
     assert client.patch(f"/api/planner/tasks/{tid}", json={"assigned_to": None}).status_code == 200
     with SessionLocal() as db:
         assert svc.today_view(db, OTHER)["tasks"] == []
@@ -428,3 +432,54 @@ def test_a_blank_assignee_is_unassigned(client, SessionLocal):
     assert client.patch(f"/api/planner/tasks/{tid}", json={"assigned_to": ""}).status_code == 200
     with SessionLocal() as db:
         assert [t["title"] for t in svc.today_view(db, ME["user_id"])["tasks"]] == ["blank"]
+
+
+# ── the shop's day comes from AppSettings (GDXA-1622) ────────────────────────
+# UTC+14 and UTC-11 are 25 hours apart, so at any instant they sit on
+# different calendar days: a planner that ignored the setting would match at
+# most one of them.
+_AHEAD, _BEHIND = "Pacific/Kiritimati", "Pacific/Pago_Pago"
+
+
+def _shop_tz(SessionLocal, name: str) -> None:
+    with SessionLocal() as db:
+        row = db.execute(select(AppSettings)).scalar_one_or_none()
+        if row is None:
+            db.add(AppSettings(company_name="Shop", timezone=name))
+        else:
+            row.timezone = name
+        db.commit()
+
+
+def test_today_follows_the_shop_timezone_in_app_settings(client, SessionLocal):
+    from zoneinfo import ZoneInfo
+
+    days = {}
+    for name in (_AHEAD, _BEHIND):
+        _shop_tz(SessionLocal, name)
+        expected = datetime.now(ZoneInfo(name)).date().isoformat()
+        days[name] = client.get("/api/planner/today").json()["date"]
+        assert days[name] == expected, name
+        with SessionLocal() as db:
+            assert svc.calendar_today_utc(db).date().isoformat() == expected
+    assert days[_AHEAD] != days[_BEHIND]
+
+
+def test_a_legacy_instant_due_date_renders_on_the_shop_local_day(client, SessionLocal):
+    # 2026-08-04T01:30Z is still Aug 3 in Pago Pago and already Aug 4 in Kiritimati.
+    _task(SessionLocal, title="legacy instant", due_date=datetime(2026, 8, 4, 1, 30, tzinfo=timezone.utc))
+    for name, day in ((_BEHIND, "2026-08-03"), (_AHEAD, "2026-08-04")):
+        _shop_tz(SessionLocal, name)
+        items = client.get("/api/planner/tasks").json()["items"]
+        assert [t["due_date"] for t in items] == [day], name
+
+
+def test_quick_capture_defaults_to_the_shop_local_today(client, SessionLocal):
+    from zoneinfo import ZoneInfo
+
+    _shop_tz(SessionLocal, _AHEAD)
+    made = client.post("/api/planner/tasks", json={"title": "capture", "source": "quick_capture"})
+    assert made.status_code == 201, made.text
+    with SessionLocal() as db:
+        row = db.get(PlannerTask, made.json()["id"])
+        assert row.due_date.date() == datetime.now(ZoneInfo(_AHEAD)).date()

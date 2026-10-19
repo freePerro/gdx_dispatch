@@ -66,17 +66,20 @@
           @click="newEstimate"
         />
 
-        <!-- Mobile-launch button is for desktop preview — pointless when
-             you're already on the mobile route. -->
+        <!-- Mobile-launch button is for desktop preview — pointless on a
+             phone viewport. On a /mobile route it is a toggle: pressed, and a
+             second click goes back to the desktop page the preview started
+             from. -->
         <Button
           v-if="!isOnMobileRoute"
           type="button"
           class="p-button-text mobile-launch-btn"
-          :class="{ 'is-mobile-viewport': isMobileViewport }"
-          :aria-label="isMobileViewport ? 'Open mobile field view' : 'Open mobile field view (preview)'"
-          v-tooltip="`Mobile field view${isMobileViewport ? '' : ' (preview)'}`"
+          :class="{ 'is-mobile-viewport': isMobileViewport, 'is-previewing': isPreviewingMobile }"
+          :aria-pressed="isPreviewingMobile ? 'true' : 'false'"
+          :aria-label="mobileLaunchLabel"
+          v-tooltip="mobileLaunchLabel"
           data-test="mobile-launch"
-          @click="goToMobile"
+          @click="toggleMobilePreview"
         >
           <i class="pi pi-mobile" aria-hidden="true" />
         </Button>
@@ -170,7 +173,7 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import Toolbar from 'primevue/toolbar';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
@@ -186,6 +189,10 @@ import { useNotificationsStore } from '../stores/notifications';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useViewMode } from '../composables/useViewMode';
 import { isTechnician, humanizeRole } from '../constants/roles';
+
+// Module scope, not component state: where the desktop preview started, so
+// the second click returns there. Survives a remount of the bar.
+let desktopReturnPath = null;
 
 const emit = defineEmits(['toggle-navigation', 'open-search', 'show-notifications']);
 
@@ -207,8 +214,27 @@ const aiDialogVisible = ref(false);
 const viewMode = useViewMode();
 const { isMobileViewport } = viewMode;
 
-function goToMobile() {
+const route = useRoute();
+const isOnMobilePath = (path) => path === '/mobile' || String(path || '').startsWith('/mobile/');
+// Desktop preview of the field view: the mobile button toggles. Techs are
+// excluded — the router sends a tech from every desktop surface back to
+// /mobile, so "back to desktop" would be a click that goes nowhere.
+const isPreviewingMobile = computed(
+  () => isOnMobilePath(route.path) && !isTechnician(auth.user?.role || auth.role),
+);
+const mobileLaunchLabel = computed(() => {
+  if (isPreviewingMobile.value) return 'Back to desktop view';
+  return isMobileViewport.value ? 'Open mobile field view' : 'Open mobile field view (preview)';
+});
+
+function toggleMobilePreview() {
   viewMode.resetPreference();
+  if (isPreviewingMobile.value) {
+    router.push(desktopReturnPath || '/dashboard');
+    desktopReturnPath = null;
+    return;
+  }
+  if (!isOnMobilePath(route.path)) desktopReturnPath = route.fullPath;
   router.push('/mobile');
 }
 
@@ -531,6 +557,14 @@ function toggleUserMenu(event) {
 }
 
 .mobile-launch-btn.is-mobile-viewport :deep(.pi) {
+  color: var(--interactive-primary);
+}
+/* Pressed state while previewing. Selector carries .app-topbar so it outranks
+   the forced text-button colors above. */
+.app-topbar :deep(.p-button.p-button-text.mobile-launch-btn.is-previewing) {
+  background: var(--interactive-primary-soft);
+}
+.app-topbar :deep(.p-button.p-button-text.mobile-launch-btn.is-previewing .pi) {
   color: var(--interactive-primary);
 }
 

@@ -144,11 +144,10 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _client_ip(request: Request) -> str:
-        """Best-effort source IP. Trusts the FIRST hop of X-Forwarded-For (set
-        by our own reverse proxy); falls back to the socket peer. Never throws."""
-        xff = request.headers.get("x-forwarded-for", "")
-        if xff:
-            return xff.split(",")[0].strip()
+        """Source IP. Not the first X-Forwarded-For hop: the client writes that,
+        and rotating it gave a fresh login bucket per request.
+        ClientAddressMiddleware has already resolved the real client from the
+        trusted proxy's hops (GDXA-1597). Never throws."""
         return request.client.host if request.client else "unknown"
 
     def _key_and_limit(self, request: Request) -> tuple[str, int]:

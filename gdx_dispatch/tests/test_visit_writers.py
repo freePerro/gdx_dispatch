@@ -292,6 +292,91 @@ def test_update_job_crew_add_books_the_new_tech(env):
 
 
 
+
+def _lengths(db, job_id) -> list[timedelta]:
+    db.expire_all()
+    return [_utc(v.end_at) - _utc(v.start_at) for v in _visits(db, job_id)]
+
+
+def test_a_date_save_books_the_visit_at_the_jobs_own_hours(env):
+    """The board draws a job at its saved hours, so the visit is that long.
+    Until 2026-10-18 the estimate's man-hours (else an hour) won, and an 8 h
+    job went out as one visit running through the night."""
+    from decimal import Decimal
+
+    job = _job(env, scheduled_at=None, assigned_to=None, scheduled_duration_hours=Decimal("8"))
+    r = env.client.patch(f"/api/jobs/{job.id}", json={
+        "scheduled_at": DAY1.isoformat(), "assigned_tech_ids": [T1], "lead_tech_id": T1,
+    })
+    assert r.status_code == 200, r.text
+    assert _lengths(env.db, job.id) == [timedelta(hours=8)]
+
+
+def test_a_date_save_books_the_visit_at_the_hours_it_writes(env):
+    job = _job(env, scheduled_at=None, assigned_to=None)
+    r = env.client.patch(f"/api/jobs/{job.id}", json={
+        "scheduled_at": DAY1.isoformat(), "assigned_tech_ids": [T1], "lead_tech_id": T1,
+        "scheduled_duration_hours": 14,
+    })
+    assert r.status_code == 200, r.text
+    assert _lengths(env.db, job.id) == [timedelta(hours=14)]
+
+
+def test_a_split_drop_books_day_one_at_the_length_it_names(env):
+    """The board's split: the job keeps all 14 h, day one is booked to shift
+    end, and the visit's audit row records where it ends."""
+    job = _job(env, scheduled_at=None, assigned_to=None)
+    before = _audit_ids(env.db)
+    r = env.client.patch(f"/api/jobs/{job.id}", json={
+        "scheduled_at": DAY1.isoformat(), "assigned_tech_ids": [T1], "lead_tech_id": T1,
+        "scheduled_duration_hours": 14, "visit_duration_minutes": 540,
+    })
+    assert r.status_code == 200, r.text
+    assert _lengths(env.db, job.id) == [timedelta(hours=9)]
+    assert float(env.db.get(Job, job.id).scheduled_duration_hours) == 14.0
+    added = [a for a in _new_audit(env.db, before, job.id) if a.action == "visit_added"]
+    assert [a.details["end_at"] for a in added] == [(DAY1 + timedelta(hours=9)).isoformat()]
+
+
+@pytest.mark.parametrize(("save", "hours"), [
+    ("crew_add", 14), ("assignment_post", 14),
+    # Job Detail's Schedule save sends date, crew and hours together.
+    ("job_detail", 14), ("job_detail", 16),
+    # A job with no hours of its own: Job Detail sends null.
+    ("crew_add", None), ("job_detail", None),
+])
+def test_a_tech_added_after_a_split_joins_day_one_at_its_length(env, save, hours):
+    """A job split over days still holds its whole total; a helper added
+    later is booked beside day one (9 h), not at the total through the
+    evening, nor at the estimate's man-hours or an hour."""
+    job = _job(env, scheduled_at=None, assigned_to=None)
+    first = {"scheduled_at": DAY1.isoformat(), "assigned_tech_ids": [T1], "lead_tech_id": T1,
+             "visit_duration_minutes": 540}
+    if hours is not None:
+        first["scheduled_duration_hours"] = 14
+    r = env.client.patch(f"/api/jobs/{job.id}", json=first)
+    assert r.status_code == 200, r.text
+    if save == "crew_add":
+        r = env.client.patch(f"/api/jobs/{job.id}", json={"assigned_tech_ids": [T1, T2]})
+    elif save == "job_detail":
+        r = env.client.patch(f"/api/jobs/{job.id}", json={
+            "scheduled_at": DAY1.isoformat(), "assigned_tech_ids": [T1, T2], "scheduled_duration_hours": hours,
+        })
+    else:
+        r = env.client.post(f"/api/jobs/{job.id}/assignments", json={"tech_id": T2})
+    assert r.status_code in (200, 201), r.text
+    assert _lengths(env.db, job.id) == [timedelta(hours=9), timedelta(hours=9)]
+
+
+@pytest.mark.parametrize("minutes", [10, 24 * 60 + 1])
+def test_a_visit_length_out_of_range_is_refused_and_writes_nothing(env, minutes):
+    job = _job(env, scheduled_at=None, assigned_to=None)
+    _refused(env, "PATCH", f"/api/jobs/{job.id}", {
+        "scheduled_at": DAY1.isoformat(), "assigned_tech_ids": [T1],
+        "visit_duration_minutes": minutes,
+    }, 422)
+
+
 @pytest.mark.parametrize("save", ["crew_add", "date_from_none", "assignment_post"])
 def test_a_visit_booked_by_a_date_or_crew_save_carries_the_jobs_customer(env, save):
     """Job Detail's schedule save sends only scheduled_at and assigned_tech_ids:

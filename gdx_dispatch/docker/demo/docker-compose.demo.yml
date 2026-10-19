@@ -47,6 +47,13 @@ x-demo-env: &demo-env
   GDX_DEFAULT_TENANT_ID: ${GDX_DEFAULT_TENANT_ID:-}
   GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-demo}
   GDX_TENANT_NAME: ${GDX_TENANT_NAME:-Demo Garage Doors}
+  # Finding the client address behind the proxy (core/client_ip.py,
+  # GDXA-1597). The demo always sits behind Cloudflare, so its edges are
+  # stepped through by default; without that every client is its edge address.
+  # Harmless if gdx-nginx ever restores the client with real_ip: the last hop
+  # is then the client, which is not a Cloudflare address.
+  GDX_TRUSTED_PROXIES: ${GDX_TRUSTED_PROXIES:-}
+  GDX_TRUSTED_UPSTREAM_PROXIES: ${GDX_TRUSTED_UPSTREAM_PROXIES:-cloudflare}
 
 services:
   db:

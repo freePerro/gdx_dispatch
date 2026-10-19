@@ -1,16 +1,14 @@
 import json
 import logging
-import os
 import time
 from dataclasses import replace
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 # Side-effect import: registers all built-in MCP tools so list_tools_for_principal
@@ -22,8 +20,8 @@ from gdx_dispatch.core.llm.anthropic_client import get_client
 from gdx_dispatch.core.llm.key_storage import get_key
 from gdx_dispatch.core.mcp_invoke import invoke_tool
 from gdx_dispatch.core.mcp_registry import list_tools_for_principal
+from gdx_dispatch.core.pay_periods import resolve_zone, shop_tz_name_from_settings
 from gdx_dispatch.core.unified_principal import Principal, principal_tenant_uuid
-from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -99,36 +97,29 @@ def get_current_principal_for_ai(
     )
 
 
-def _business_tz(db: Session) -> tzinfo:
+def _business_tz(db: Session) -> ZoneInfo:
     """The shop's zone for the assistant's "today".
 
-    ``AppSettings.timezone`` first (the tenant's own setting); otherwise the
-    same business-zone default ``services/planner_today.py`` uses
-    (``GDX_BUSINESS_TZ``, default America/Chicago); UTC only if tzdata is
-    missing. A wrong zone here is a wrong date in every answer, so neither
-    fallback is silent.
+    Read through the shared shop-zone reader
+    (``core.pay_periods.shop_tz_name_from_settings``), so the assistant agrees
+    with the invoices, timeclock and pay periods that use it, including on a
+    missing row: that default lives there, not here (GDXA-1621). An unusable
+    zone or a failed read becomes UTC through ``resolve_zone``. The prompt
+    names the zone it used, and a wrong zone here is a wrong date in every
+    answer, so neither fallback is silent.
     """
-    tz_name: str | None = None
     try:
         # SAVEPOINT-contained: the same session carries the tool calls and
         # the audit writes that follow; a failed read must not poison it.
         with contained_read(db):
-            row = db.execute(select(AppSettings.timezone)).first()
-        if row and isinstance(row[0], str) and row[0].strip():
-            tz_name = row[0].strip()
+            tz_name = shop_tz_name_from_settings(db)
     except Exception:  # noqa: BLE001
-        log.exception("ai_tenant_timezone_read_failed — falling back to GDX_BUSINESS_TZ")
-    if tz_name:
-        try:
-            return ZoneInfo(tz_name)
-        except Exception:  # noqa: BLE001
-            log.warning("ai_tenant_timezone_invalid tz=%r — falling back to GDX_BUSINESS_TZ", tz_name)
-    fallback = os.getenv("GDX_BUSINESS_TZ", "America/Chicago")
-    try:
-        return ZoneInfo(fallback)
-    except Exception:  # noqa: BLE001
-        log.warning("ai_business_timezone_invalid tz=%r — falling back to UTC", fallback)
-        return timezone.utc
+        log.exception("ai_tenant_timezone_read_failed — falling back to UTC")
+        return resolve_zone(None)
+    zone = resolve_zone(tz_name)
+    if str(zone) != str(tz_name):
+        log.warning("ai_tenant_timezone_invalid tz=%r — falling back to UTC", tz_name)
+    return zone
 
 
 def get_db_for_ai(db: Session = Depends(get_db)) -> Session:

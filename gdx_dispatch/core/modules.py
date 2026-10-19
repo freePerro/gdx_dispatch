@@ -315,7 +315,6 @@ def require_role(*roles: str) -> Callable:
                         user = result
             except Exception:
                 logging.getLogger(__name__).exception("_dependency caught exception")
-                pass
 
         if user:
             _stash_principal(request, user)

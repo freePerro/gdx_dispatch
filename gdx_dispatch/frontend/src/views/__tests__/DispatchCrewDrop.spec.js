@@ -764,7 +764,9 @@ describe("booking an undated job by dropping it on a tech", () => {
     .find((c) => c.attributes("data-testid") === "schedule-drop-techs");
   const hoursBox = (w) => w.findAllComponents(stubs.InputText)
     .find((c) => c.attributes("data-testid") === "schedule-drop-hours");
-  const placeAt1 = (w, techId) => timeline(w, techId).vm.$emit("place", { jobId: "job-8", techId, startISO: at(0, 13).toISOString() });
+  // 9 AM leaves every tech at least 7 h of shift, so these stop at the first
+  // dialog; a booking past shift end is pinned in DispatchDayOverflow.spec.js.
+  const placeAt9 = (w, techId) => timeline(w, techId).vm.$emit("place", { jobId: "job-8", techId, startISO: at(0, 9).toISOString() });
 
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -777,7 +779,7 @@ describe("booking an undated job by dropping it on a tech", () => {
   it("asks first, prefilled with the tech it landed on and the job's hours", async () => {
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     expect(dialog(w).exists()).toBe(true);
     expect(dialog(w).text()).toContain("Kim Ortiz");
@@ -795,7 +797,7 @@ describe("booking an undated job by dropping it on a tech", () => {
   it("writes the date, the whole crew with the dropped-on tech as lead, and the hours in one PATCH", async () => {
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     crewPicker(w).vm.$emit("update:modelValue", ["tech-1", "tech-2"]);
     hoursBox(w).vm.$emit("update:modelValue", "3.5");
@@ -807,7 +809,7 @@ describe("booking an undated job by dropping it on a tech", () => {
     expect(jobCalls).toHaveLength(1);
     const body = jobCalls[0][1];
     expect(body).toEqual({
-      scheduled_at: at(0, 13).toISOString(),
+      scheduled_at: at(0, 9).toISOString(),
       assigned_tech_ids: ["tech-2", "tech-1"],
       lead_tech_id: "tech-2",
       scheduled_duration_hours: 3.5,
@@ -817,7 +819,7 @@ describe("booking an undated job by dropping it on a tech", () => {
   it("leaves the job's hours alone when they were not changed", async () => {
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     await w.find('[data-testid="schedule-drop-confirm"]').trigger("click");
     await flushAll();
@@ -829,7 +831,7 @@ describe("booking an undated job by dropping it on a tech", () => {
   it("makes the first remaining tech lead when the dropped-on tech is taken off", async () => {
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     crewPicker(w).vm.$emit("update:modelValue", ["tech-3", "tech-1"]);
     await flushAll();
@@ -842,7 +844,7 @@ describe("booking an undated job by dropping it on a tech", () => {
   it("will not book with nobody on the crew", async () => {
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     crewPicker(w).vm.$emit("update:modelValue", []);
     await flushAll();
@@ -856,7 +858,7 @@ describe("booking an undated job by dropping it on a tech", () => {
   it("Cancel books nothing", async () => {
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     await w.find('[data-testid="schedule-drop-cancel"]').trigger("click");
     await flushAll();
@@ -905,7 +907,7 @@ describe("booking an undated job by dropping it on a tech", () => {
     boardRows = [{ ...UNDATED_SOLO, assigned_to: "tech-1", assigned_tech_ids: ["tech-1"], technician_id: "tech-1", lead_tech_id: "tech-1" }, SOLO];
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     expect(crewPicker(w).props("modelValue")).toEqual(["tech-2"]);
     expect(await confirmBody(w)).toMatchObject({ assigned_tech_ids: ["tech-2"], lead_tech_id: "tech-2" });
@@ -915,7 +917,7 @@ describe("booking an undated job by dropping it on a tech", () => {
     boardRows = [{ ...UNDATED_SOLO, assigned_to: "tech-1", assigned_tech_ids: ["tech-1", "tech-3"], technician_id: "tech-1", lead_tech_id: "tech-1" }, SOLO];
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-3");
+    placeAt9(w, "tech-3");
     await flushAll();
     expect(crewPicker(w).props("modelValue")).toEqual(["tech-1", "tech-3"]);
     expect(w.find('[data-testid="schedule-drop-lead"]').text()).toBe("Lead: Mike");
@@ -926,7 +928,7 @@ describe("booking an undated job by dropping it on a tech", () => {
     boardRows = [{ ...UNDATED_SOLO, assigned_to: "tech-1", assigned_tech_ids: ["tech-1", "tech-3"], technician_id: "tech-1", lead_tech_id: "tech-1" }, SOLO];
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     expect(crewPicker(w).props("modelValue")).toEqual(["tech-1", "tech-3", "tech-2"]);
     expect(await confirmBody(w)).toMatchObject({ assigned_tech_ids: ["tech-1", "tech-3", "tech-2"], lead_tech_id: "tech-1" });
@@ -936,7 +938,7 @@ describe("booking an undated job by dropping it on a tech", () => {
     boardRows = [{ ...UNDATED_SOLO, assigned_to: "tech-1", assigned_tech_ids: ["tech-1", "tech-3"], technician_id: "tech-1", lead_tech_id: "tech-1" }, SOLO];
     const w = await mountBoard();
     patchMock.mockClear();
-    placeAt1(w, "tech-2");
+    placeAt9(w, "tech-2");
     await flushAll();
     crewPicker(w).vm.$emit("update:modelValue", ["tech-3", "tech-2"]);
     await flushAll();
@@ -986,7 +988,7 @@ describe("booking an undated job by dropping it on a tech", () => {
     }
     async function dropNoHours(w, techId = "tech-2") {
       patchMock.mockClear();
-      placeAt1(w, techId);
+      placeAt9(w, techId);
       await flushAll();
     }
 
@@ -1005,7 +1007,7 @@ describe("booking an undated job by dropping it on a tech", () => {
       expect(patchMock).not.toHaveBeenCalled();
       const body = await confirmBody(w);
       expect(body).toEqual({
-        scheduled_at: at(0, 13).toISOString(),
+        scheduled_at: at(0, 9).toISOString(),
         assigned_tech_ids: ["tech-2"],
         lead_tech_id: "tech-2",
         scheduled_duration_hours: 6,

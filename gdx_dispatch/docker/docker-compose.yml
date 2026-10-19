@@ -64,6 +64,14 @@ x-app-env: &app-env
   # gdx.example.com defaults and Outlook subscription creation fails
   # loudly (2026-07-07 audit).
   GDX_PUBLIC_BASE_URL: ${GDX_PUBLIC_BASE_URL:-}
+  # Finding the client address behind the proxy (core/client_ip.py, GDXA-1597).
+  # GDX_TRUSTED_PROXIES: which socket peers may speak for the client; blank =
+  # loopback + private ranges. GDX_TRUSTED_UPSTREAM_PROXIES: proxies in front
+  # of nginx, stepped through in X-Forwarded-For; blank = none. Behind
+  # Cloudflare without nginx real_ip, set it to `cloudflare`, or every client
+  # is its Cloudflare edge address. Never "*" in either.
+  GDX_TRUSTED_PROXIES: ${GDX_TRUSTED_PROXIES:-}
+  GDX_TRUSTED_UPSTREAM_PROXIES: ${GDX_TRUSTED_UPSTREAM_PROXIES:-}
   # Inbound-webhook caller secrets. These are an ALLOWLIST, not an env_file:
   # a var absent from this block never reaches the container no matter what
   # .env says, and the gate that reads it then behaves as "not configured".

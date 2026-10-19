@@ -244,7 +244,7 @@ def _catalog_door(db: Session, lines: list[dict], job_id: str) -> dict | None:
         try:
             with contained_read(db):
                 spec = db.execute(_CATALOG_DOOR_SQL, {"q": f"%{desc[:50]}%"}).mappings().first()
-        except SQLAlchemyError:
+        except SQLAlchemyError:  # noqa: silent-failure — catalog match is best-effort enrichment; the sheet renders without it; logged once
             log.exception("install sheet catalog door lookup failed for job %s", job_id)
             return None
         if spec:

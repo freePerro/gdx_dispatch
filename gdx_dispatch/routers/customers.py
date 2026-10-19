@@ -22,6 +22,7 @@ from gdx_dispatch.core.audit import (
 )
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.cache import cached, invalidate_prefix, invalidate_prefix_sync
+from gdx_dispatch.core.client_ip import request_client_host
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_site import compose_full_address
 from gdx_dispatch.core.log_redact import redact_email
@@ -383,13 +384,9 @@ def _tenant_id(request: Request | None) -> str:
     return str(tenant.get("id") or "")
 
 
-def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for") if hasattr(request, "headers") else None
-    if xff:
-        return str(xff).split(",", 1)[0].strip()
-    return request.client.host if request.client else None
+# request.client, not X-Forwarded-For's first hop, which the client writes
+# (GDXA-1597).
+_client_ip = request_client_host
 
 
 def _assert_customer_exists(db: Session, customer_id: str) -> None:

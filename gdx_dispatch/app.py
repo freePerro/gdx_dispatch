@@ -20,6 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from gdx_dispatch.core import observability
+from gdx_dispatch.core.client_ip import ClientAddressMiddleware
 from gdx_dispatch.core.error_handler import global_exception_handler
 from gdx_dispatch.core.prometheus import prometheus_middleware
 from gdx_dispatch.core.prometheus import router as prometheus_router
@@ -531,6 +532,9 @@ def configure_json_logging(level: str | None = None, stream: Any | None = None) 
 # bypass in `core/rate_limiter.py` is a separate layer and is unchanged.
 DEFAULT_RATE_LIMIT = "120/minute"
 
+# get_remote_address reads request.client.host, which ClientAddressMiddleware
+# (outermost, see create_app) has already rewritten from the nginx peer to the
+# real client (GDXA-1597).
 limiter = Limiter(key_func=get_remote_address, default_limits=[DEFAULT_RATE_LIMIT])
 # What slowapi itself decided at construction: it reads RATELIMIT_ENABLED from the
 # environment (slowapi 0.1.10 extension.py:235). create_app() combines this with
@@ -970,6 +974,13 @@ def create_app() -> FastAPI:
     # TenantMiddleware stays LAST = outermost (sets request.state.tenant
     # before any SS-14..35 middleware inspects it).
     app.add_middleware(TenantMiddleware)
+
+    # Outermost of all: rewrite the ASGI client to the real client address
+    # before anything reads it. The socket peer is nginx, so without this
+    # slowapi's get_remote_address put every client in one bucket per worker;
+    # X-Forwarded-For is believed only from GDX_TRUSTED_PROXIES, and only its
+    # last hop unless GDX_TRUSTED_UPSTREAM_PROXIES says otherwise (GDXA-1597).
+    app.add_middleware(ClientAddressMiddleware)
 
     @app.get("/health")
     def health():
