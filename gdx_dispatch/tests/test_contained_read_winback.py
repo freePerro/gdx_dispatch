@@ -329,15 +329,15 @@ def test_pg_send_campaign_refuses_rather_than_burning_the_campaign(pg_test_engin
             text("SELECT status FROM winback_campaigns WHERE id = :i"), {"i": campaign_id}
         ).scalar() == "draft", "the campaign was burned — send 400s on a non-draft forever"
         assert other.execute(text("SELECT count(*) FROM winback_sends")).scalar() == 0
-    assert _audit_rows(pg_test_engine, "winback_campaign_sent") == 0, (
+    assert _audit_rows(pg_test_engine, "winback_campaign_queued") == 0, (
         "an audit row affirms a send that never happened"
     )
 
 
 def test_pg_send_campaign_still_enqueues_when_the_read_works(pg_test_engine):
     """The refusal must not have broken the working path. A real candidate, the
-    real route function: one ``winback_sends`` row, campaign ``sent``, one audit
-    row.
+    real route function: one ``winback_sends`` row, campaign ``sending``, one
+    ``winback_campaign_queued`` audit row.
 
     Named "enqueues" and not "sends" deliberately. An earlier draft of this test
     was called ``..._still_sends_...`` and its docstring said "the audit row is
@@ -348,7 +348,9 @@ def test_pg_send_campaign_still_enqueues_when_the_read_works(pg_test_engine):
     missing piece is a drainer, not a sender. So this asserts rows written, which
     is all the code does and all the test can see. ``enqueued: 1`` in the audit
     row means one row, not one customer reached — do not let a green run here be
-    read as delivery.
+    read as delivery. (GDXA-1723 added the drainer, ``tasks/winback_drain.py``;
+    delivery is tested in ``test_winback_drain.py``, and the campaign now
+    stays ``sending`` until that drainer settles it.)
     """
     Session = _sessions(pg_test_engine)
     cid = "66666666-6666-4666-8666-666666666666"
@@ -371,11 +373,11 @@ def test_pg_send_campaign_still_enqueues_when_the_read_works(pg_test_engine):
     with pg_test_engine.connect() as other:
         assert other.execute(
             text("SELECT status FROM winback_campaigns WHERE id = :i"), {"i": campaign_id}
-        ).scalar() == "sent"
+        ).scalar() == "sending"
         assert other.execute(
             text("SELECT count(*) FROM winback_sends WHERE customer_id = :c"), {"c": cid}
         ).scalar() == 1
-    assert _audit_rows(pg_test_engine, "winback_campaign_sent") == 1
+    assert _audit_rows(pg_test_engine, "winback_campaign_queued") == 1
 
 
 def test_pg_send_campaign_refuses_a_readable_but_empty_candidate_list(pg_test_engine):
@@ -402,7 +404,7 @@ def test_pg_send_campaign_refuses_a_readable_but_empty_candidate_list(pg_test_en
         assert other.execute(
             text("SELECT status FROM winback_campaigns WHERE id = :i"), {"i": campaign_id}
         ).scalar() == "draft"
-    assert _audit_rows(pg_test_engine, "winback_campaign_sent") == 0
+    assert _audit_rows(pg_test_engine, "winback_campaign_queued") == 0
 
 
 def test_pg_send_campaign_refuses_an_override_list_the_uuid_loop_drops(pg_test_engine):
@@ -436,7 +438,7 @@ def test_pg_send_campaign_refuses_an_override_list_the_uuid_loop_drops(pg_test_e
             text("SELECT status FROM winback_campaigns WHERE id = :i"), {"i": campaign_id}
         ).scalar() == "draft"
         assert other.execute(text("SELECT count(*) FROM winback_sends")).scalar() == 0
-    assert _audit_rows(pg_test_engine, "winback_campaign_sent") == 0
+    assert _audit_rows(pg_test_engine, "winback_campaign_queued") == 0
 
 
 def test_pg_an_override_list_does_not_need_the_candidate_query(pg_test_engine):
