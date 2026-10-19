@@ -1579,7 +1579,7 @@ def test_m25_explicit_zero_margin_override_sells_at_cost(client: TestClient):
     assert r.status_code == 200, r.text
     body = r.json()
     lines = body.get("lines") or body.get("line_items") or []
-    mine = next((l for l in lines if l.get("id") == line_id), body)
+    mine = next((line for line in lines if line.get("id") == line_id), body)
     got = float(mine.get("unit_price") or 0)
     assert got == 120.0, (
         f"0% override must sell at the new cost (120.00), got {got} — "

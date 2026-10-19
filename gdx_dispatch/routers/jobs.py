@@ -734,7 +734,7 @@ def list_jobs(
         order_sql = "ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC "
     offset = (page - 1) * page_size
 
-    # Dynamic WHERE — kept as raw SQL because of ILIKE, CAST on PG enum, and
+    # Dynamic WHERE — kept as raw SQL because of CAST on PG enum and
     # conditional clauses that are hard to express portably with the ORM.
     where = ["j.company_id = :tenant_id", "j.deleted_at IS NULL"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
@@ -744,7 +744,11 @@ def list_jobs(
         # the identifier you can search by. Without it, a user reads
         # "JOB-2026-014" off the screen, types it into a job search, and gets
         # nothing.
-        where.append("(j.title ILIKE :search OR c.name ILIKE :search OR j.job_number ILIKE :search)")
+        # LOWER() LIKE LOWER(), not ILIKE: SQLite has no ILIKE.
+        where.append(
+            "(LOWER(j.title) LIKE LOWER(:search) OR LOWER(c.name) LIKE LOWER(:search) "
+            "OR LOWER(j.job_number) LIKE LOWER(:search))"
+        )
         params["search"] = f"%{search}%"
     if status:
         # Match against both normalized and raw forms (supports 'Scheduled' / 'scheduled' / lifecycle_stage)
@@ -1391,6 +1395,7 @@ def update_job(
                 db, job, updates.get("scheduled_duration_hours", UNSET),
             ),
             scheduled_at=updates.get("scheduled_at", UNSET),
+            first_day_minutes=data.get("visit_duration_minutes"),
             crew_after=tuple(desired_tech_ids) if apply_assignments else None,
             fields=visit_fields(
                 db, updates.get("title", job.title), updates.get("customer_id", job.customer_id),

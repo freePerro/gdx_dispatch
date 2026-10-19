@@ -1,6 +1,10 @@
 """Tests for the outbound webhook subscription router."""
 from __future__ import annotations
 
+import threading
+import urllib.request
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -145,7 +149,7 @@ def test_event_catalogue_endpoint(client):
     assert "invoice.paid" in events
 
 
-@patch("gdx_dispatch.routers.webhooks.urllib.request.urlopen")
+@patch("gdx_dispatch.routers.webhooks.validating_opener.open")
 def test_test_send_records_success(mock_open, client):
     mock_resp = MagicMock()
     mock_resp.status = 200
@@ -168,7 +172,7 @@ def test_test_send_records_success(mock_open, client):
     assert deliveries[0]["response_status"] == 200
 
 
-@patch("gdx_dispatch.routers.webhooks.urllib.request.urlopen")
+@patch("gdx_dispatch.routers.webhooks.validating_opener.open")
 def test_test_send_records_http_error(mock_open, client):
     import urllib.error
 
@@ -185,3 +189,97 @@ def test_test_send_records_http_error(mock_open, client):
     assert r.status_code == 200
     body = r.json()
     assert body["status_code"] == 500
+
+
+# ---------------------------------------------------------------------------
+# GDXA-1703 — the test-ping re-validates redirect hops (real sockets, no mock)
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _local_server(status: int, body: bytes = b"", location: str | None = None):
+    """A real HTTP server on 127.0.0.1 answering every request the same way;
+    yields (port, hits) where hits records each request's method and path."""
+    hits: list[tuple[str, str]] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def _answer(self):
+            hits.append((self.command, self.path))
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            self.send_response(status)
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_POST = _answer  # noqa: N815
+
+        def log_message(self, *a):  # noqa: ANN002
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], hits
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_validating_opener_refuses_redirect_to_blocked_host(monkeypatch):
+    from gdx_dispatch.core.ssrf_guard import OutboundURLBlocked, validating_opener
+
+    monkeypatch.setenv("GDX_WEBHOOK_PRIVATE_ALLOW", "localhost")
+    with _local_server(200, b"internal secret") as (inner_port, inner_hits), \
+         _local_server(302, location=f"http://127.0.0.1:{inner_port}/secret") as (outer_port, _):
+        req = urllib.request.Request(f"http://localhost:{outer_port}/hook", data=b"{}", method="POST")
+        with pytest.raises(OutboundURLBlocked):
+            validating_opener.open(req, timeout=5)
+    assert inner_hits == []  # the blocked hop was never requested
+
+
+def test_test_send_redirect_to_blocked_host_is_recorded_as_error(client, monkeypatch):
+    monkeypatch.setenv("GDX_WEBHOOK_PRIVATE_ALLOW", "localhost")
+    with _local_server(200, b"internal secret") as (inner_port, inner_hits), \
+         _local_server(302, location=f"http://127.0.0.1:{inner_port}/secret") as (outer_port, outer_hits):
+        created = client.post(
+            "/api/webhooks/subscriptions", json=_payload(url=f"http://localhost:{outer_port}/hook"),
+        )
+        assert created.status_code == 201, created.text
+        sub_id = created.json()["id"]
+        r = client.post(f"/api/webhooks/subscriptions/{sub_id}/test")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status_code"] is None
+    assert "disallowed address 127.0.0.1" in body["error"]
+    assert outer_hits == [("POST", "/hook")]
+    assert inner_hits == []
+
+    deliveries = client.get(f"/api/webhooks/subscriptions/{sub_id}/deliveries").json()
+    assert len(deliveries) == 1
+    assert deliveries[0]["error"] == body["error"]
+    assert deliveries[0]["response_body"] == ""  # nothing from the internal host stored
+
+
+def test_test_send_without_redirect_records_response(client, monkeypatch):
+    """Control: the same real path with no redirect still delivers and logs."""
+    monkeypatch.setenv("GDX_WEBHOOK_PRIVATE_ALLOW", "localhost")
+    with _local_server(200, b'{"ok":true}') as (port, hits):
+        created = client.post(
+            "/api/webhooks/subscriptions", json=_payload(url=f"http://localhost:{port}/hook"),
+        )
+        assert created.status_code == 201, created.text
+        sub_id = created.json()["id"]
+        r = client.post(f"/api/webhooks/subscriptions/{sub_id}/test")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status_code"] == 200
+    assert body["error"] is None
+    assert hits == [("POST", "/hook")]
+
+    deliveries = client.get(f"/api/webhooks/subscriptions/{sub_id}/deliveries").json()
+    assert deliveries[0]["response_status"] == 200
+    assert deliveries[0]["response_body"] == '{"ok":true}'

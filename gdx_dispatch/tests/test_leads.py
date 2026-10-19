@@ -501,7 +501,7 @@ def test_soft_delete_lead(client: TestClient):
     assert gone.status_code == 404
 
     listed = client.get("/api/leads").json()
-    assert all(l["id"] != created["id"] for l in listed)
+    assert all(lead["id"] != created["id"] for lead in listed)
 
     dep = client.app.dependency_overrides[get_db]
     db = next(dep())

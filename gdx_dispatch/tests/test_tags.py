@@ -210,6 +210,20 @@ def test_soft_delete_tag(client: TestClient):
     assert r2.status_code == 404
 
 
+def test_recreate_deleted_name_revives_the_row(client: TestClient):
+    tag = client.post("/api/tags", json={"name": "Phoenix", "color": "#111111"}).json()
+    assert client.delete(f"/api/tags/{tag['id']}").status_code == 204
+
+    r = client.post("/api/tags", json={"name": "Phoenix", "color": "#222222"})
+    assert r.status_code == 201, r.text
+    assert r.json()["id"] == tag["id"]
+    assert r.json()["color"] == "#222222"
+    listed = [t for t in client.get("/api/tags").json() if t["name"] == "Phoenix"]
+    assert [t["id"] for t in listed] == [tag["id"]]
+
+    assert client.post("/api/tags", json={"name": "Phoenix"}).status_code == 409
+
+
 def test_patch_updates_tag(client: TestClient):
     tag = client.post("/api/tags", json={"name": "Initial", "color": "#111111"}).json()
     r = client.patch(

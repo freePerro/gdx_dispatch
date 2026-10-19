@@ -248,9 +248,71 @@ class TestDelete:
         r = client.delete(f"/api/admin/customer-tags/{tag.id}")
         assert r.status_code == 200
         assert r.json()["assignments_removed"] == 0
-        assert (
-            db.query(Tag).filter(Tag.id == tag.id).count() == 0
-        )  # hard delete per design
+        # Soft delete (invariant #2): the row stays, stamped, and is gone
+        # from every read the admin surface makes.
+        db.expire_all()
+        row = db.query(Tag).filter(Tag.id == tag.id).one()
+        assert row.deleted_at is not None
+        names = {t["name"] for t in client.get("/api/admin/customer-tags").json()["tags"]}
+        assert "noise_sensitive" not in names
+        assert client.put(
+            f"/api/admin/customer-tags/{tag.id}", json={"color": "#aabbcc"}
+        ).status_code == 404
+        assert client.delete(f"/api/admin/customer-tags/{tag.id}").status_code == 404
+
+    def test_recreate_deleted_name_revives_the_row(self, app_and_db):
+        client, db = app_and_db
+        seed_default_customer_alert_tags(db, TENANT)
+        tag = db.query(Tag).filter(Tag.name == "vip").one()
+        db.add(
+            TagAssignment(
+                id=uuid4(),
+                company_id=TENANT,
+                tag_id=tag.id,
+                entity_type="customer",
+                entity_id=str(uuid4()),
+            )
+        )
+        db.commit()
+        assert client.delete(f"/api/admin/customer-tags/{tag.id}").status_code == 200
+
+        r = client.post(
+            "/api/admin/customer-tags",
+            json={"name": "vip", "color": "#010203", "description": "Back again."},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["id"] == str(tag.id)
+        assert body["color"] == "#010203"
+        assert body["description"] == "Back again."
+
+        db.expire_all()
+        assert db.query(Tag).filter(Tag.name == "vip").count() == 1
+        assert db.query(Tag).filter(Tag.id == tag.id).one().deleted_at is None
+        # The revived tag comes back unattached; the delete took its assignments.
+        assert db.query(TagAssignment).filter(TagAssignment.tag_id == tag.id).count() == 0
+        listed = [t for t in client.get("/api/admin/customer-tags").json()["tags"] if t["name"] == "vip"]
+        assert listed == [body]
+        created = _audit(db, action="customer_tag.created")
+        assert len(created) == 1
+        assert created[0].entity_id == str(tag.id)
+        assert created[0].details["resurrected"] is True
+
+        # A live name still refuses a second create.
+        again = client.post("/api/admin/customer-tags", json={"name": "vip", "color": "#000000"})
+        assert again.status_code == 409
+
+    def test_rename_onto_deleted_name_409_and_says_so(self, app_and_db):
+        client, db = app_and_db
+        seed_default_customer_alert_tags(db, TENANT)
+        dead = db.query(Tag).filter(Tag.name == "dog_warning").one()
+        live = db.query(Tag).filter(Tag.name == "vip").one()
+        assert client.delete(f"/api/admin/customer-tags/{dead.id}").status_code == 200
+        r = client.put(f"/api/admin/customer-tags/{live.id}", json={"name": "dog_warning"})
+        assert r.status_code == 409
+        assert "deleted" in r.json()["detail"]
+        db.expire_all()
+        assert db.query(Tag).filter(Tag.id == live.id).one().name == "vip"
 
     def test_delete_cascades_assignments(self, app_and_db):
         client, db = app_and_db
