@@ -302,7 +302,7 @@ def user_labels(
     try:
         with contained_read(db):
             rows = db.execute(stmt).all()
-    except SQLAlchemyError:  # noqa: silent-failure — no labels: ids show bare, roster drops staff with no entries; logged
+    except SQLAlchemyError:  # noqa: SILENTFAIL1 — no labels: ids show bare, roster drops staff with no entries; logged
         log.exception(log_event, extra={"tenant_id": tenant_id})
         return {}
     out: dict[str, str] = {}
