@@ -409,6 +409,7 @@ so it is still the current day.
 | E4 | Date set or changed | no N | t has no Live visit on T | Insert an OPEN visit for t at the new start. Covers create, a date set from null, and a return after every day closed. |
 | E5 | Date set or changed | no N | t has a Live visit on T | Nothing for t (a time fix after the day closed books no second visit). |
 | E6 | Date cleared, not refused | any | any | Retire every OPEN visit, all days (today's "unschedule"). R4 refuses a clear while any visit is ON SITE, so no Current visit survives a clear. |
+| E7 | The board names day one's length (`visit_duration_minutes`), not refused | N exists after E1–E6 | — | Every OPEN visit on N is set to that length from its own start (`length_set`). Added 2026-10-18 for the dispatch board's overflow check on a dated job: E2 alone keeps a moved visit's old length, so an 8 h job split at 3:45 PM would still run into the night. |
 
 #### Crew change (`update_job` crew fields, `POST`/`DELETE /api/jobs/{id}/assignments`, the Re-open tech, `/start`)
 

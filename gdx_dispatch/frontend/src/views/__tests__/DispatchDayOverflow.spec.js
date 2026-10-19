@@ -17,6 +17,11 @@
  *     crew and the new hours, and books no other day.
  *  5. "Keep it all on" books the one day at full length.
  *  6. A refused later day leaves day one booked and says so.
+ *  7. A job that already has a date gets the same question on every path
+ *     that puts it in a tech's day (Doug, 2026-10-18): a move along its own
+ *     tech's timeline, a reassign, a crew member's column, the tray, the
+ *     week grid and the tech picker. Cancel writes nothing; a split sends
+ *     day one's length, which the server sets on the visit it moves.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -263,5 +268,167 @@ describe("DispatchView — a booking longer than the tech's day", () => {
     await bookAt(w, 8);
     await click(w, "day-overflow-split");
     expect(visitPosts()).toHaveLength(0);
+  });
+});
+
+const DATED = {
+  ...UNDATED, status: "Scheduled", lifecycle_stage: "scheduled",
+  assigned_to: "tech-1", technician_id: "tech-1", assigned_tech_ids: ["tech-1"], lead_tech_id: "tech-1",
+  scheduled_at: at(0, 8).toISOString(), scheduled_duration_hours: 8, effective_duration_hours: 8,
+};
+const place = async (w, techId, h, m = 0) => {
+  timeline(w, techId).vm.$emit("place", { jobId: "job-7", techId, startISO: at(0, h, m).toISOString() });
+  await flushAll();
+};
+
+describe("DispatchView — a dated job put in a tech's day", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    granted = new Set(["dispatch.write", "jobs.write"]);
+    patchMock.mockReset().mockResolvedValue({});
+    postMock.mockReset().mockResolvedValue({ items: [] });
+    toastAdd.mockReset();
+    areaRows = [];
+    partialRows = [];
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("an 8 h block moved to 3:45 PM on its own tech asks first, and Cancel writes nothing", async () => {
+    boardRows = [DATED];
+    const w = await mountBoard();
+    await place(w, "tech-1", 15, 45);
+    expect(overflow(w).exists()).toBe(true);
+    expect(overflow(w).text()).toContain("needs 8 h");
+    expect(patchMock).not.toHaveBeenCalled();
+    await click(w, "day-overflow-cancel");
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("the split moves the block with day one's length and books the rest", async () => {
+    boardRows = [DATED];
+    const w = await mountBoard();
+    await place(w, "tech-1", 15, 45);
+    await click(w, "day-overflow-split");
+    expect(jobPatches()).toHaveLength(1);
+    const body = jobPatches()[0][1];
+    expect(wallOf(body.scheduled_at)).toEqual([keyOf(at(0, 0)), 15, 45]);
+    expect(body.visit_duration_minutes).toBe(75);
+    expect(body).not.toHaveProperty("scheduled_duration_hours");
+    expect(body).not.toHaveProperty("assigned_tech_ids");
+    expect(visitPosts()).toEqual([[`${DAY_PATH}/visits`, {
+      days: [nextWeekday(0)], start_time: "08:00", duration_minutes: 405, tech_ids: ["tech-1"],
+    }, { suppressErrorToast: true }]]);
+  });
+
+  it("a move that still fits asks nothing and sends no visit length", async () => {
+    boardRows = [DATED];
+    const w = await mountBoard();
+    await place(w, "tech-1", 9);
+    expect(overflow(w).exists()).toBe(false);
+    expect(jobPatches()).toHaveLength(1);
+    expect(jobPatches()[0][1]).not.toHaveProperty("visit_duration_minutes");
+  });
+
+  it("a reassign to another tech is measured against that tech's shift", async () => {
+    boardRows = [DATED];
+    const w = await mountBoard();
+    await place(w, "tech-2", 15);
+    expect(overflow(w).text()).toContain("Ana has 1 h left");
+    expect(patchMock).not.toHaveBeenCalled();
+    await click(w, "day-overflow-split");
+    expect(jobPatches()).toHaveLength(1);
+    expect(jobPatches()[0][1]).toMatchObject({ assigned_tech_id: "tech-2", visit_duration_minutes: 60 });
+    expect(visitPosts()[0][1]).toMatchObject({ start_time: "07:30", duration_minutes: 420, tech_ids: ["tech-2"] });
+  });
+
+  it("a crew job moved along a crew member's column asks, and books the rest for the whole crew", async () => {
+    boardRows = [{ ...DATED, assigned_tech_ids: ["tech-1", "tech-3"] }];
+    const w = await mountBoard();
+    await place(w, "tech-3", 15, 45);
+    expect(overflow(w).exists()).toBe(true);
+    expect(patchMock).not.toHaveBeenCalled();
+    await click(w, "day-overflow-split");
+    expect(jobPatches()[0][1]).toMatchObject({ visit_duration_minutes: 75 });
+    expect(jobPatches()[0][1]).not.toHaveProperty("assigned_tech_ids");
+    expect(visitPosts()[0][1].tech_ids).toEqual(["tech-1", "tech-3"]);
+  });
+
+  it("the tray measures the whole shift", async () => {
+    boardRows = [{ ...DATED, scheduled_duration_hours: 10, effective_duration_hours: 10 }];
+    const w = await mountBoard();
+    timeline(w, "tech-2").vm.$emit("place-tray", { jobId: "job-7", techId: "tech-2" });
+    await flushAll();
+    expect(overflow(w).text()).toContain("Ana has 8.5 h left");
+    await click(w, "day-overflow-cancel");
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("a week-grid move on its own tech's row asks before re-dating", async () => {
+    boardRows = [{ ...DATED, scheduled_duration_hours: 10, effective_duration_hours: 10 }];
+    const w = await mountBoard();
+    const event = { dataTransfer: { getData: () => "job-7" } };
+    w.vm.$.setupState.onWeekCellDrop(event, "tech-1", OTHER_DAY);
+    await flushAll();
+    expect(overflow(w).text()).toContain("Mike has 9 h left");
+    expect(patchMock).not.toHaveBeenCalled();
+    await click(w, "day-overflow-cancel");
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("a tech picked from the dropdown keeps the job's time and is measured from it", async () => {
+    boardRows = [{ ...DATED, scheduled_at: at(0, 15).toISOString() }];
+    const w = await mountBoard();
+    w.vm.$.setupState.assignFromPicker("job-7", "tech-2");
+    await flushAll();
+    expect(overflow(w).text()).toContain("Ana has 1 h left");
+    await click(w, "day-overflow-cancel");
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("re-picking the tech a job already has asks nothing", async () => {
+    boardRows = [{ ...DATED, scheduled_at: at(0, 15).toISOString() }];
+    const w = await mountBoard();
+    w.vm.$.setupState.assignFromPicker("job-7", "tech-1");
+    await flushAll();
+    expect(overflow(w).exists()).toBe(false);
+  });
+
+  it("hours typed in the duration prompt are measured before either PATCH", async () => {
+    boardRows = [{ ...DATED, scheduled_duration_hours: null, effective_duration_hours: null }];
+    const w = await mountBoard();
+    await place(w, "tech-2", 15);
+    const state = w.vm.$.setupState;
+    expect(state.durationPromptOpen).toBe(true);
+    state.durationPromptHours = "4";
+    state.confirmDurationPrompt();
+    await flushAll();
+    expect(overflow(w).text()).toContain("Ana has 1 h left");
+    await click(w, "day-overflow-cancel");
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([["more than a day's", "30", 16], ["under 15 minutes of", "0.1", 16]])(
+    "%s hours kept on one day save the hours and leave the visit its length", async (_, typed, hour) => {
+    boardRows = [{ ...DATED, scheduled_duration_hours: null, effective_duration_hours: null }];
+    const w = await mountBoard();
+    await place(w, "tech-2", hour);
+    const state = w.vm.$.setupState;
+    state.durationPromptHours = typed;
+    state.confirmDurationPrompt();
+    await flushAll();
+    await click(w, "day-overflow-one-day");
+    const bodies = jobPatches().map(([, b]) => b);
+    expect(bodies).toContainEqual(expect.objectContaining({ scheduled_duration_hours: Number(typed) }));
+    expect(bodies).toContainEqual(expect.objectContaining({ assigned_tech_id: "tech-2" }));
+    for (const b of bodies) expect(b).not.toHaveProperty("visit_duration_minutes");
+  });
+
+  it("a job under way is not asked: its crew is not the dialog's to change", async () => {
+    boardRows = [{ ...DATED, lifecycle_stage: "in_progress" }];
+    const w = await mountBoard();
+    await place(w, "tech-1", 15, 45);
+    expect(overflow(w).exists()).toBe(false);
+    expect(jobPatches()).toHaveLength(1);
   });
 });
