@@ -251,7 +251,7 @@ async function finish() {
   display: flex; align-items: center; justify-content: center;
   font-weight: 700; margin-bottom: 0.4rem;
 }
-.active .dot { background: var(--interactive-primary); color: #fff; }
+.active .dot { background: var(--interactive-primary); color: var(--text-on-interactive-primary); }
 .done .dot { background: var(--p-green-700); color: #fff; }
 .step-dot span { font-size: 0.8rem; color: var(--text-muted); }
 .card {
@@ -307,7 +307,7 @@ button {
   cursor: pointer;
   border: none;
 }
-.btn-primary { background: var(--interactive-primary); color: #fff; }
+.btn-primary { background: var(--interactive-primary); color: var(--text-on-interactive-primary); }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-back { background: var(--surface-elevated); color: var(--text-muted); }
