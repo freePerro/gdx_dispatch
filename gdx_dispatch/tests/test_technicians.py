@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -17,13 +17,10 @@ from gdx_dispatch.routers.technicians import (
     TechnicianCreate,
     TechnicianPatch,
     TechnicianSkillCreate,
-    UnavailabilityCreate,
     add_technician_skill,
-    add_technician_unavailability,
     create_technician,
     delete_technician,
     get_technician,
-    get_technician_availability,
     list_technician_skills,
     list_technicians,
     patch_technician,
@@ -207,55 +204,6 @@ def test_add_skill_requires_skill_value(db):
     resp = add_technician_skill(created["id"], TechnicianSkillCreate(skill="   "), _request(), _USER, db)
     assert resp.status_code == 400
     assert _body(resp)["detail"] == "skill is required"
-
-
-def test_get_availability_returns_unavailability_windows(db):
-    created = _create_tech(db, user_id=_user(db, "user-avail"))
-    start = datetime.now(UTC)
-    end = start + timedelta(hours=4)
-    create_resp = add_technician_unavailability(
-        created["id"],
-        UnavailabilityCreate(start_at=start, end_at=end, reason="training"),
-        _request(),
-        _USER,
-        db,
-    )
-    assert create_resp.status_code == 201
-
-    resp = get_technician_availability(created["id"], _request(), _USER, db)
-    assert resp.status_code == 200
-    rows = _body(resp)
-    assert len(rows) == 1
-    assert rows[0]["reason"] == "training"
-
-
-def test_post_unavailability_validates_range(db):
-    created = _create_tech(db, user_id=_user(db, "user-bad-range"))
-    start = datetime.now(UTC)
-    end = start - timedelta(minutes=1)
-    resp = add_technician_unavailability(
-        created["id"],
-        UnavailabilityCreate(start_at=start, end_at=end, reason="invalid"),
-        _request(),
-        _USER,
-        db,
-    )
-    assert resp.status_code == 400
-    assert _body(resp)["detail"] == "end_at must be greater than start_at"
-
-
-def test_post_unavailability_404_when_technician_missing(db):
-    start = datetime.now(UTC)
-    end = start + timedelta(hours=2)
-    resp = add_technician_unavailability(
-        "missing",
-        UnavailabilityCreate(start_at=start, end_at=end, reason="pto"),
-        _request(),
-        _USER,
-        db,
-    )
-    assert resp.status_code == 404
-    assert _body(resp)["detail"] == "technician not found"
 
 
 def test_a_write_without_a_user_id_is_refused_before_it_writes(db):

@@ -8,8 +8,8 @@ year. They now take a per-person window from core/time_off.vacation_windows.
 
 Pinned, each named for the failure it prevents:
 
-* core's `vacation_year_start` answers exactly as the settings router's copy
-  it replaces, and core imports no router;
+* the rule lives only in core (GDXA-1856 deleted the settings router's
+  copy), and core imports no router;
 * the window's last day is the day before the next anniversary, a 29
   February hire included;
 * under the anniversary policy allowance, used and scheduled follow each
@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import itertools
+import typing
 from datetime import date, timedelta
 from uuid import UUID, uuid4
 
@@ -38,7 +38,7 @@ from sqlalchemy.exc import OperationalError
 
 from gdx_dispatch.core import time_off as time_off_rules
 from gdx_dispatch.core.pay_periods import PayPeriod, shop_today
-from gdx_dispatch.core.time_off import vacation_balances, vacation_window, vacation_year_start
+from gdx_dispatch.core.time_off import vacation_balances, vacation_window
 from gdx_dispatch.core.timesheet_export import build_csv, pdf_context
 from gdx_dispatch.core.timesheet_hours import build_timesheet
 from gdx_dispatch.models.tenant_models import User
@@ -86,15 +86,16 @@ def _total(sheet, name: str) -> dict[str, str]:
 # ── the rule itself ──────────────────────────────────────────────────────────
 
 
-def test_core_answers_as_the_settings_router_did_and_imports_no_router() -> None:
-    from gdx_dispatch.routers.settings import vacation_year_start as router_copy
+def test_the_rule_lives_only_in_core_and_core_imports_no_router() -> None:
+    # GDXA-1856 deleted the settings router's own copy; a second copy is how
+    # the setting came to be saved and never read.
+    from gdx_dispatch.routers import settings as settings_router
 
-    hires = [None, date(2019, 4, 2), date(2019, 11, 30), date(2020, 2, 29), date(2019, 1, 1),
-             date(2019, 12, 31), date(2026, 12, 1)]
-    days = [date(2026, 1, 1), date(2026, 2, 28), date(2026, 3, 1), date(2026, 10, 19),
-            date(2026, 12, 31), date(2028, 2, 28), date(2028, 2, 29), date(2028, 3, 1)]
-    for policy, hired, on in itertools.product(("calendar_year", ANNIVERSARY, None, "fiscal_year"), hires, days):
-        assert vacation_year_start(policy, hired, on) == router_copy(policy, hired, on), (policy, hired, on)
+    assert not hasattr(settings_router, "vacation_year_start")
+    assert settings_router.vacation_year_policy_out is time_off_rules.vacation_year_policy_out
+    # The PATCH model's Literal is the one copy pydantic needs; it must list
+    # exactly core's policies, or a policy added in core is refused with a 422.
+    assert typing.get_args(settings_router.VacationYearPolicy) == time_off_rules.VACATION_YEAR_POLICIES
     assert "gdx_dispatch.routers" not in inspect.getsource(time_off_rules)
 
 

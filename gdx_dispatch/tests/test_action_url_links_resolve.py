@@ -372,11 +372,13 @@ def test_the_sweep_actually_found_the_links() -> None:
     # floor is the *measured* post-deletion count, not 22 − 12 done on paper.
     # The floor is what turns a broken discovery pass red instead of letting it
     # slip by finding fewer; raise it when rules are added, and only lower it
-    # when a rule is deliberately removed. 9 since GDXA-1860 (2026-10-19):
-    # billing_followup.py wrote "/billing" twice (attribute on update, kwarg on
-    # create) and now writes it once, in the fields dict it hands
-    # upsert_system_action; every URL is still discovered.
-    assert len(DISCOVERED) >= 9, DISCOVERED
+    # when a rule is deliberately removed. Two duplicate spellings of one link
+    # each, routed through upsert_system_action into one dict key, took one
+    # literal apiece: GDXA-1862 (the outlook sync-health "/inbox", create kwarg
+    # and refresh attribute) and GDXA-1860 (billing_followup.py's "/billing",
+    # attribute on update and kwarg on create). Same links, still discovered —
+    # literals fewer, not rules. 8 measured on the merged tree, 2026-10-19.
+    assert len(DISCOVERED) >= 8, DISCOVERED
 
 
 def test_the_static_targets_these_links_point_at_still_exist() -> None:

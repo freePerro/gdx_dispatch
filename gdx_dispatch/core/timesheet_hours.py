@@ -54,12 +54,16 @@ from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, Timec
 
 log = logging.getLogger(__name__)
 
-# Kept here rather than in routers/timeclock.py so the export and the router
-# cannot drift to different thresholds; timeclock.py re-exports these names,
-# which is why its own callers and tests are untouched.
-WARNING_AFTER_HOURS = 8.0
-MAX_SHIFT_HOURS = 16.0
-IMPLAUSIBLE_SHIFT_MINUTES = int(MAX_SHIFT_HOURS * 60)
+# One definition, in the leaf module core/timeclock_policy.py, so the export,
+# the router and the celery sweep cannot drift to different thresholds. This
+# module and routers/timeclock.py re-export the names for existing callers.
+# Defined in a leaf rather than here: the time_off import above reaches the
+# sweep while this module is still half-loaded (GDXA-1888).
+from gdx_dispatch.core.timeclock_policy import (  # noqa: E402,F401
+    IMPLAUSIBLE_SHIFT_MINUTES,
+    MAX_SHIFT_HOURS,
+    WARNING_AFTER_HOURS,
+)
 
 FLAG_OPEN = "open_shift"
 FLAG_UNKNOWN = "unknown_duration"

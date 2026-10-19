@@ -1,9 +1,11 @@
 """PR4-billing-capture (2026-07-07) — parts capture unification.
 
 Parts capture was 4 write paths with only ONE able to reach an invoice.
-job_parts_needed is now the single billable spine; closeout, mobile
-parts-used, and van usage insert source-tagged rows (per-event identity, NO
-fuzzy matching/overwrites — audit round 1: upsert-matching undercounted).
+job_parts_needed is now the single billable spine; closeout and mobile
+parts-used insert source-tagged rows (per-event identity, NO fuzzy
+matching/overwrites — audit round 1: upsert-matching undercounted). The van
+usage writer was retired with the van inventory router (GDXA-1826): no UI
+ever called it.
 
 Pinned here:
 1. Closeout inserts one billable row per closeout line, 1:1 — two same-sku
@@ -14,8 +16,7 @@ Pinned here:
    carry NULL (office prices at invoicing) — never the closeout cost.
 4. Closeout now decrements Part.qty_on_hand (allow-negative, non-blocking),
    matching the mobile path it previously disagreed with.
-5. Mobile parts-used and job-linked van usage each add accumulating
-   source-tagged rows; van usage without a job adds none.
+5. Mobile parts-used adds accumulating source-tagged rows.
 6. GET /api/parts-needed/unbilled-consumed groups leaked parts by completed
    job with a suggested total.
 """
@@ -40,8 +41,6 @@ from gdx_dispatch.models.tenant_models import (
     JobCloseout,
     JobPartNeeded,
     Payment,
-    VanInventoryItem,
-    VanInventoryLog,
 )
 from gdx_dispatch.modules.inventory.models import JobPart, Part
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -72,8 +71,6 @@ def tenant_db_session():
         JobCloseout.__table__,
         Part.__table__,
         JobPart.__table__,
-        VanInventoryItem.__table__,
-        VanInventoryLog.__table__,
     ]:
         tbl.create(bind=engine, checkfirst=True)
     TenantBase.metadata.create_all(bind=engine, checkfirst=True)
@@ -283,43 +280,6 @@ def test_mobile_parts_used_accumulates_source_rows(tenant_db_session, monkeypatc
     assert int(part.qty_on_hand) == 6
 
 
-def test_van_usage_feeds_checklist_only_when_job_linked(tenant_db_session):
-    db = tenant_db_session
-    job = _seed_job(db)
-    item = VanInventoryItem(
-        id=uuid4(),
-        company_id=TENANT,
-        truck_id="truck-1",
-        sku="HNG-14",
-        name="14ga hinge",
-        quantity=8,
-    )
-    db.add(item)
-    db.commit()
-
-    from gdx_dispatch.routers import van_inventory as van_router
-
-    van_router.use_van_item(
-        request=_request(),
-        payload=van_router.VanUseIn(van_inventory_id=str(item.id), quantity=3, job_id=str(job.id), reason="install"),
-        user=_user(),
-        db=db,
-    )
-    van_router.use_van_item(
-        request=_request(),
-        payload=van_router.VanUseIn(van_inventory_id=str(item.id), quantity=1, reason="shop restock"),
-        user=_user(),
-        db=db,
-    )
-
-    rows = _checklist(db, job, source="van")
-    assert len(rows) == 1
-    assert rows[0].quantity == 3
-    assert rows[0].unit_price is None  # van stock carries no sell price
-    db.refresh(item)
-    assert item.quantity == 4
-
-
 def test_unbilled_consumed_report_groups_by_completed_job(tenant_db_session):
     db = tenant_db_session
     done_job = _seed_job(db, stage="completed")
@@ -473,40 +433,6 @@ def test_recloseout_does_not_resurrect_billed_parts(tenant_db_session):
 # never auto-pulls closeout parts — is pinned on the live paths by
 # test_no_autodraft_with_accepted_estimate (autodraft skips entirely) and
 # the mobile builder's estimate-precedence branch.
-
-def test_van_usage_invalid_job_id_fails_loudly(tenant_db_session):
-    """Audit blind spot: a typo'd job_id minted a checklist row no query
-    could display — an invisible unbillable row. Now 422, nothing written,
-    stock untouched."""
-    from fastapi import HTTPException as _HTTPExc
-
-    from gdx_dispatch.routers import van_inventory as van_router
-
-    db = tenant_db_session
-    item = VanInventoryItem(
-        id=uuid4(),
-        company_id=TENANT,
-        truck_id="truck-1",
-        sku="HNG-14",
-        name="14ga hinge",
-        quantity=8,
-    )
-    db.add(item)
-    db.commit()
-
-    with pytest.raises(_HTTPExc) as exc_info:
-        van_router.use_van_item(
-            request=_request(),
-            payload=van_router.VanUseIn(van_inventory_id=str(item.id), quantity=3, job_id="not-a-job", reason="oops"),
-            user=_user(),
-            db=db,
-        )
-    assert exc_info.value.status_code == 422
-    db.rollback()
-    db.refresh(item)
-    assert item.quantity == 8, "failed usage must not decrement stock"
-    assert db.execute(select(JobPartNeeded)).scalars().all() == []
-
 
 def test_wont_bill_dismiss_leaves_billing_surfaces(tenant_db_session):
     """The office's dismiss verb: wont_bill rows leave the leak report (and

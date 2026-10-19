@@ -185,7 +185,11 @@ describe('Settings → Time off and holidays', () => {
     const w = await mountSettings();
     expect(w.vm.timeOff.vacation_year_policy).toBe('calendar_year');
     expect(w.find('[data-testid="time-off-vacation-year"]').exists()).toBe(true);
-    expect(w.find('[data-testid="time-off-vacation-year-hint"]').text()).toContain('calendar year');
+    const hint = w.find('[data-testid="time-off-vacation-year-hint"]').text();
+    expect(hint).toContain('calendar year');
+    // GDXA-1856: balances, timesheets, CSV and PDF read the policy now; the
+    // "still count the calendar year" caveat would be false.
+    expect(hint).not.toContain('until they read this setting');
 
     w.vm.timeOff.vacation_year_policy = 'hire_anniversary';
     await w.find('[data-testid="time-off-save"]').trigger('click');
