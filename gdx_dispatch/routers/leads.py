@@ -81,9 +81,9 @@ DEFAULT_LEAD_SOURCES = [
 ]
 
 def business_today() -> date:
-    """The shop's local calendar day — the same "today" the planner uses
-    (services.planner_today, GDX_BUSINESS_TZ). A lead due today and a task due
-    today must agree on which day that is."""
+    """The shop's local day; a lead and a task due today must agree. The planner reads AppSettings.timezone
+    via core.pay_periods; holding no session, this gets planner_today's session-less fallback
+    (GDX_BUSINESS_TZ, default America/Chicago) until it is passed one."""
     from gdx_dispatch.services.planner_today import calendar_today_utc
 
     return calendar_today_utc().date()
@@ -304,34 +304,34 @@ def _serialize_landing(r: LandingLead) -> dict[str, Any]:
     }
 
 
-def _serialize_lead(l: Lead) -> dict[str, Any]:
+def _serialize_lead(lead: Lead) -> dict[str, Any]:
     return {
-        "id": str(l.id),
-        "company_id": l.company_id,
-        "landing_lead_id": str(l.landing_lead_id) if l.landing_lead_id else None,
-        "name": l.name,
-        "email": l.email,
-        "phone": l.phone,
-        "address": l.address,
-        "stage": l.stage,
-        "estimated_value": float(l.estimated_value or 0),
-        "source": l.source,
-        "assigned_to": l.assigned_to,
-        "notes": l.notes,
-        "converted_customer_id": str(l.converted_customer_id)
-        if l.converted_customer_id
+        "id": str(lead.id),
+        "company_id": lead.company_id,
+        "landing_lead_id": str(lead.landing_lead_id) if lead.landing_lead_id else None,
+        "name": lead.name,
+        "email": lead.email,
+        "phone": lead.phone,
+        "address": lead.address,
+        "stage": lead.stage,
+        "estimated_value": float(lead.estimated_value or 0),
+        "source": lead.source,
+        "assigned_to": lead.assigned_to,
+        "notes": lead.notes,
+        "converted_customer_id": str(lead.converted_customer_id)
+        if lead.converted_customer_id
         else None,
-        "converted_at": l.converted_at.isoformat() if l.converted_at else None,
-        "last_contact_at": l.last_contact_at.isoformat() if l.last_contact_at else None,
-        "created_by": l.created_by,
-        "created_at": l.created_at.isoformat() if l.created_at else None,
-        "updated_at": l.updated_at.isoformat() if l.updated_at else None,
-        "follow_up_date": l.follow_up_date.isoformat() if getattr(l, "follow_up_date", None) else None,
-        "estimate_id": str(l.estimate_id) if getattr(l, "estimate_id", None) else None,
+        "converted_at": lead.converted_at.isoformat() if lead.converted_at else None,
+        "last_contact_at": lead.last_contact_at.isoformat() if lead.last_contact_at else None,
+        "created_by": lead.created_by,
+        "created_at": lead.created_at.isoformat() if lead.created_at else None,
+        "updated_at": lead.updated_at.isoformat() if lead.updated_at else None,
+        "follow_up_date": lead.follow_up_date.isoformat() if getattr(lead, "follow_up_date", None) else None,
+        "estimate_id": str(lead.estimate_id) if getattr(lead, "estimate_id", None) else None,
         "selected_estimate_id": (
-            str(l.selected_estimate_id) if getattr(l, "selected_estimate_id", None) else None
+            str(lead.selected_estimate_id) if getattr(lead, "selected_estimate_id", None) else None
         ),
-        "origin_ref": getattr(l, "origin_ref", None),
+        "origin_ref": getattr(lead, "origin_ref", None),
     }
 
 
@@ -694,9 +694,9 @@ def pipeline_summary(
     )
     rows = db.execute(stmt).scalars().all()
     summary: dict[str, int] = {s: 0 for s in LEAD_STAGES}
-    for l in rows:
-        if l.stage in summary:
-            summary[l.stage] += 1
+    for lead in rows:
+        if lead.stage in summary:
+            summary[lead.stage] += 1
     return summary
 
 
