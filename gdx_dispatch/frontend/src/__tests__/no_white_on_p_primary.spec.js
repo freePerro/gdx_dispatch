@@ -44,9 +44,7 @@ const PENDING = new Set([
   'views/MobilePlannerView.vue .msg.mine', // mobile-tech
   'views/PlannerView.vue .msg.mine', // jobs-dispatch
   'views/ServerErrorsView.vue .filter-tabs button.active', // platform-core
-  // Aura's --p-primary-contrast-color. Only the span fails today (2.54:1 in
-  // light); the other two are buttons, whose fill base.css darkens.
-  'views/ReportsView.vue .tax-chip-total', // back-office-books
+  // Aura's --p-primary-contrast-color, #fff on the light emerald fill.
   'views/PlannerAppView.vue .pa-fab', // mobile-tech
   'views/SegmentsView.vue .segment-chip.active', // customers-crm
 ]);
