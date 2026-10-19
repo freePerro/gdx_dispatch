@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import resolve_audit_actor
@@ -44,14 +44,55 @@ class SnoozeRequest(BaseModel):
 
 
 class CreateActionRequest(BaseModel):
-    action_type: str
-    title: str
+    """Body of POST /api/next-actions.
+
+    Every bound mirrors the ``NextAction`` column it lands in
+    (``core/next_action.py``). Before GDXA-1808 none was set: an over-long
+    value failed the commit on Postgres, ``create_action`` swallowed it, and
+    the caller got a bare 500 instead of a 422 naming the field.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_type: str = Field(min_length=1, max_length=50)
+    title: str = Field(min_length=1, max_length=200)
     description: str | None = None
-    priority: str = "medium"
-    action_url: str | None = None
-    estimated_value: float = 0.0
-    reference_id: str | None = None
-    user_id: str | None = None
+    priority: str = Field(default="medium", max_length=10)
+    action_url: str | None = Field(default=None, max_length=500)
+    estimated_value: float = Field(default=0.0, allow_inf_nan=False)
+    reference_id: str | None = Field(default=None, max_length=100)
+    # Accepted for old clients and ignored: the route always assigns the
+    # authenticated caller (see create_next_action).
+    user_id: str | None = Field(default=None, max_length=100)
+
+    @field_validator(
+        "action_type", "title", "description", "priority", "action_url", "reference_id", "user_id",
+    )
+    @classmethod
+    def _no_nul(cls, v: str | None) -> str | None:
+        """Postgres text cannot hold NUL; psycopg2 refuses it at flush and the
+        caller got the same bare 500 as an over-long value."""
+        if v is not None and "\x00" in v:
+            raise ValueError("must not contain NUL characters")
+        return v
+
+    @field_validator("action_url")
+    @classmethod
+    def _same_origin_path(cls, v: str | None) -> str | None:
+        """The dashboard hands this to ``router.push``, so it must be an
+        in-app path: one leading ``/``, no ``//host``, no scheme, no
+        backslash (browsers read ``/\\host`` as ``//host``), no whitespace or
+        control characters."""
+        if v is None:
+            return v
+        if (
+            not v.startswith("/")
+            or v.startswith("//")
+            or "\\" in v
+            or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in v)
+        ):
+            raise ValueError("action_url must be an in-app path starting with a single '/'")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +145,7 @@ def complete_next_action(
 ) -> dict:
     """Mark a next action as completed."""
     tenant_id = _get_tenant_id(request)
-    result = action_queue.complete_action(tenant_id, action_id, tenant_db)
+    result = action_queue.complete_action(tenant_id, action_id, tenant_db, request=request)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
@@ -124,7 +165,7 @@ def snooze_next_action(
     # Ensure timezone-aware
     if until_dt.tzinfo is None:
         until_dt = until_dt.replace(tzinfo=timezone.utc)
-    result = action_queue.snooze_action(tenant_id, action_id, until_dt, tenant_db)
+    result = action_queue.snooze_action(tenant_id, action_id, until_dt, tenant_db, request=request)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
@@ -154,6 +195,7 @@ def create_next_action(
         estimated_value=body.estimated_value,
         reference_id=body.reference_id,
         tenant_db=tenant_db,
+        request=request,
     )
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
