@@ -342,16 +342,32 @@ def iter_scan_files() -> list[Path]:
     return sorted(files)
 
 
+# ruff parses the same noqa comment and accepts only uppercase letters
+# followed by digits; the old marker ``silent-failure`` failed that, so ruff
+# warned of an invalid directive and voided any ruff code listed after it on
+# the line (GDXA-1892, the GDXA-302 class). The marker is now ``SILENTFAIL1``,
+# alone or after other codes in the list (``BLE001, SILENTFAIL1`` or, as
+# ruff also allows, ``BLE001 SILENTFAIL1``). (These
+# comments name no full directive: ruff parses one in a comment too.) The old spelling
+# is still read until every site is converted, so each owner's conversion PR
+# is green on its own; drop it from the pattern when no site carries it.
+NOQA_CODE = "SILENTFAIL1"
+NOQA_MARKER_RE = re.compile(
+    r"#\s*(?i:noqa):\s*(?:[A-Z]+[0-9]+(?:\s*,\s*|\s+))*(?:SILENTFAIL1\b|(?i:silent-failure)\b)"
+)
+
+
 def _noqa_lines(src: str) -> set[int]:
-    """Return set of 1-based line numbers carrying ````
-    (case-insensitive). Operators use this marker to acknowledge an
-    intentional pattern (e.g. pure utility functions where returning None
-    on unparseable input is the documented contract). Suppressing is an
-    explicit decision that lives in the source, not a hidden allowlist.
+    """Return set of 1-based line numbers carrying ``# noqa: SILENTFAIL1``
+    (or the legacy ``# noqa: silent-failure``). Operators use this marker to
+    acknowledge an intentional pattern (e.g. pure utility functions where
+    returning None on unparseable input is the documented contract).
+    Suppressing is an explicit decision that lives in the source, not a
+    hidden allowlist.
     """
     marked: set[int] = set()
     for i, line in enumerate(src.splitlines(), start=1):
-        if re.search(r"#\s*noqa:\s*silent-failure\b", line, re.IGNORECASE):
+        if NOQA_MARKER_RE.search(line):
             marked.add(i)
     return marked
 

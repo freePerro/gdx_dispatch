@@ -8,7 +8,10 @@ from __future__ import annotations
 import ast
 import textwrap
 
+import pytest
+
 from gdx_dispatch.tools.silent_failure_scanner import (
+    NOQA_CODE,
     Shape1Visitor,
     Shape2Visitor,
     Shape3Visitor,
@@ -187,23 +190,65 @@ def test_shape3_passes_when_get_has_default():
     assert findings == []
 
 
-# ── noqa: silent-failure marker ──────────────────────────────────────────
+# ── noqa: SILENTFAIL1 marker ─────────────────────────────────────────────
 
-def test_noqa_marker_suppresses_finding(tmp_path):
-    """# noqa: silent-failure on or adjacent to an except line drops the
-    finding. Lets operators acknowledge intentional utility patterns
-    (pure parsers, health probes) without rewriting the code."""
+_MARKED_SRC = """
+    def parse_timestamp(v):
+        try:
+            return float(v)
+        except ValueError as e:  {marker}
+            log.debug("not a timestamp: %s", e)
+            return None
+"""
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "# noqa: SILENTFAIL1",
+        "# noqa: SILENTFAIL1 — None is the contract",
+        "# noqa: BLE001, SILENTFAIL1",
+        "# noqa: BLE001 SILENTFAIL1",
+        "# noqa: BLE001  # noqa: SILENTFAIL1",
+        "# NOQA: SILENTFAIL1",
+        # Legacy spelling, still read until every site is converted (GDXA-1892).
+        "# noqa: silent-failure",
+        "# noqa: BLE001  # noqa: silent-failure — logged",
+    ],
+)
+def test_noqa_marker_suppresses_finding(tmp_path, marker):
+    """The marker on or adjacent to an except line drops the finding. Lets
+    operators acknowledge intentional utility patterns (pure parsers, health
+    probes) without rewriting the code."""
     f = tmp_path / "example.py"
-    f.write_text(textwrap.dedent("""
-        def parse_timestamp(v):
-            try:
-                return float(v)
-            except ValueError as e:  # noqa: silent-failure
-                log.debug("not a timestamp: %s", e)
-                return None
-    """).lstrip("\n"))
+    f.write_text(textwrap.dedent(_MARKED_SRC).format(marker=marker).lstrip("\n"))
     findings = scan_file(f, {1})
-    assert findings == [], f"noqa should suppress, got {findings}"
+    assert findings == [], f"{marker!r} should suppress, got {findings}"
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "# noqa: BLE001",
+        # ruff rejects a lowercase code, so a lowercase SILENTFAIL1 would
+        # warn there; it must not quietly work here either.
+        "# noqa: silentfail1",
+        "# SILENTFAIL1",
+    ],
+)
+def test_noqa_marker_near_misses_do_not_suppress(tmp_path, marker):
+    f = tmp_path / "example.py"
+    f.write_text(textwrap.dedent(_MARKED_SRC).format(marker=marker).lstrip("\n"))
+    assert len(scan_file(f, {1})) == 1, f"{marker!r} must not suppress"
+
+
+def test_noqa_code_is_one_ruff_can_parse():
+    """ruff accepts only uppercase letters followed by digits in a ``noqa``
+    list; ``silent-failure`` failed that and voided every ruff code after it
+    on the line (GDXA-1892)."""
+    import re
+
+    assert re.fullmatch(r"[A-Z]+[0-9]+", NOQA_CODE)
 
 
 def test_noqa_marker_different_line_ignored(tmp_path):
@@ -211,7 +256,7 @@ def test_noqa_marker_different_line_ignored(tmp_path):
     marker elsewhere in the file does not grant blanket suppression."""
     f = tmp_path / "example.py"
     f.write_text(textwrap.dedent("""
-        # noqa: silent-failure   <-- not on the except line, shouldn't count
+        # noqa: SILENTFAIL1   <-- not on the except line, shouldn't count
         def parse_timestamp(v):
             try:
                 return float(v)

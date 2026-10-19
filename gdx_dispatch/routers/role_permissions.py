@@ -316,7 +316,7 @@ def _target_db_role(db: Session, user_id: str) -> str | None:
     from gdx_dispatch.models.tenant_models import User as _User
     try:
         uid = UUID(str(user_id))
-    except (ValueError, AttributeError):  # noqa: silent-failure — None for a non-UUID is the contract: no users row, no users.role
+    except (ValueError, AttributeError):  # noqa: SILENTFAIL1 — None for a non-UUID is the contract: no users row, no users.role
         log.info("role target user_id=%r is not a users.id; no users.role to check", user_id)
         return None
     return db.execute(select(_User.role).where(_User.id == uid)).scalar_one_or_none()
