@@ -699,6 +699,7 @@ gdx_dispatch/core/time_off.py                                people-time
 gdx_dispatch/core/timesheet_delivery.py                      people-time
 gdx_dispatch/core/timesheet_export.py                        people-time
 gdx_dispatch/core/timesheet_hours.py                         people-time
+gdx_dispatch/core/timeclock_policy.py                        people-time
 gdx_dispatch/modules/timeclock/*                             people-time
 gdx_dispatch/modules/payroll/*                               people-time
 gdx_dispatch/tasks/payroll_timesheet.py                      people-time
