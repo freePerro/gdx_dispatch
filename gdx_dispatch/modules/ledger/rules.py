@@ -1177,9 +1177,9 @@ def build_expense_lines(session: Session, expense) -> tuple[PostingLine, ...]:
     company_id = expense.company_id
     settings = ledger_service.get_gl_settings(session, company_id)
 
-    detail = [l for l in (expense.lines or [])]
+    detail = [line for line in (expense.lines or [])]
     if detail:
-        lines_sum = sum(to_cents(_dec(l.amount)) for l in detail)
+        lines_sum = sum(to_cents(_dec(line.amount)) for line in detail)
         # Overshoot can never reconcile and must refuse; an UNDER-complete
         # set is a legitimate work-in-progress (lines build incrementally) —
         # the entry is header-level either way, lines are detail.

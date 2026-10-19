@@ -75,12 +75,17 @@ def _ensure_aware(dt: datetime | None) -> datetime | None:
 
 
 def tenant_zoneinfo(db: Session) -> ZoneInfo:
-    """Tenant timezone from AppSettings (single source of truth — the
-    audited plan explicitly rejects hardcoding a zone here)."""
+    """Tenant timezone from AppSettings, through the shared shop-zone reader
+    (``core.pay_periods.shop_tz_name_from_settings`` / ``resolve_zone``), so a
+    missing row or a bad zone name lands where every other shop-day reader
+    lands (GDXA-1620). Only the failed read below is handled here."""
+    from gdx_dispatch.core.pay_periods import resolve_zone, shop_tz_name_from_settings  # noqa: PLC0415
+
+    # A failed read has no answer from the shared reader to fall back on;
+    # this matches its missing-row default today.
     tz_name = "America/New_York"
     try:
         from gdx_dispatch.core.database import contained_read  # noqa: PLC0415
-        from gdx_dispatch.models.tenant_models import AppSettings  # noqa: PLC0415
 
         # SAVEPOINT-contained (GDXA-165): `db` is the caller's session, and the
         # callers are the SimpleFIN ingest and the 5-minute beat tick — both
@@ -91,24 +96,21 @@ def tenant_zoneinfo(db: Session) -> ZoneInfo:
         # boundary was the lesser half of the bug. Contained, the degraded
         # answer is honest. Reads only — see core.database.contained_read.
         with contained_read(db):
-            row = db.execute(select(AppSettings.timezone)).first()
-        if row and row[0]:
-            tz_name = str(row[0])
+            tz_name = str(shop_tz_name_from_settings(db))
     except Exception:  # noqa: BLE001
         # Never silent: the fallback below is the MODEL default, which is not
         # prod's zone (app_settings.timezone is America/Chicago there), so a
         # swallowed read shifts every day boundary computed from this helper.
         # Was a bare ``except: pass`` until 2026-09-17.
         log.exception("bank_feeds_tenant_timezone_read_failed — falling back to %s", tz_name)
-    try:
-        return ZoneInfo(tz_name)
-    except Exception:  # noqa: BLE001
-        # Same consequence as the failed read above, four lines later: a bad
-        # zone NAME in app_settings would shift every day boundary silently.
+    zone = resolve_zone(tz_name)
+    if str(zone) != tz_name:
+        # Same consequence as the failed read above: a bad zone NAME in
+        # app_settings shifts every day boundary, so it must not be silent.
         # One line, no traceback: this is persistent config, so it repeats on
         # every 5-minute beat tick and every status request until fixed.
-        log.warning("bank_feeds_tenant_timezone_invalid tz=%r — falling back to America/New_York", tz_name)
-        return ZoneInfo("America/New_York")
+        log.warning("bank_feeds_tenant_timezone_invalid tz=%r — falling back to %s", tz_name, zone)
+    return zone
 
 
 # ── parsing helpers ────────────────────────────────────────────────────

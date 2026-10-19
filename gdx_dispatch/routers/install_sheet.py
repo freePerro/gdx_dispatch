@@ -309,7 +309,7 @@ def install_specs(
         "door_specs": door_specs,
         "lines": lines,
         "notes": estimate_obj.notes if estimate_obj else None,
-        "estimate_total": sum(l["quantity"] * l["unit_price"] for l in lines),
+        "estimate_total": sum(line["quantity"] * line["unit_price"] for line in lines),
     }
 
 
