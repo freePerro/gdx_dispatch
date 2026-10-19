@@ -3,6 +3,8 @@ import { ref, onMounted } from 'vue'
 import { useApi } from '../composables/useApi'
 
 const api = useApi()
+// The address this app is served on, as a key's website restriction.
+const referrer = `${window.location.origin}/*`
 
 const keyInput = ref('')
 const configured = ref(false)
@@ -88,7 +90,7 @@ onMounted(fetchKey)
       </div>
       <p class="hint muted">
         Required APIs: Maps JavaScript API. Recommended: restrict the key to
-        <code>*.example.com</code> in the Google Cloud Console &gt; APIs &amp; Services &gt; Credentials.
+        websites matching <code>{{ referrer }}</code> in the Google Cloud Console &gt; APIs &amp; Services &gt; Credentials.
       </p>
 
       <div v-if="status" :class="['status-row', status.ok ? 'status-ok' : 'status-error']">

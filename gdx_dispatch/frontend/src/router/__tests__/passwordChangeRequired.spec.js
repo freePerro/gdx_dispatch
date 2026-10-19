@@ -131,10 +131,63 @@ describe('must_change_password routing', () => {
     fetch.mockImplementation(async () => jsonResponse(403, { detail: { code: 'password_change_required', message: 'x' } }));
     await useApi().get('/api/notifications/unread').catch(() => {});
     expect(toastAdd).not.toHaveBeenCalled();
-    // ...while a plain permission 403 still toasts.
+    // ...while a plain permission 403 still toasts (to an unheld session: a
+    // held one never sends the call).
+    auth.mustChangePassword = false;
     fetch.mockImplementation(async () => jsonResponse(403, { detail: 'Missing permission: [invoices.read_all]' }));
     await useApi().get('/api/invoices').catch(() => {});
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: 'Permission denied' }));
+  });
+
+  it('sends nothing the server would refuse while held (2026-10-19 install walk)', async () => {
+    const api = createApiClient();
+    const events = vi.fn();
+    window.addEventListener('gdx:password-change-required', events);
+    for (const [method, url] of [
+      ['get', '/api/notifications/count'],
+      ['get', '/api/settings/modules'],
+      ['post', '/api/customers'],
+      ['get', '/api/users/me/permissions'],
+    ]) {
+      const err = await api[method](url, {}).catch((e) => e);
+      expect(err.status).toBe(403);
+      expect(err.code).toBe('password_change_required');
+    }
+    window.removeEventListener('gdx:password-change-required', events);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it('still sends what a held session may do: /me, the change, and /auth/', async () => {
+    const api = createApiClient();
+    fetch.mockImplementation(async () => jsonResponse(200, { must_change_password: true }));
+    await api.get('/api/users/me');
+    await api.post('/auth/logout', {});
+    await api.post('/api/users/me/change-password', { current_password: 'a', new_password: 'b' });
+    // ...and the change releases the hold, so permissions load at last.
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/users/me', '/auth/logout', '/api/users/me/change-password', '/api/users/me/permissions',
+    ]);
+    // A PATCH to /me is not the read the server allows.
+    fetch.mockClear();
+    auth.mustChangePassword = true;
+    await api.patch('/api/users/me', { name: 'x' }).catch(() => {});
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('loads no permissions or modules while held, and loads both once released', async () => {
+    const { useTenantModules } = await import('../../composables/useTenantModules');
+    await auth.loadPermissions({ force: true });
+    await useTenantModules().loadTenantModules();
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockImplementation(async (url) => jsonResponse(200, url.includes('permissions') ? { permissions: ['*'] } : {}));
+    auth.setMustChangePassword(false);
+    await useTenantModules().loadTenantModules();
+    await vi.waitFor(() => expect(fetch.mock.calls.map(([url]) => url)).toEqual(
+      expect.arrayContaining(['/api/users/me/permissions', '/api/settings/modules']),
+    ));
   });
 
   it('leaves a plain permission 403 alone', async () => {

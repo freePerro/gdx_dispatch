@@ -192,7 +192,20 @@ def get_state(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     row = _get_or_create(db, tenant_id)
-    return _serialize(row)
+    out = _serialize(row)
+    # A missing completed_at does not mean setup is unfinished: a company
+    # running from before the wizard has no row at all, and this endpoint
+    # creates one. Only a company with no customers yet is sent to setup
+    # (after the forced password change, and in place of the dashboard tour).
+    # The wizard's own demo customers do not count: loading them is a step of
+    # setup, not the end of it.
+    out["setup_needed"] = (
+        row.completed_at is None
+        and db.execute(
+            select(Customer.id).where(~Customer.name.like("DEMO - %")).limit(1)
+        ).first() is None
+    )
+    return out
 
 
 @router.post("/api/onboarding/step", response_model=None)

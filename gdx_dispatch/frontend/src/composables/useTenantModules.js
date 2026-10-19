@@ -332,7 +332,10 @@ async function _doLoad(api) {
   try {
     const { useAuthStore } = await import('../stores/auth');
     const auth = useAuthStore();
-    if (!auth.isAuthenticated) {
+    // A session held for a password change is refused everything here too;
+    // like pre-auth, skip without caching so the shell's remount after the
+    // change loads the real modules.
+    if (!auth.isAuthenticated || auth.mustChangePassword) {
       _enabledModules.value = {};
       return false;
     }

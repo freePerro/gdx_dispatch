@@ -10,7 +10,13 @@ and the compose guard tests only. Build B, the s6 all-in-one app container
 `gdx_dispatch/tests/test_s6_service_tree.py`), booted locally on an empty
 database: see "As built" under B. Build C, `gdx_dispatch/docker/install.sh` and
 its release asset, tested with fakes only: see "As built" under C.
-**Not built:** D (wizard and boot gaps) and every vps2 rehearsal. <!-- still to be built; link-ok -->
+Build D: HTTPS on the IP (tested with fakes and the compose script only) and
+the screens after the forced password change (unit tests plus a local browser
+walk): see "As built" under D. The vps2 rehearsals 1–4 ran on 2026-10-19,
+including the prod copy, its switch and its rollback: see "As run" under
+Rehearsal. They found the lost admin password on the HTTP fallback (fixed) and
+three things the prod switch must know; the update rehearsal's `--no-pull`
+pull is under C.
 Production is not touched by this work: the prod switch is a separate,
 maintainer-run step after review (see "Prod switch" below).
 
@@ -200,13 +206,13 @@ A shellcheck-clean script gets a test that runs it in a container with a fake `d
   - `gdx_dispatch/docker/install.sh`, POSIX sh (`curl | sh` runs dash). The README command is `… | sudo sh`: it needs the Docker daemon and writes `/opt/gdx`. <!-- built in this change; link-ok -->
   - No `--no-proxy`: the base compose gives the app no way in except through Caddy, so a no-proxy install would serve nothing.
   - `.env` is not "only if absent": `APP_VERSION` is rewritten on every run (that is the update), `GDX_DOMAIN` and `GDX_ADMIN_EMAIL` only when passed; every other line is kept. Values are restricted to characters that need no quoting, because `entrypoint.sh` sources the file. Mode 600, set on every run: the old README's `echo >` left it 644.
-  - The snapshot is `pg_dump` through `docker compose exec db`, not the backup sidecar (which may not be running), run on the files the install ran before: the new `.env` and compose file are staged as `.new` and moved in only after the dump succeeds, so a failed snapshot really leaves nothing changed (the first audit of C caught the old order rewriting both first). An install from the README before the script has `docker-compose.customer.yml` and maybe no `.env`; the snapshot runs on that file (with `--env-file /dev/null`), and the script then renames it to `docker-compose.yml` (second audit). The pull also runs on the staged files, before they are moved in: a failed pull leaves the old pin and compose file. The final `up` passes `--pull never` when Compose has the flag (checked with `up --help`): `app`, `secrets-init` and `plugin-host` set `pull_policy: always`, so a plain `up` pulls a second time after the switch and, under `--no-pull`, fails on an image that exists only locally (fourth audit). A Compose without the flag refuses `--no-pull` in preflight, before any file is written (fifth audit). <!-- release asset name; link-ok -->
+  - The snapshot is `pg_dump` through `docker compose exec db`, not the backup sidecar (which may not be running), run on the files the install ran before: the new `.env` and compose file are staged as `.new` and moved in only after the dump succeeds, so a failed snapshot really leaves nothing changed (the first audit of C caught the old order rewriting both first). The database start for the snapshot passes `--pull never` too: the old files' `secrets-init` sets `pull_policy: always`, and the vps2 update rehearsal (2026-10-19) caught a `--no-pull` run pulling the old `:latest` there, which on a normal update could replace the image the install runs before its snapshot. The one exception is an install with data volumes but no compose file, whose snapshot starts on the new file: its images are pulled only after the snapshot, so that start may pull unless `--no-pull` was given (audit of D). An install from the README before the script has `docker-compose.customer.yml` and maybe no `.env`; the snapshot runs on that file (with `--env-file /dev/null`), and the script then renames it to `docker-compose.yml` (second audit). The pull also runs on the staged files, before they are moved in: a failed pull leaves the old pin and compose file. The final `up` passes `--pull never` when Compose has the flag (checked with `up --help`): `app`, `secrets-init` and `plugin-host` set `pull_policy: always`, so a plain `up` pulls a second time after the switch and, under `--no-pull`, fails on an image that exists only locally (fourth audit). A Compose without the flag refuses `--no-pull` in preflight, before any file is written (fifth audit). <!-- release asset name; link-ok -->
   - Every command runs inside `main()`, called on the last line. Under `curl | sh` stdin is the script, and `compose exec` forwards stdin even with `-T`: on a host where `sh` is bash, the first audit of C measured an update that stopped after the snapshot and exited 0. The exec calls also read `/dev/null`.
   - It refuses two installs it must not take over: a `gdx` stack whose containers run from another directory, and a `.env` with `COMPOSE_FILE` (a checkout that `update.sh` manages).
   - Rehearsal flags: `--version` (an unstamped copy refuses to run without it), `--compose-file`, `--no-pull`.
   - Release: `release.yml` publishes `install.sh` beside the compose file with `GDX_RELEASE` stamped to the tag, and its image gate now also boots the image under `/init` with Postgres and Redis and requires all four processes up (twice, 30 s apart) before the push.
-  - Tests: `gdx_dispatch/tests/test_install_sh.py` (20) runs the real script under `sh` with fake `docker`, `curl`, `ss`, `ip` and `sleep`, and four of them pipe it into `sh` and `bash` as the one-liner does, against a fake `compose exec` that reads stdin; the `main()` wrapper, the snapshot-on-old-files order, the old-README file, pull-before-switch, the relative `--compose-file`, the symlinked working directory and four earlier guards were mutation-checked. The admin banner was seen in `docker logs` of an s6 boot in the same format the script parses.
-  - Not yet run for real: a fresh-VM install and an update over the split layout (both are the vps2 rehearsal).
+  - Tests: `gdx_dispatch/tests/test_install_sh.py` (20 at Build C; 32 after D) runs the real script under `sh` with fake `docker`, `curl`, `ss`, `ip` and `sleep`, and four of them pipe it into `sh` and `bash` as the one-liner does, against a fake `compose exec` that reads stdin; the `main()` wrapper, the snapshot-on-old-files order, the old-README file, pull-before-switch, the relative `--compose-file`, the symlinked working directory and four earlier guards were mutation-checked. The admin banner was seen in `docker logs` of an s6 boot in the same format the script parses.
+  - Run for real on vps2 on 2026-10-19: a fresh install and an update over it (rehearsals 2 and 3), and the switch from the split layout (rehearsal 4); see "As run" under Rehearsal.
 
 ### D. First-run gaps (from the 2026-10-19 walk)
 
@@ -221,6 +227,25 @@ A shellcheck-clean script gets a test that runs it in a container with a fake `d
   - Stripe in the UI (product shape).
   - Re-locking `/onboarding` after completion (friction 5; harmless).
 - **Boot without integrations:** measured clean (friction 6). Nothing to build.
+- **As built, HTTPS with no domain (2026-10-19):**
+  - `install.sh` decides `GDX_PUBLIC_IP` once and keeps it in `.env`: the source address of `ip -4 route get 1.1.1.1`, unless it is private, loopback, link-local or CGNAT/Tailscale (100.64/10), in which case it writes an empty value (plain HTTP). It never asks an outside service for the address. `--ip ADDRESS` sets it, `--ip none` empties it, and a domain wins over it.
+  - The fallback lives in `install.sh`, not in Caddy. Caddy redirects HTTP to HTTPS by default, so a site whose certificate never arrives is a dead redirect. After the app is healthy, the script probes `https://<ip>/health` for about two minutes (24 tries, 5 s apart); on failure it empties `GDX_PUBLIC_IP`, re-runs `up`, and tells the user to open the ports and rerun with `--ip`.
+  - The Caddy branch serves the IP under `tls { issuer acme { profile shortlived } }`, because Let's Encrypt issues IP certificates only under that profile (generally available 2026-01-15, https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability), plus `default_sni <ip>`, because a browser sends no SNI for an IP address (https://caddyserver.com/docs/caddyfile/options). Caddy's IP-certificate fix is caddy#7399, closed 2026-04-25; each branch's output passed `caddy adapt` in caddy:2-alpine v2.11.7.
+  - `GDX_PUBLIC_IP` is in the shared app env, so `secrets-init` re-mints on a change: `mint_runtime_env.py` derives `https://<ip>` for the base URLs when no domain is set, and drops a stored IP-shaped URL once the address is cleared (a stored domain URL is kept, as before).
+  - Only the IP is redirected to HTTPS. The IP branch also writes an `http://` catch-all, so a LAN, Tailscale or host name keeps plain HTTP. Without it Caddy's own redirect sent every Host on port 80 to an https address with no certificate behind it (Build D audit, 2026-10-19; measured on caddy:2-alpine and again on vps2).
+  - The probe runs against this host's own Caddy (`curl --connect-to <ip>:443:<addr>:<port>`), at the address and port that `compose port caddy 443` reports, so a `GDX_HTTPS_PORT` that moves or binds 443 is followed without parsing `.env` (a copy of compose's parsing got three forms wrong in the re-audits). A wildcard bind is dialled on 127.0.0.1; a bound address as is. Behind NAT, which is what `--ip` is for, the public address is unreachable from inside unless the router does hairpin NAT, so a probe of the public address would drop a certificate that was issued. `--resolve` cannot do this: curl skips it for a URL that is an IP address.
+  - An existing install updated by this `install.sh` with no `GDX_PUBLIC_IP` line in its `.env` gets the address detected and HTTPS turned on, as a first run does. Only `http://<ip>` changes (it redirects); other names stay on HTTP. `--ip none` keeps it off.
+  - IPv4 only.
+  - Without `curl` on the host the probe cannot run: the script says so (`curl is missing: https://<ip> was not checked.`) and keeps HTTPS rather than dropping a working certificate to plain HTTP.
+  - Tests: `gdx_dispatch/tests/test_caddyfile_branches.py` runs the compose file's own Caddy script per branch; `test_install_sh.py` covers the probe, the fallback, the private-address filter, decide-once and the flag; `test_mint_runtime_env.py` the derived URL and its removal. Each guard was mutation-checked.
+  - Run for real on vps2 on 2026-10-19 (rehearsal 2), and again after the audit's catch-all and probe fixes: a fresh `install.sh --ip 2.24.120.242` came up on `https://2.24.120.242` with a trusted Let's Encrypt certificate (issuer YE2, SAN `IP Address:2.24.120.242`), with no fallback. `http://` with the IP as Host got 308 to https, and with Host `dispatch.lan` or `100.101.1.2` got 200. That install was then wiped. The fallback path itself is covered only by the fake-docker test.
+- **As built, after the forced password change (2026-10-19):**
+  - "Setup needed" is decided by the server: `GET /api/onboarding/state` adds `setup_needed`, true only while onboarding has no `completed_at` **and** the company has no customers. A bare missing `completed_at` is not enough: the audit of D found production with no onboarding row at all (the endpoint creates it on first read) and 434 customers, so that check would have sent its owners into the wizard, with its demo-data button, after a forced change, and stopped the tour for all ten owners and admins.
+  - `UserProfileView.vue`: a change made while held shows a toast, then sends an owner or admin whose state says `setup_needed` to `/onboarding`, and everyone else (or anyone whose state read fails) to `/dashboard`. A change made by choice stays on the page.
+  - `AppLayout.vue`: the dashboard tour waits, for an owner or admin, while the state says `setup_needed` or cannot be read. Other roles are not held back.
+  - The shell's 403s while held: `useApi.js` refuses, without a network call, every `/api/` request a held session would be refused (all but `GET /api/users/me` and `POST /api/users/me/change-password`; `/auth/` is not under `/api/`). It throws the server's own `password_change_required` error, so callers and the toast handler behave as before. The raw-fetch loaders skip too: `auth.loadPermissions`, `theme.loadBranding` and `useTenantModules` (which does not cache the skip). When the hold clears, `AppLayout.vue` remounts the sidebar, topbar, bottom nav and What's New banner (keyed on the hold) and `ThemeProvider.vue` loads branding, so the shell fills in without a reload. The client list of allowed calls mirrors the server's `@allowed_while_password_change_required` (two endpoints); a third one added there would be refused by the client until it is added here too.
+  - The Maps card's referrer hint shows this install's own origin.
+  - Tests: `src/views/__tests__/UserProfileForcedChange.spec.js`, `src/components/__tests__/AppLayoutTourGate.spec.js`, `src/components/__tests__/ShellPasswordHold.spec.js` and new cases in `src/router/__tests__/passwordChangeRequired.spec.js` (all under `gdx_dispatch/frontend/`), and `gdx_dispatch/tests/test_onboarding.py` for `setup_needed`. Each of the six hold guards and the three `setup_needed` checks (server, profile, tour) was mutation-checked.
 
 ## Rehearsal (gdx-vps2 only; prod is read-only)
 
@@ -246,6 +271,35 @@ A shellcheck-clean script gets a test that runs it in a container with a fake `d
       - all four processes run, and beat ticks without outbound errors
    4. Wipe vps2's volumes and the copied `.env` afterwards. Record the wipe.
 
+### As run (2026-10-19, gdx-vps2)
+
+The branch image was loaded on vps2 as `1.152.0-rehearsal` and never pushed.
+
+- **2, fresh install of the branch:** `install.sh` on HTTP, then a browser walk. These passed: the forced password change and its hold, the wizard, the dashboard, customers and settings, dark mode, 390 px with no sideways scroll, and logout and login again. The "Password changed" toast was not seen; the next login with the new password proves the change. `install.sh --ip 2.24.120.242` was then rerun over that install. It switched the site to HTTPS with a trusted Let's Encrypt IP certificate (issuer YE1, SAN `IP Address:2.24.120.242`), and `/health` returned 200 with certificate verification on. **Bug found and fixed:** when the certificate could not be had, the HTTP fallback recreated `app`. That emptied its logs, so the first-boot admin password was never printed. `install.sh` now reads it straight after the first healthy boot, and the fake-docker test was red before the fix.
+- **3, update over the release:** the rerun pulled nothing ("Pulling" ×0) and took snapshot `gdx-pre-update-…sql.gz` first. A token issued before the update still returned 200 after `app` and `plugin-host` were recreated.
+- **4, prod copy:** these numbered steps are the rehearsal, not prod.
+  1. ufw default-deny, plus `DOCKER-USER` drops for container egress and for new inbound on `eth0`. Container egress was proven blocked before any data landed.
+  2. Prod was only read: a `pg_basebackup` of the database, and a tar of uploads, recordings, plugins and redis, streamed through the maintainer's PC without touching its disk, plus the `.env`. The live redis AOF changed during its tar, so tar warned; redis loads a truncated AOF tail by default.
+  3. **Old layout first** (v1.151.0 files plus prod's `serverports.yml`), then checked: <!-- untracked prod file; link-ok -->
+     - the counts equal prod's at copy time: 434 customers, 321 jobs, 14 users, 405 invoices
+     - all 52 encrypted customer addresses decrypt (10 are encrypted empty strings)
+     - login works after a password reset on the copy
+     - three job photos come back as JPEGs through the API
+     - a session recording reads as `appuser`
+  4. **Switch:** the new files, the two `.env` lines and plain `update.sh`. A shim turned only `compose pull` into a no-op and added `--pull never` to `up`, because the rehearsal tag is not in a registry. Results:
+     - the snapshot ran first
+     - the celery containers were removed as orphans
+     - every check in step 3 passed again
+     - the app published only on `127.0.0.1:8002`
+     - all four s6 processes ran (web with 2 workers, worker-high, worker-low, beat)
+     - beat sent 20 tasks in 3 minutes; its only errors were outbound calls (Phone.com, the plugin catalogue) refused by the egress block
+  5. **Rollback** as written under "Prod switch" step 8: the old files, the old pin and the two lines deleted, then the old command. Celery came back on 1.151.0 and every check passed a third time.
+  6. **Wiped** 2026-10-19T09:49:59Z: every container and volume, `/root/prodcopy` (the copied `.env` and both snapshots), the iptables rules, and ufw back to inactive. `docker volume ls` showed none left.
+- **For the prod switch**, from 4:
+  1. A bare `docker exec gdx-app-1 python …` no longer sees the database. `DATABASE_URL` and the keys live only in the minted runtime env, which `entrypoint.sh` loads for the four processes, so such a command falls back to an empty SQLite file without an error. Runbooks and agents that exec into the app need `sh -c 'set -a; . "$GDX_RUNTIME_ENV_FILE"; set +a; exec python …'`. Recorded on the found-not-filed list.
+  2. The rollback leaves the new `backup` sidecar running and `secrets-init` exited, because the old files do not name them (step 8 now removes them).
+  3. `update.sh` pulls once with `pull`, and `up` pulls again, because `app` sets `pull_policy: always`. That is harmless against a registry, but it is two pulls.
+
 ## Prod switch (NOT part of this work; maintainer-run after merge)
 
 1. Tag the overlapping ledger entries `deferred`.
@@ -262,7 +316,9 @@ A shellcheck-clean script gets a test that runs it in a container with a fake `d
    2. Pin the previous `APP_VERSION`, and delete the two lines from step 4 so a bare `docker compose` does not name the new files.
    3. Run the old command, with `serverports.yml` still in place (step 3 kept it). <!-- removed or still to be built; link-ok -->
 
-   The volumes the new layout adds (secrets, backups) are left alone. Rehearse the rollback on vps2 too.
+   4. `docker rm -f gdx-backup-1 gdx-secrets-init-1`: the old files do not name them, so the old command leaves the backup sidecar running (rehearsal, 2026-10-19).
+
+   The volumes the new layout adds (secrets, backups) are left alone. Rehearsed on vps2 on 2026-10-19 (see "As run").
 
 ## Not in scope
 

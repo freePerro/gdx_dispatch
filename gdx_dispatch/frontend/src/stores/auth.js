@@ -227,6 +227,13 @@ export const useAuthStore = defineStore('auth', () => {
       permissionsLoaded.value = false;
       return permissions.value;
     }
+    // Held for a password change: the server refuses this until the change,
+    // and setMustChangePassword(false) reloads it then.
+    if (mustChangePassword.value) {
+      permissions.value = new Set();
+      permissionsLoaded.value = false;
+      return permissions.value;
+    }
     if (permissionsLoaded.value && !force) return permissions.value;
     if (_permissionsInFlight && !force) return _permissionsInFlight;
     _permissionsInFlight = (async () => {

@@ -128,10 +128,14 @@ That's the whole install. The script checks Docker, writes `/opt/gdx/.env`
 (asking for the domain and email when run in a terminal), downloads the
 compose file of its own release, and starts the stack. On first boot the stack
 mints its secrets, runs all database migrations, seeds your admin account, and
-(with a domain) obtains a real TLS certificate automatically. Without a domain
-it serves plain HTTP on the server's IP. The script waits until the app is
-healthy and prints the address, the admin email and the one-time password.
-`--help` lists its options (`--dir`, `--install-docker`, …).
+obtains a real TLS certificate automatically: for the domain, or without one
+for the server's public IP (a 6-day Let's Encrypt IP certificate that Caddy
+renews). If that certificate cannot be issued within about two minutes (ports 80/443
+blocked, or no public IPv4), the script falls back to plain HTTP and says so;
+over plain HTTP a login lasts only 15 minutes, because the browser drops the
+app's secure refresh cookie. The script waits until the app is healthy and
+prints the address, the admin email and the one-time password. `--help` lists
+its options (`--ip`, `--dir`, `--install-docker`, …).
 
 Without the script, the same install is three commands; the admin password is
 then in the app log:
@@ -140,6 +144,7 @@ then in the app log:
 mkdir gdx && cd gdx
 curl -fsSL https://github.com/freePerro/gdx_dispatch/releases/latest/download/docker-compose.customer.yml -o docker-compose.yml  # release asset name; link-ok
 echo 'GDX_DOMAIN=dispatch.example.com' > .env   # optional — enables automatic HTTPS via Let's Encrypt
+# or, with no domain, HTTPS on the server's public IPv4: echo 'GDX_PUBLIC_IP=203.0.113.7' > .env
 docker compose -p gdx up -d
 docker compose -p gdx logs app | grep -A5 "initial admin"
 ```

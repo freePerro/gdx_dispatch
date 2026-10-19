@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import Customer
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.onboarding import ONBOARDING_STEPS, router
 
@@ -91,6 +92,38 @@ def test_get_state_creates_default(client: TestClient):
     assert data["catalog_seeded"] is False
     assert data["demo_data_loaded"] is False
     assert data["completed_at"] is None
+    assert data["setup_needed"] is True
+
+
+def test_setup_is_not_needed_by_a_company_that_has_customers(client: TestClient):
+    """Production on 2026-10-19 had no onboarding row and 434 customers.
+
+    The forced password change and the dashboard tour read setup_needed; a
+    bare missing completed_at would have sent its owners into the wizard.
+    """
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    s = Session()
+    s.add(Customer(name="Existing Customer", company_id="tenant-test"))
+    s.commit()
+    s.close()
+    data = client.get("/api/onboarding/state").json()
+    assert data["completed_at"] is None
+    assert data["setup_needed"] is False
+
+
+def test_the_wizards_demo_customers_do_not_end_setup(client: TestClient):
+    Session = sessionmaker(bind=client._engine)  # type: ignore[attr-defined]
+    s = Session()
+    s.add(Customer(name="DEMO - Acme Residential", company_id="tenant-test"))
+    s.commit()
+    s.close()
+    assert client.get("/api/onboarding/state").json()["setup_needed"] is True
+
+
+def test_setup_is_not_needed_once_the_wizard_completes(client: TestClient):
+    client.get("/api/onboarding/state")
+    assert client.post("/api/onboarding/complete").status_code == 200
+    assert client.get("/api/onboarding/state").json()["setup_needed"] is False
 
 
 def test_advance_step(client: TestClient):

@@ -6,8 +6,10 @@
 import { onMounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useThemeStore } from '../stores/theme';
+import { useAuthStore } from '../stores/auth';
 
 const theme = useThemeStore();
+const auth = useAuthStore();
 const { branding } = storeToRefs(theme);
 
 onMounted(async () => {
@@ -21,6 +23,15 @@ onMounted(async () => {
     await theme.loadBranding();
   }
 });
+
+// loadBranding skips while a password change is held; load it once the
+// change goes through.
+watch(
+  () => auth.mustChangePassword,
+  (held, wasHeld) => {
+    if (wasHeld && !held && auth.isAuthenticated) theme.loadBranding();
+  },
+);
 
 watch(
   branding,

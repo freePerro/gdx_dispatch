@@ -29,9 +29,10 @@
 #      logs (Docker Manager → app container → Logs, look for the banner) —
 #      then starts the web server, both Celery workers and the scheduler,
 #      all inside that one container.
-#   3. Caddy serves the app on port 80 — or with automatic HTTPS on your
-#      domain once GDX_DOMAIN is set (point the domain's DNS A record at
-#      this server first).
+#   3. Caddy serves the app with automatic HTTPS on your domain once
+#      GDX_DOMAIN is set (point the domain's DNS A record at this server
+#      first); before that, on the server's public IP when GDX_PUBLIC_IP is
+#      set (install.sh sets it), else plain HTTP on port 80.
 #   4. A backup sidecar dumps the database daily to the `gdx_backups` volume
 #      (30-day retention).
 #
@@ -39,6 +40,8 @@
 #   GDX_TENANT_NAME   Your company name, shown throughout the app.
 #   GDX_ADMIN_EMAIL   Login email for the first admin account.
 #   GDX_DOMAIN        e.g. dispatch.yourcompany.com → enables automatic HTTPS.
+#   GDX_PUBLIC_IP     The server's public IPv4, for HTTPS with no domain (a
+#                     6-day Let's Encrypt IP certificate, renewed by Caddy).
 #   APP_VERSION       Release tag to run (default: latest). Redeploying this
 #                     project pulls the newest image = the update path.
 #   GDX_ADMIN_PASSWORD  Set to choose the admin password (otherwise generated
@@ -83,6 +86,7 @@ x-app-env: &app-env
   GDX_WEBHOOK_PRIVATE_ALLOW: ${GDX_WEBHOOK_PRIVATE_ALLOW:-n8n}
   # ── customer-facing settings (see header) ──
   GDX_DOMAIN: ${GDX_DOMAIN:-}
+  GDX_PUBLIC_IP: ${GDX_PUBLIC_IP:-}
   GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-gdx}
   GDX_TENANT_NAME: ${GDX_TENANT_NAME:-My Door Company}
   # Tenant identity. core/tenant.py reads these; unset → the 0000…0001
@@ -336,19 +340,28 @@ services:
     networks: [backend]
     restart: unless-stopped
 
-  # Public entrypoint. No GDX_DOMAIN → plain HTTP on port 80 (first boot,
-  # http://<server-ip>). With GDX_DOMAIN set and its DNS A record pointing
+  # Public entrypoint. No GDX_DOMAIN → HTTPS on the server's public IP
+  # (GDX_PUBLIC_IP), else plain HTTP on port 80. With GDX_DOMAIN set and its DNS A record pointing
   # here, Caddy obtains + renews Let's Encrypt certificates automatically;
   # the cert store lives on gdx_caddy_data so reissue limits are never hit.
   caddy:
     image: caddy:2-alpine
     environment:
       GDX_DOMAIN: ${GDX_DOMAIN:-}
+      GDX_PUBLIC_IP: ${GDX_PUBLIC_IP:-}
       GDX_N8N_ENABLED: ${GDX_N8N_ENABLED:-}
     # Generate a Caddyfile then run it (the old `caddy reverse-proxy` one-liner
-    # can express only ONE route, so it can't add the n8n subdomain). Three
-    # branches: no domain → plain :80 (bare-IP first boot); domain → auto-HTTPS;
-    # domain AND GDX_N8N_ENABLED=1 → also serve n8n.<domain>. The n8n block is
+    # can express only ONE route, so it can't add the n8n subdomain). Four
+    # branches: domain → auto-HTTPS; domain AND GDX_N8N_ENABLED=1 → also serve
+    # n8n.<domain>; no domain but GDX_PUBLIC_IP (install.sh sets it) → a Let's
+    # Encrypt certificate for the IP itself, which LE issues only under the
+    # 6-day `shortlived` profile (Caddy renews it); neither → plain :80. A
+    # browser sends no SNI for an IP address, so default_sni picks that
+    # certificate. The IP branch keeps an `http://` catch-all: only the IP
+    # itself is redirected to https, so a LAN, Tailscale or host name still
+    # gets plain HTTP instead of a redirect to https with no certificate
+    # behind it (Build D audit, 2026-10-19). Without HTTPS the browser drops the app's Secure refresh
+    # cookie and logins end at access-token expiry. The n8n block is
     # gated on an EXPLICIT env, not on the domain being set — so it exists only
     # after the operator has pointed the 2nd A record, and Caddy never burns
     # Let's Encrypt failed-validation limits retrying a missing n8n host. Never
@@ -356,7 +369,9 @@ services:
     # reverse_proxy resolves n8n at request time and 502s harmlessly if absent.
     command: >
       sh -c 'CF=/etc/caddy/Caddyfile;
-      if [ -z "$$GDX_DOMAIN" ]; then
+      if [ -z "$$GDX_DOMAIN" ] && [ -n "$$GDX_PUBLIC_IP" ]; then
+      printf "{\n  default_sni %s\n}\n%s {\n  tls {\n    issuer acme {\n      profile shortlived\n    }\n  }\n  reverse_proxy app:8000\n}\nhttp:// {\n  reverse_proxy app:8000\n}\n" "$$GDX_PUBLIC_IP" "$$GDX_PUBLIC_IP" > $$CF;
+      elif [ -z "$$GDX_DOMAIN" ]; then
       printf ":80 {\n  reverse_proxy app:8000\n}\n" > $$CF;
       else
       printf "%s {\n  reverse_proxy app:8000\n}\n" "$$GDX_DOMAIN" > $$CF;

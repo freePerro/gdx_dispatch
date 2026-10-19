@@ -127,7 +127,10 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { useAuthStore } from '../stores/auth'
 import { formatDateTime } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
@@ -140,6 +143,9 @@ import Tag from 'primevue/tag'
 import ProgressSpinner from 'primevue/progressspinner'
 
 const api = useApi()
+const auth = useAuthStore()
+const router = useRouter()
+const toast = useToast()
 
 const me = ref(null)
 const loading = ref(false)
@@ -226,6 +232,8 @@ async function changePassword() {
   if (!canChangePw.value) return
   changingPw.value = true
   error.value = null
+  // Read before the call: useApi clears the hold when the change succeeds.
+  const wasHeld = auth.mustChangePassword
   try {
     await api.post('/api/users/me/change-password', {
       current_password: pw.current,
@@ -235,11 +243,29 @@ async function changePassword() {
     pw.next = ''
     pw.confirm = ''
     flashSuccess('Password changed.')
+    if (wasHeld) await leaveForcedChange()
   } catch (err) {
     error.value = err.message || 'Failed to change password'
   } finally {
     changingPw.value = false
   }
+}
+
+// A forced change (first login, an admin-set password) used to leave the
+// person on /profile with nothing saying what next (2026-10-19 install walk).
+// An owner or admin of a company the server says still needs setup (no
+// customers, wizard not finished) goes to the setup wizard; everyone else to
+// the dashboard, where the router's role redirects still apply. Not a bare
+// missing completed_at: a company running from before the wizard has none.
+async function leaveForcedChange() {
+  toast.add({ severity: 'success', summary: 'Password changed', detail: 'You can use the app now.', life: 4000 })
+  let target = '/dashboard'
+  const role = String(auth.user?.role || '').toLowerCase()
+  if (role === 'owner' || role === 'admin') {
+    const state = await api.get('/api/onboarding/state').catch(() => null)
+    if (state?.setup_needed === true) target = '/onboarding'
+  }
+  router.push(target)
 }
 
 onMounted(fetchMe)

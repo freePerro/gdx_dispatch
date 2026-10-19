@@ -63,10 +63,32 @@ export function isPasswordChangeRequired(err) {
     (err.code === PASSWORD_CHANGE_REQUIRED || err.message === PASSWORD_CHANGE_REQUIRED);
 }
 
+function isHeldOnServer(url, method) {
+  if (!String(url).startsWith('/api/')) return false;
+  if (method === 'GET' && url === ME_URL) return false;
+  if (method === 'POST' && url === CHANGE_PASSWORD_URL) return false;
+  return true;
+}
+
 export function createApiClient() {
   const auth = useAuthStore();
 
   async function request(url, options = {}, retry = true) {
+    // A held session can do nothing on the server but read /me and change
+    // its password (routers/auth/core.py _enforce_password_change), so a
+    // shell poll or a store load sent while held only comes back 403 — ten
+    // of them on /profile in the 2026-10-19 install walk, each a console
+    // error. Refuse those here with the server's own error, without the
+    // event: the person is already on the form. /auth/ (login, refresh,
+    // logout) checks its own token and is not held.
+    if (auth.mustChangePassword && isHeldOnServer(url, options.method || 'GET')) {
+      const err = new Error(PASSWORD_CHANGE_REQUIRED);
+      err.status = 403;
+      err.url = url;
+      err.code = PASSWORD_CHANGE_REQUIRED;
+      throw err;
+    }
+
     const headers = {
       ...(options.headers || {}),
     };

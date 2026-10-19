@@ -67,3 +67,47 @@ def test_n8n_dir_unset_skips_n8n_files(tmp_path, monkeypatch):
     assert m.main() == 0
     assert (s / "runtime.env").exists()
     assert not (s / "encryption_key").exists()
+
+
+def _base_urls(secrets_dir):
+    env = (secrets_dir / "runtime.env").read_text()
+    lines = dict(ln.split("=", 1) for ln in env.splitlines() if "=" in ln and not ln.startswith("#"))
+    return lines.get("GDX_PUBLIC_BASE_URL"), lines.get("GDX_BASE_URL")
+
+
+def _fresh(tmp_path, monkeypatch):
+    s = tmp_path / "s"
+    s.mkdir()
+    monkeypatch.setenv("GDX_SECRETS_DIR", str(s))
+    monkeypatch.delenv("GDX_N8N_SECRETS_DIR", raising=False)
+    for key in ("GDX_PUBLIC_BASE_URL", "GDX_BASE_URL", "GDX_DOMAIN"):
+        monkeypatch.delenv(key, raising=False)
+    return s
+
+
+def test_public_ip_gives_an_https_base_url_and_a_domain_wins(tmp_path, monkeypatch):
+    s = _fresh(tmp_path, monkeypatch)
+    monkeypatch.setenv("GDX_PUBLIC_IP", "203.0.113.7")
+    assert m.main() == 0
+    assert _base_urls(s) == ("https://203.0.113.7",) * 2
+
+    monkeypatch.setenv("GDX_DOMAIN", "dispatch.example.com")
+    assert m.main() == 0
+    assert _base_urls(s) == ("https://dispatch.example.com",) * 2
+
+
+def test_clearing_the_public_ip_drops_the_derived_url_but_keeps_a_domain_one(tmp_path, monkeypatch):
+    s = _fresh(tmp_path, monkeypatch)
+    monkeypatch.setenv("GDX_PUBLIC_IP", "203.0.113.7")
+    assert m.main() == 0
+    # The IP certificate failed, so install.sh cleared the address.
+    monkeypatch.setenv("GDX_PUBLIC_IP", "")
+    assert m.main() == 0
+    assert _base_urls(s) == (None, None)
+
+    # A stored domain URL (the variable since removed) is still kept, as before.
+    monkeypatch.setenv("GDX_DOMAIN", "dispatch.example.com")
+    assert m.main() == 0
+    monkeypatch.delenv("GDX_DOMAIN")
+    assert m.main() == 0
+    assert _base_urls(s) == ("https://dispatch.example.com",) * 2

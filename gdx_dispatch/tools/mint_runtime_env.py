@@ -18,9 +18,9 @@ real, stable secrets instead of dev defaults:
      for postgres' POSTGRES_PASSWORD_FILE.
 
 Derived, non-secret convenience values: DATABASE_URL is built from the DB
-password; GDX_PUBLIC_BASE_URL / GDX_BASE_URL are derived from GDX_DOMAIN when
-the operator didn't set them explicitly, and re-derived when the domain
-changes (redeploy with a new GDX_DOMAIN just works).
+password; GDX_PUBLIC_BASE_URL / GDX_BASE_URL are derived from GDX_DOMAIN (else
+GDX_PUBLIC_IP) when the operator didn't set them explicitly, and re-derived
+when the domain changes (redeploy with a new GDX_DOMAIN just works).
 
 The DB password is the one key where a *stored* value beats the environment:
 postgres fixes the superuser password into its data directory on first init,
@@ -33,12 +33,13 @@ gates would refuse to boot on exactly the unset keys this script exists to fill)
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
 import os
 import re
 import secrets as pysecrets
 import sys
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 log = logging.getLogger("gdx_dispatch.mint_runtime_env")
 
@@ -122,6 +123,16 @@ def _read_env_file(path: str) -> dict[str, str]:
     return stored
 
 
+def _is_ip_url(url: str) -> bool:
+    """True for https://<IP literal>[/…], the shape derived from GDX_PUBLIC_IP."""
+    host = urlsplit(url).hostname or ""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
 def _write_atomic(path: str, content: str) -> None:
     tmp = f"{path}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -191,13 +202,21 @@ def main() -> int:
     )
 
     domain = os.getenv("GDX_DOMAIN", "").strip()
+    # No domain: install.sh passes the server's public IPv4, and Caddy serves
+    # it with a Let's Encrypt IP certificate. When that address is cleared
+    # (the certificate failed, so the install went back to plain :80), a
+    # stored https://<ip> is dropped too: it was derived here, and emailed
+    # links to it would not open.
+    public_ip = os.getenv("GDX_PUBLIC_IP", "").strip()
     for url_key in ("GDX_PUBLIC_BASE_URL", "GDX_BASE_URL"):
         env_value = os.getenv(url_key, "").strip()
         if env_value:
             resolved[url_key] = env_value
         elif domain:
             resolved[url_key] = f"https://{domain}"
-        elif stored.get(url_key):
+        elif public_ip:
+            resolved[url_key] = f"https://{public_ip}"
+        elif stored.get(url_key) and not _is_ip_url(stored[url_key]):
             resolved[url_key] = stored[url_key]
 
     lines = [
