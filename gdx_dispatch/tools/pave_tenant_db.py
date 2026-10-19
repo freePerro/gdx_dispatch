@@ -1551,18 +1551,13 @@ def fence_database(engine, db_info: dict) -> tuple[str, int]:
     return dbname, limit
 
 
-def lift_fence(db_url: str, dbname: str, limit: int) -> bool:
+def lift_fence(db_url: str, dbname: str, limit: int) -> None:
     engine = create_engine(_own_url(db_url))
     try:
         with engine.connect() as conn:
             conn.execute(text(_connlimit_sql(dbname, limit)))
             conn.commit()
         log.info("Fence lifted: %s CONNECTION LIMIT %s", dbname, limit)
-        return True
-    except Exception as e:
-        log.error("Could not lift the fence on %s (%s). Run: %s;", dbname, e,
-                  _connlimit_sql(dbname, limit))
-        return False
     finally:
         engine.dispose()
 
@@ -1827,12 +1822,19 @@ def pave_one(db_url: str, label: str, strict: bool = True, terminate_others: boo
     finally:
         engine.dispose()
     ok = False
+    lifted = False
     try:
         ok = _pave_one(db_url, label, strict, terminate_others=True)
     finally:
         # A fence left up refuses every non-superuser connection afterwards:
-        # not a successful pave, whatever step 7 found.
-        lifted = lift_fence(db_url, dbname, limit)
+        # not a successful pave, whatever step 7 found. Caught here so a
+        # failure to lift cannot replace an exception already propagating.
+        try:
+            lift_fence(db_url, dbname, limit)
+            lifted = True
+        except Exception as e:
+            log.error("Could not lift the fence on %s (%s). Run: %s;", dbname, e,
+                      _connlimit_sql(dbname, limit))
     return ok and lifted
 
 
