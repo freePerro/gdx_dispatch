@@ -864,6 +864,7 @@
       <!-- A job with no date dropped onto a tech: hours and the whole crew
            before anything is written (Doug, 2026-10-16). -->
       <ScheduleDropDialog :prompt="schedulePrompt" :technicians="assignableTechnicians" :all-technicians="technicians" @answer="answerSchedulePrompt" />
+      <DayOverflowDialog :prompt="overflowPrompt" :technicians="assignableTechnicians" :all-technicians="technicians" @answer="answerOverflowPrompt" />
 
       <!-- Sprint dispatch-capacity (2026-05-20) — duration prompt on drop -->
       <Dialog
@@ -1091,7 +1092,10 @@ import Dialog from 'primevue/dialog';
 import CrewChangeDialog from '../components/CrewChangeDialog.vue';
 import { crewOf, crewPatch, useCrewChangePrompt } from '../composables/useCrewChange';
 import ScheduleDropDialog from '../components/ScheduleDropDialog.vue';
-import { estimateHoursOver, scheduleDropPatch, useScheduleDropPrompt } from '../composables/useScheduleDrop';
+import DayOverflowDialog from '../components/DayOverflowDialog.vue';
+import {
+  estimateHoursOver, hoursLeftInDay, scheduleDropPatch, shiftHours, useDayOverflowPrompt, useScheduleDropPrompt,
+} from '../composables/useScheduleDrop';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import InputText from 'primevue/inputtext';
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue';
@@ -2454,6 +2458,7 @@ function takeDragOrigin() {
 
 const { prompt: crewPrompt, ask: askCrew, answer: answerCrewPrompt } = useCrewChangePrompt((id) => techName(id));
 const { prompt: schedulePrompt, ask: askSchedule, answer: answerSchedulePrompt } = useScheduleDropPrompt();
+const { prompt: overflowPrompt, ask: askOverflow, answer: answerOverflowPrompt } = useDayOverflowPrompt();
 
 // A job with no date dropped onto a tech is being booked, not moved: ask the
 // hours and the whole crew first, then write date, crew and hours in one
@@ -2482,13 +2487,96 @@ async function scheduleUndatedDrop(jobId, techId, scheduledAt, knownJob = null) 
     suggest: jobHasDuration(job) ? null : () => suggestedEstimate(job.id),
   });
   if (!answer) return true; // cancelled: nothing moves
+  const booking = await fitBookingInDay(job, answer, techId, scheduledAt);
+  if (!booking) return true; // cancelled: nothing moves
+  const patch = { ...scheduleDropPatch(booking.answer, scheduledAt), ...leaveLanePatch(job) };
+  if (booking.days) patch.visit_duration_minutes = Math.round(booking.days[0].hours * 60);
   await withBoardWrite(async () => {
+    let booked = false;
     try {
-      await api.patch(`/api/jobs/${jobId}`, { ...scheduleDropPatch(answer, scheduledAt), ...leaveLanePatch(job) });
+      await api.patch(`/api/jobs/${jobId}`, patch);
+      booked = true;
     } catch { /* api composable already toasts */ }
+    if (booked && booking.days) await bookLaterDays(jobId, job, booking);
     await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
   });
   return true;
+}
+
+// A booking longer than what is left of the dropped-on tech's shift asks
+// first (Doug, 2026-10-18): add a tech, book the rest on that tech's next
+// workdays, or keep it all on the day. Resolves { answer, days, shift } —
+// days null for one day — or null on Cancel. A job with no hours, or a tech
+// with no shift, has nothing to measure and books as it did.
+async function fitBookingInDay(job, answer, techId, scheduledAt) {
+  const saved = Number(job.scheduled_duration_hours) > 0 ? job.scheduled_duration_hours : job.effective_duration_hours;
+  const hours = Number(answer.hours ?? saved);
+  const tech = technicians.value.find((t) => String(t.id) === String(techId));
+  const shift = tech ? shiftHours(tech.effective_shift_start, tech.effective_shift_end) : null;
+  const wall = toShopWallClock(scheduledAt, tenantTimezone.value);
+  const timed = wall.getHours() !== 0 || wall.getMinutes() !== 0;
+  const left = hoursLeftInDay(timed ? wall.getHours() + wall.getMinutes() / 60 : null, shift);
+  if (!(hours > 0) || left == null || hours <= left) return { answer, days: null, shift };
+  const pad = (n) => String(n).padStart(2, '0');
+  const choice = await askOverflow({
+    jobLabel: displayCustomer(job),
+    techName: tech.name,
+    day: `${wall.getFullYear()}-${pad(wall.getMonth() + 1)}-${pad(wall.getDate())}`,
+    shift,
+    mask: tech.effective_workdays,
+    hours,
+    hoursLeft: left,
+    techIds: answer.tech_ids.map(String),
+    leadId: String(answer.lead),
+    droppedId: String(techId),
+  });
+  if (!choice) return null;
+  // Hours the first dialog would not have re-sent stay unsent, unless a
+  // bigger crew changed them here.
+  const send = answer.hours != null || choice.hours !== hours;
+  return {
+    answer: { tech_ids: choice.tech_ids, lead: choice.lead, hours: send ? choice.hours : null },
+    days: choice.days,
+    shift,
+  };
+}
+
+// The days after the first of a split booking, through the job's Visits
+// route: each starts at shift start, for the whole crew. Days of the same
+// length go in one request. A refusal is the server's own sentence; the
+// first day stays booked, and the rest can be added from the Visits card.
+async function bookLaterDays(jobId, job, { answer, days, shift }) {
+  const later = days.slice(1);
+  const groups = [];
+  for (const d of later) {
+    const last = groups[groups.length - 1];
+    if (last && last.hours === d.hours) last.days.push(d.day);
+    else groups.push({ hours: d.hours, days: [d.day] });
+  }
+  try {
+    for (const g of groups) {
+      await api.post(`/api/jobs/${jobId}/visits`, {
+        days: g.days,
+        start_time: toHHMM(Math.round(shift.start * 60)),
+        duration_minutes: Math.round(g.hours * 60),
+        tech_ids: answer.tech_ids,
+      }, { suppressErrorToast: true });
+    }
+  } catch (e) {
+    toast.add({
+      severity: 'warn',
+      summary: `Only part of ${displayCustomer(job)} was booked`,
+      detail: `${refusalOf(e)?.detail || e?.message || 'The other days could not be booked.'} Add them from the Visits card on the job page.`,
+      life: 9000,
+    });
+    return;
+  }
+  toast.add({
+    severity: 'success',
+    summary: 'Booked over several days',
+    detail: `${displayCustomer(job)}: ${days.length} workdays.`,
+    life: 4000,
+  });
 }
 
 // The day a column drop with no slot lands on: shop midnight of the board
