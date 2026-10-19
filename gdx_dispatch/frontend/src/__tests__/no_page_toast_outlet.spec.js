@@ -29,7 +29,21 @@ function* walk(dir) {
   }
 }
 
-const stripHtmlComments = (src) => src.replace(/<!--[\s\S]*?-->/g, '');
+// Scan rather than regex-replace: each `<!--` is cut through its `-->` (or to
+// the end of an unclosed comment) and replaced by a space, so the text on
+// either side cannot join into a new `<!--`.
+function stripHtmlComments(src) {
+  let out = '';
+  let pos = 0;
+  for (;;) {
+    const open = src.indexOf('<!--', pos);
+    if (open === -1) return out + src.slice(pos);
+    out += src.slice(pos, open) + ' ';
+    const close = src.indexOf('-->', open + 4);
+    if (close === -1) return out;
+    pos = close + 3;
+  }
+}
 const TOAST_TAG = /<Toast[\s/>]/g;
 const TOAST_IMPORT = /from\s+['"]primevue\/toast['"]/;
 
