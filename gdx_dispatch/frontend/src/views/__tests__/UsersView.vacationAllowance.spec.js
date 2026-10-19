@@ -101,3 +101,32 @@ describe('UsersView vacation allowance override', () => {
     expect((await save(w)).vacation_allowance_hours).toBe(null);
   });
 });
+
+// GDXA-1827: users.hire_date had no way in. The dialog opens with the saved
+// date and sends 'YYYY-MM-DD', or null when cleared.
+describe('UsersView hire date', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    apiGet.mockReset();
+    apiPatch.mockReset();
+    apiPatch.mockResolvedValue({});
+  });
+
+  it('opens blank with no hire date and saves null', async () => {
+    const w = await openEdit(tech({ hire_date: null }));
+    expect(w.find('[data-testid="users-edit-hire-date"]').element.value).toBe('');
+    expect((await save(w)).hire_date).toBe(null);
+  });
+
+  it('opens with the saved date, sends a new one, and clearing sends null', async () => {
+    const w = await openEdit(tech({ hire_date: '2019-04-02' }));
+    const input = w.find('[data-testid="users-edit-hire-date"]');
+    expect(input.element.value).toBe('2019-04-02');
+    await input.setValue('2020-02-29');
+    expect((await save(w)).hire_date).toBe('2020-02-29');
+
+    const w2 = await openEdit(tech({ hire_date: '2019-04-02' }));
+    await w2.find('[data-testid="users-edit-hire-date"]').setValue('');
+    expect((await save(w2)).hire_date).toBe(null);
+  });
+});

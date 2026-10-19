@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import time
+from datetime import date, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -92,6 +92,18 @@ class UserPatchIn(BaseModel):
     vacation_allowance_hours: Decimal | None = Field(
         default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
     )
+    # GDXA-1827: the column existed with no writer. The anniversary vacation
+    # year counts from it (routers/settings.vacation_year_start). Null clears.
+    hire_date: date | None = None
+
+    @field_validator("hire_date")
+    @classmethod
+    def _hire_date(cls, value: date | None) -> date | None:
+        # A hire date up to a year ahead covers an offer already accepted; a
+        # typed year beyond that, or before 1900, is a typo, not a hire.
+        if value is not None and not date(1900, 1, 1) <= value <= date.today() + timedelta(days=366):
+            raise ValueError("hire_date must be between 1900-01-01 and one year from today")
+        return value
 
 
 class SelfPatchIn(BaseModel):
@@ -190,6 +202,7 @@ def _serialize(u: User) -> dict[str, Any]:
         "certifications": u.certifications or "",
         # NULL = inherit AppSettings.vacation_allowance_hours.
         "vacation_allowance_hours": allowance_hours_out(u.vacation_allowance_hours),
+        "hire_date": u.hire_date.isoformat() if u.hire_date else None,
     }
 
 
@@ -374,7 +387,9 @@ def update_user(user_id: str, payload: UserPatchIn, request: Request, user: dict
     u = _get_user_or_404(db, tid, user_id)
     data = payload.model_dump(exclude_unset=True)
     updates = _requested_updates(
-        data, ("phone", "route_start_address", "shift_start", "shift_end", "workdays", "vacation_allowance_hours")
+        data,
+        ("phone", "route_start_address", "shift_start", "shift_end", "workdays",
+         "vacation_allowance_hours", "hire_date"),
     )
     if "email" in data and data["email"]:
         updates["email"] = ("email", data["email"].lower().strip())
@@ -401,7 +416,7 @@ def _audit_value(value: Any) -> Any:
     """A column value in the JSON shape the audit trail stores."""
     if isinstance(value, Decimal):
         return allowance_hours_out(value)
-    if isinstance(value, time):
+    if isinstance(value, (time, date)):
         return value.isoformat()
     return value
 
