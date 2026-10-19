@@ -1388,7 +1388,7 @@ def update_job(
         visit_plan = plan_for_job(
             db, job,
             duration_minutes=data.get("visit_duration_minutes") or default_duration(
-                db, job, updates["scheduled_duration_hours"] if "scheduled_duration_hours" in updates else UNSET,
+                db, job, updates.get("scheduled_duration_hours", UNSET),
             ),
             scheduled_at=updates.get("scheduled_at", UNSET),
             crew_after=tuple(desired_tech_ids) if apply_assignments else None,
