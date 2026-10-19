@@ -1,4 +1,4 @@
-"""Migration 132: drop ``van_inventory`` and ``van_inventory_log`` — on both
+"""Migration 133: drop ``van_inventory`` and ``van_inventory_log`` — on both
 engines, reversibly, rerunnably, all-or-nothing, and only when both are
 empty. Their only writer, ``routers/van_inventory.py``, had no UI caller and
 leaves in the same change (GDXA-1826), so these tests also pin that the
@@ -18,7 +18,7 @@ from collections.abc import Generator
 import pytest
 from sqlalchemy import Engine, create_engine, inspect
 
-MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/132_drop_van_inventory.py"
+MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/133_drop_van_inventory.py"
 TABLES = ("van_inventory_log", "van_inventory")
 
 SEED = [
@@ -49,7 +49,7 @@ EXPECTED_COLUMNS = {
 
 def _load(conn):
     """Import the migration with `op.get_bind()` pointed at our connection."""
-    spec = importlib.util.spec_from_file_location("m132", MIGRATION)
+    spec = importlib.util.spec_from_file_location("m133", MIGRATION)
     mod = importlib.util.module_from_spec(spec)
     fake = types.ModuleType("alembic")
 
@@ -80,25 +80,25 @@ def _cols(conn, table: str) -> set[str]:
 
 # ── Static ───────────────────────────────────────────────────────────────────
 
-def test_it_chains_onto_131_and_131_exists() -> None:
+def test_it_chains_onto_132_and_132_exists() -> None:
     source = MIGRATION.read_text()
-    assert 'revision = "132_drop_van_inventory"' in source
-    assert 'down_revision = "131_vacation_year_policy"' in source
-    assert len("132_drop_van_inventory") <= 32, "alembic_version.version_num is varchar(32)"
+    assert 'revision = "133_drop_van_inventory"' in source
+    assert 'down_revision = "132_drop_safety_checklists"' in source
+    assert len("133_drop_van_inventory") <= 32, "alembic_version.version_num is varchar(32)"
     declaring = [
         p.name for p in MIGRATION.parent.glob("*.py")
-        if re.search(r'^revision = "131_vacation_year_policy"', p.read_text(), re.M)
+        if re.search(r'^revision = "132_drop_safety_checklists"', p.read_text(), re.M)
     ]
-    assert declaring == ["131_vacation_year_policy.py"], f"exactly one migration must declare 131, found {declaring}"
+    assert declaring == ["132_drop_safety_checklists.py"], f"exactly one migration must declare 132, found {declaring}"
 
 
-def test_nothing_else_revises_131() -> None:
+def test_nothing_else_revises_132() -> None:
     """Two heads would stop `alembic upgrade head` on the next deploy."""
     revising = [
         p.name for p in MIGRATION.parent.glob("*.py")
-        if re.search(r'^down_revision = "131_vacation_year_policy"', p.read_text(), re.M)
+        if re.search(r'^down_revision = "132_drop_safety_checklists"', p.read_text(), re.M)
     ]
-    assert revising == ["132_drop_van_inventory.py"], revising
+    assert revising == ["133_drop_van_inventory.py"], revising
 
 
 def test_no_unescaped_percent_signs() -> None:
@@ -131,7 +131,7 @@ def test_van_inventory_router_is_retired() -> None:
 
 @pytest.fixture()
 def sqlite_conn(tmp_path):
-    eng = create_engine(f"sqlite:///{tmp_path / 'm132.db'}", future=True)
+    eng = create_engine(f"sqlite:///{tmp_path / 'm133.db'}", future=True)
     with eng.begin() as c:
         for stmt in SEED:
             c.exec_driver_sql(stmt)
@@ -201,7 +201,7 @@ def test_sqlite_fresh_install_without_the_tables(tmp_path):
 _URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL") or ""
 _requires_pg = pytest.mark.skipif(
     "postgresql" not in _URL,
-    reason="the Postgres arm of 132 needs a real Postgres; set DATABASE_URL "
+    reason="the Postgres arm of 133 needs a real Postgres; set DATABASE_URL "
     "or TEST_DATABASE_URL to a postgres url",
 )
 
@@ -217,7 +217,7 @@ def test_these_tests_actually_run_in_ci() -> None:
 def pg_conn() -> Generator[Engine, None, None]:
     """Every table lives in a scratch schema — the shared CI database keeps its
     real tables."""
-    schema = "m132_scratch"
+    schema = "m133_scratch"
     eng = create_engine(_URL, future=True)
     with eng.begin() as c:
         c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")

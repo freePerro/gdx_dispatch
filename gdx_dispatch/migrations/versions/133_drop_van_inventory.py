@@ -23,16 +23,16 @@ Rollback: ``downgrade()`` recreates both empty, with the models' columns in
 portable types (VARCHAR/TIMESTAMP rather than Postgres uuid/timestamptz).
 Restore the router and models first if the API is wanted back.
 
-Revision ID: 132_drop_van_inventory
-Revises: 131_vacation_year_policy
+Revision ID: 133_drop_van_inventory
+Revises: 132_drop_safety_checklists
 Create Date: 2026-10-19
 """
 
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "132_drop_van_inventory"
-down_revision = "131_vacation_year_policy"
+revision = "133_drop_van_inventory"
+down_revision = "132_drop_safety_checklists"
 branch_labels = None
 depends_on = None
 
@@ -87,7 +87,7 @@ def upgrade() -> None:
     if occupied:
         listing = ", ".join(f"{t} holds {n} row(s)" for t, n in occupied.items())
         raise RuntimeError(
-            f"132: {listing} — refusing to drop anything. Nothing in the app reads "
+            f"133: {listing} — refusing to drop anything. Nothing in the app reads "
             "these tables any more. Export the rows if anyone wants them (pg_dump -t "
             "<table> on Postgres; sqlite3 .dump on SQLite), empty the table, then "
             "restart the container so the migration reruns."
