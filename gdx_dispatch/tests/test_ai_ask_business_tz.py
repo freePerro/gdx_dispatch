@@ -15,11 +15,12 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import gdx_dispatch.routers.ai as ai_mod
+from gdx_dispatch.core.pay_periods import shop_tz_name_from_settings
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.ai import _business_tz, get_current_principal_for_ai, get_db_for_ai
 from gdx_dispatch.routers.ai import router as ai_router
@@ -65,6 +66,11 @@ def _set_tz(db, name: str) -> None:
     db.commit()
 
 
+def _fresh_session(db):
+    """A second session on the same engine: ``Session.info`` caches the zone."""
+    return sessionmaker(bind=db.get_bind())()
+
+
 def _system_prompt_for(db) -> str:
     app = FastAPI()
     app.include_router(ai_router)
@@ -102,28 +108,46 @@ def test_new_york_tenant_still_gets_new_york_date(db):
     assert "(2026-10-07, America/New_York)" in prompt
 
 
-def test_no_settings_row_falls_back_to_business_tz_default(db, monkeypatch):
-    monkeypatch.delenv("GDX_BUSINESS_TZ", raising=False)
-    assert str(_business_tz(db)) == "America/Chicago"
+def test_no_settings_row_uses_the_shared_shop_default(db):
+    # GDXA-1621: the missing-row default lives in core.pay_periods only; the
+    # assistant must say whatever every other "today" in the app says.
+    expected = shop_tz_name_from_settings(_fresh_session(db))
+    assert str(_business_tz(db)) == expected
 
 
-def test_business_tz_env_overrides_default_when_no_row(db, monkeypatch):
+def test_business_tz_env_no_longer_overrides_the_shop_zone(db, monkeypatch):
     monkeypatch.setenv("GDX_BUSINESS_TZ", "America/Denver")
-    assert str(_business_tz(db)) == "America/Denver"
+    assert str(_business_tz(db)) != "America/Denver"
+    _set_tz(db, "America/Chicago")
+    assert str(_business_tz(_fresh_session(db))) == "America/Chicago"
 
 
-def test_invalid_tenant_zone_falls_back_and_says_so(db, monkeypatch, caplog):
-    monkeypatch.delenv("GDX_BUSINESS_TZ", raising=False)
+def test_zone_read_is_cached_with_the_shared_reader(db):
+    _set_tz(db, "America/Chicago")
+    assert str(_business_tz(db)) == "America/Chicago"
+    assert db.info["gdx_shop_timezone"] == "America/Chicago"
+
+
+def test_invalid_tenant_zone_falls_back_and_says_so(db, caplog):
     _set_tz(db, "Not/AZone")
     with caplog.at_level("WARNING", logger=ai_mod.log.name):
-        assert str(_business_tz(db)) == "America/Chicago"
+        assert str(_business_tz(db)) == "UTC"
     assert "ai_tenant_timezone_invalid" in caplog.text
 
 
-def test_failed_settings_read_falls_back_and_logs(monkeypatch, caplog):
-    monkeypatch.delenv("GDX_BUSINESS_TZ", raising=False)
+def test_failed_settings_read_falls_back_and_logs(caplog):
     broken = MagicMock()
-    broken.execute.side_effect = RuntimeError("no such table: app_settings")
+    broken.info = {}
+    broken.query.side_effect = RuntimeError("no such table: app_settings")
     with caplog.at_level("ERROR", logger=ai_mod.log.name):
-        assert str(_business_tz(broken)) == "America/Chicago"
+        assert str(_business_tz(broken)) == "UTC"
     assert "ai_tenant_timezone_read_failed" in caplog.text
+
+
+def test_real_failed_settings_read_falls_back_to_utc(db):
+    # The real failure, not a mock: the table is gone and the read raises.
+    # SQLite never poisons a transaction, so this cannot prove the
+    # contained_read savepoint; it proves the fallback on a real error.
+    AppSettings.__table__.drop(db.get_bind())
+    assert str(_business_tz(db)) == "UTC"
+    assert db.execute(text("select 1")).scalar() == 1

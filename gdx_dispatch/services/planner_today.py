@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from uuid import uuid4
 
 from sqlalchemy import case, or_, select, update
@@ -28,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import ensure_audit_table, log_audit_event_sync
+from gdx_dispatch.core.pay_periods import resolve_zone, shop_tz_name_from_settings
 from gdx_dispatch.models.tenant_models import PlannerDayNote, PlannerTask
 
 log = logging.getLogger(__name__)
@@ -47,22 +48,35 @@ SOURCE_AI = "ai"
 # due_date / today_date are CALENDAR dates. Storage convention: date D =
 # D@00:00:00 UTC. "Today" for a garage-door business is the shop's local day,
 # not UTC's — after ~7pm CDT those differ, which put evening captures a day late.
+# The shop's day is AppSettings.timezone, read through the one shared reader
+# (core.pay_periods.shop_tz_name_from_settings); pass the session in.
 try:
     from zoneinfo import ZoneInfo
 
-    _BUSINESS_TZ = ZoneInfo(os.getenv("GDX_BUSINESS_TZ", "America/Chicago"))
+    # Only for callers that do not pass a session yet: leads.business_today and
+    # the outlook capture writer, other owners' files (GDXA-1622). Until they
+    # do, a shop whose AppSettings zone is not this one sees two "todays".
+    _SESSIONLESS_TZ = ZoneInfo(os.getenv("GDX_BUSINESS_TZ", "America/Chicago"))
 except Exception:  # tzdata missing — degrade to UTC rather than crash the router
-    _BUSINESS_TZ = timezone.utc
+    _SESSIONLESS_TZ = timezone.utc
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def calendar_today_utc() -> datetime:
-    """Today's business-local calendar date, stored per the D@00:00 UTC
+def shop_zone(db: Session | None) -> tzinfo:
+    """The shop's zone from AppSettings via the shared reader; the session-less
+    fallback only when there is no session to read it from."""
+    if db is None:
+        return _SESSIONLESS_TZ
+    return resolve_zone(shop_tz_name_from_settings(db))
+
+
+def calendar_today_utc(db: Session | None = None) -> datetime:
+    """Today's shop-local calendar date, stored per the D@00:00 UTC
     convention. Shared with other planner-task writers (outlook capture)."""
-    today = datetime.now(_BUSINESS_TZ).date()
+    today = datetime.now(shop_zone(db)).date()
     return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
 
 
@@ -75,7 +89,7 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _date_out(dt: datetime | None) -> str | None:
+def _date_out(dt: datetime | None, tz: tzinfo | None = None) -> str | None:
     """due_date OUT is a bare calendar date ('YYYY-MM-DD'). str(datetime)
     ('2026-08-03 00:00:00+00:00') made browsers parse UTC midnight and
     render the previous local day — the 2026-08-03 off-by-one fix.
@@ -83,9 +97,9 @@ def _date_out(dt: datetime | None) -> str | None:
     Two row shapes coexist: UTC-midnight rows (the calendar convention —
     return that date verbatim) and real-timestamp rows written by older
     server defaults (quick-capture/outlook `now()`) — those are instants,
-    so their calendar day is the BUSINESS-local one. A genuine event at
-    exactly 00:00:00 UTC degrades to the convention read — acceptable,
-    same trade the useFormatters stamp helpers make."""
+    so their calendar day is the shop-local one (``tz``, from shop_zone).
+    A genuine event at exactly 00:00:00 UTC degrades to the convention
+    read — acceptable, same trade the useFormatters stamp helpers make."""
     if not dt:
         return None
     if dt.tzinfo is None:
@@ -93,7 +107,7 @@ def _date_out(dt: datetime | None) -> str | None:
     utc_dt = dt.astimezone(timezone.utc)
     if (utc_dt.hour, utc_dt.minute, utc_dt.second) == (0, 0, 0):
         return utc_dt.date().isoformat()
-    return dt.astimezone(_BUSINESS_TZ).date().isoformat()
+    return dt.astimezone(tz or _SESSIONLESS_TZ).date().isoformat()
 
 
 def _ts_out(dt: datetime | None) -> str | None:
@@ -135,19 +149,20 @@ def is_mine(task: PlannerTask, uid: str) -> bool:
     return owner_of(task) == uid
 
 
-def task_out(t: PlannerTask, today: datetime | None = None) -> dict:
-    today = today or calendar_today_utc()
+def task_out(t: PlannerTask, today: datetime, tz: tzinfo) -> dict:
+    """``today`` and ``tz`` come from the caller's session (calendar_today_utc(db),
+    shop_zone(db)), so a page of rows reads the shop zone once."""
     return {
         "id": str(t.id), "title": t.title, "description": t.description,
         "status": t.status, "priority": t.priority,
-        "due_date": _date_out(t.due_date),
+        "due_date": _date_out(t.due_date, tz),
         "assigned_to": t.assigned_to, "created_by": t.created_by,
         "job_id": t.job_id, "customer_id": t.customer_id,
         "contact_phone": t.contact_phone, "phone_com_call_id": t.phone_com_call_id,
         "source": t.source,
         "created_at": _ts_out(t.created_at),
         "completed_at": _ts_out(t.completed_at),
-        "today_date": _date_out(t.today_date),
+        "today_date": _date_out(t.today_date, tz),
         "on_today": _as_utc(t.today_date) == today,
         # Instants, always with an offset: SQLite reads them back naive.
         "remind_at": _ts_out(_as_utc(t.remind_at)),
@@ -158,7 +173,8 @@ def task_out(t: PlannerTask, today: datetime | None = None) -> dict:
 
 def today_view(db: Session, uid: str, *, today: datetime | None = None) -> dict:
     """Today's pinned tasks, the suggestions, and today's note for ``uid``."""
-    today = today or calendar_today_utc()
+    tz = shop_zone(db)
+    today = today or calendar_today_utc(db)
     mine = mine_clause(uid)
     done_last = case((PlannerTask.status == "done", 1), else_=0)
 
@@ -195,9 +211,9 @@ def today_view(db: Session, uid: str, *, today: datetime | None = None) -> dict:
 
     return {
         "date": today.date().isoformat(),
-        "tasks": [task_out(t, today) for t in pinned],
-        "carried": [task_out(t, today) for t in carried],
-        "due": [task_out(t, today) for t in due[:DUE_CAP]],
+        "tasks": [task_out(t, today, tz) for t in pinned],
+        "carried": [task_out(t, today, tz) for t in carried],
+        "due": [task_out(t, today, tz) for t in due[:DUE_CAP]],
         "due_more": max(0, len(due) - DUE_CAP),
         "note": note_out(_note_row(db, uid, today.date()), today.date()),
     }
@@ -209,7 +225,8 @@ def set_today(
 ) -> dict:
     """Pin ``task_id`` to Today (``on``) or take it off. Raises LookupError
     for no such task and NotYours when it is not in the caller's set."""
-    today = today or calendar_today_utc()
+    tz = shop_zone(db)
+    today = today or calendar_today_utc(db)
     task = db.execute(select(PlannerTask).where(PlannerTask.id == task_id)).scalar_one_or_none()
     if task is None:
         raise LookupError(task_id)
@@ -217,7 +234,7 @@ def set_today(
         raise NotYours(task_id)
     target = today if on else None
     if _as_utc(task.today_date) == target:
-        return task_out(task, today)  # already so — no write, no audit row
+        return task_out(task, today, tz)  # already so — no write, no audit row
 
     ensure_audit_table(db)  # before staging: its first run on an engine commits
     task.today_date = target
@@ -229,7 +246,7 @@ def set_today(
         request=request,
     )
     db.commit()
-    return task_out(task, today)
+    return task_out(task, today, tz)
 
 
 # ── Notes ────────────────────────────────────────────────────────────────────
@@ -277,7 +294,7 @@ def save_note(
     repeated inside the UPDATE itself, so a save that commits between this
     one's check and its write still produces a conflict, not an overwrite.
     """
-    today = today or calendar_today_utc()
+    today = today or calendar_today_utc(db)
     day = today.date()
     body = (body or "").replace("\x00", "")
     if len(body) > NOTE_MAX:
