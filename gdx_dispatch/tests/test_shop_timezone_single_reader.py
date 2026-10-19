@@ -52,10 +52,12 @@ SKIP_DIRS = {"tests", "migrations", "frontend", "node_modules", "__pycache__"}
 #: shrinks. Never add a line to make a new reader pass; route it through
 #: pay_periods instead.
 ALLOWLIST: dict[str, str] = {
-    "services/customer_statements.py": "money-billing, GDXA-1616 child (_shop_tz)",
-    "modules/bank_feeds/service.py": "back-office-books, GDXA-1616 child (tenant_zoneinfo)",
-    "routers/ai.py": "ai-mcp, GDXA-1616 child (_business_tz)",
-    "services/planner_today.py": "jobs-dispatch, GDXA-1616 child (GDX_BUSINESS_TZ)",
+    # Routed through pay_periods by GDXA-1620, but the failed-read fallback is
+    # still its own "America/New_York" literal rather than DEFAULT_SHOP_TZ.
+    "modules/bank_feeds/service.py": "back-office-books, failed-read literal (found, not filed)",
+    # Routed by GDXA-1622 for callers with a session; the session-less
+    # fallback (leads.business_today, outlook capture) is still GDX_BUSINESS_TZ.
+    "services/planner_today.py": "jobs-dispatch, session-less GDX_BUSINESS_TZ fallback",
     # Not in the triage; found by this scan and deferred to platform-core:
     # the settings GET serializes `row.timezone or "America/New_York"` and the
     # create path writes the literal.
