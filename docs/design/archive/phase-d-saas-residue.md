@@ -23,7 +23,7 @@ tenant UI and the `/integrations` page that answered 302-without-Location for
 everyone (S13), fifteen orphan Jinja templates (S14), the Stripe-subscription
 billing reconciliation route and Celery task, the vendor-upsell
 `core/ai_recommendations.py` router (it was registered first, so it — not <!-- link-ok -->
-`core/recommendation_routes.py` — was serving `GET /api/recommendations`;
+`core/recommendation_routes.py` — was serving `GET /api/recommendations`; <!-- link-ok: renamed next_action_routes.py in GDXA-1866 -->
 zero callers anywhere, and the survivor now answers that path with a
 different shape behind `require_role`; link-ok), and an unreferenced
 "retention playbook" health-score module. Commit 2 (same branch): S7 and S8's code halves built,

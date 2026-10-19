@@ -314,7 +314,7 @@ planner_router_mod = _load_router("gdx_dispatch.routers.planner", "router")
 audit_dashboard_router = _load_router("gdx_dispatch.core.audit_dashboard", "router")
 
 
-recommendation_routes_router = _load_router("gdx_dispatch.core.recommendation_routes", "router")
+next_action_routes_router = _load_router("gdx_dispatch.core.next_action_routes", "router")
 
 ai_quote_router = _load_router("gdx_dispatch.core.ai_quote", "router")
 
@@ -348,8 +348,6 @@ service_triggers_router = _load_router("gdx_dispatch.routers", "service_triggers
 variance_report_router = _load_router("gdx_dispatch.routers", "variance_report")
 
 warranty_claims_router = _load_router("gdx_dispatch.routers", "warranty_claims")
-
-safety_checklist_router = _load_router("gdx_dispatch.routers", "safety_checklist")
 
 # estimate_nurture removed 2026-09-19 (silent-success sweep): its /run
 # endpoint counted "sent" nurture emails while sending nothing, and no UI,
@@ -1247,7 +1245,7 @@ def create_app() -> FastAPI:
     app.include_router(door_catalog_router)
     app.include_router(planner_router_mod)
     app.include_router(audit_dashboard_router)
-    app.include_router(recommendation_routes_router)
+    app.include_router(next_action_routes_router)
     app.include_router(ai_quote_router)
     app.include_router(ai_router_router)
     app.include_router(ai_usage_router)
@@ -1274,7 +1272,6 @@ def create_app() -> FastAPI:
     app.include_router(service_triggers_router.router if hasattr(service_triggers_router, "router") else service_triggers_router)
     app.include_router(variance_report_router.router if hasattr(variance_report_router, "router") else variance_report_router)
     app.include_router(warranty_claims_router.router if hasattr(warranty_claims_router, "router") else warranty_claims_router)
-    app.include_router(safety_checklist_router.router if hasattr(safety_checklist_router, "router") else safety_checklist_router)
     app.include_router(user_performance_router.router if hasattr(user_performance_router, "router") else user_performance_router)
     app.include_router(email_settings_router.router if hasattr(email_settings_router, "router") else email_settings_router)
     app.include_router(parts_needed_router.router if hasattr(parts_needed_router, "router") else parts_needed_router)

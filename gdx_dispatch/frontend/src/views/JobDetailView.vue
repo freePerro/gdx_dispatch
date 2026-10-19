@@ -176,7 +176,7 @@
           </div>
         </div>
         <div class="details-grid">
-          <div class="card">
+          <div class="card job-details-card">
             <div class="card-header">
               <h3>Job Details</h3>
             </div>
@@ -240,7 +240,7 @@
                     :data-testid="`assignment-${a.tech_id}`"
                   >
                     <i v-if="a.is_lead" class="pi pi-star-fill" title="Lead tech" />
-                    <span class="assignment-name">{{ techLabel(a.tech_id) }}</span>
+                    <span class="assignment-name" :title="techLabel(a.tech_id)">{{ techLabel(a.tech_id) }}</span>
                     <Button v-if="!a.is_lead && patchable"
                       v-tooltip="'Make lead'"
                       icon="pi pi-star" text size="small"
@@ -3427,7 +3427,7 @@ onMounted(async () => {
 .stage-divider { flex: 1; height: 1px; background: var(--border); }
 .job-tabs { margin-bottom: 1rem; }
 .tab-panel { margin-top: 1rem; }
-.details-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+.details-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 1rem; }
 .card { background: var(--surface-card); border-radius: 8px; padding: 1rem; border: 1px solid var(--border); }
 /* Details-tab invoice strip — one row per live invoice, Review verb on drafts. */
 .invoice-strip { margin-bottom: 1rem; padding: 0.6rem 1rem; }
@@ -3531,7 +3531,10 @@ onMounted(async () => {
 .schedule-error { color: var(--p-red-500, #ef4444); margin: 0; font-size: 0.85rem; }
 .spinner-wrap.small { display: flex; justify-content: center; padding: 1rem; }
 /* S97 slice 6 — multi-tech assignment chips */
-.assignments-block { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+/* min-width:0 on flex children holding controls: without it they keep their
+   content width and push the Add button past the card edge on a phone (GDXA-1876). */
+.detail-row > .p-select { min-width: 0; }
+.assignments-block { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; min-width: 0; }
 .assignment-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .assignment-chip {
   display: inline-flex; align-items: center; gap: 0.4rem;
@@ -3539,14 +3542,27 @@ onMounted(async () => {
   background: var(--surface-card, #2a2f3a);
   border: 1px solid var(--surface-border, #3b424f);
   font-size: 0.85rem;
+  /* A name too long for one line takes its own line, the lead/undo/remove
+     buttons wrap under it at full size, and only a name wider than the chip
+     truncates. */
+  max-width: 100%; min-width: 0; flex-wrap: wrap;
 }
 .assignment-chip.is-lead {
   border-color: var(--accent-a, #f7b32b);
   background: color-mix(in srgb, var(--accent-a, #f7b32b) 12%, transparent);
 }
 .assignment-chip .pi-star-fill { color: var(--accent-a, #f7b32b); }
-.assignment-name { font-weight: 500; }
+.assignment-name { font-weight: 500; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assignment-chip .p-button, .assignment-chip .pi-star-fill { flex-shrink: 0; }
 .assignment-add-row { display: flex; gap: 0.4rem; align-items: center; }
-.assignment-add-row .p-select { flex: 1; }
-.dependency-select { flex: 1; min-width: 260px; }
+.assignment-add-row .p-select { flex: 1; min-width: 0; }
+.assignment-add-row .p-button { flex-shrink: 0; }
+.dependency-select { min-width: min(260px, 100%); max-width: 100%; }
+/* In a narrow card the crew widget takes the card's full width under its
+   label. Keyed to the card, not the screen: the two-column grid makes the card
+   narrower on a 700px tablet than on a 412px phone. */
+.job-details-card { container-type: inline-size; }
+@container (max-width: 420px) {
+  .detail-row[data-testid="job-detail-assignments"] { flex-direction: column; gap: 0.4rem; }
+}
 </style>

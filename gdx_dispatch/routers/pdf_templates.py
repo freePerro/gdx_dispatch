@@ -32,7 +32,7 @@ router = APIRouter(
 
 TEMPLATE_TYPES = [
     "estimate", "invoice", "work_order",
-    "install_sheet", "safety_checklist", "purchase_order",
+    "install_sheet", "purchase_order",
 ]
 
 
@@ -231,7 +231,6 @@ def available_types(
         "invoice": "Invoice",
         "work_order": "Work Order",
         "install_sheet": "Install Sheet",
-        "safety_checklist": "Safety Checklist",
         "purchase_order": "Purchase Order",
     }
     return [{"key": k, "label": labels.get(k, k)} for k in TEMPLATE_TYPES]

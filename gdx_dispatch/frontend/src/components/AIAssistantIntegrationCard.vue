@@ -261,7 +261,7 @@ onMounted(() => {
 .btn-primary {
   padding: 0.5rem 1rem;
   background: var(--interactive-primary);
-  color: #fff;
+  color: var(--text-on-interactive-primary);
   border: 0;
   border-radius: 6px;
   cursor: pointer;

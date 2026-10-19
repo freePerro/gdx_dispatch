@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cellValue, screenLabel, usePluginScreen } from '../usePluginScreen';
+import { cellValue, refusalText, screenLabel, usePluginScreen } from '../usePluginScreen';
 
 const MANIFEST = {
   screens: [
@@ -42,9 +42,35 @@ describe('usePluginScreen', () => {
     const s = usePluginScreen('example', api);
     await s.load();
     api.get.mockResolvedValueOnce([{ id: 2, name: 'Cable' }]); // refetch result
-    await s.create({ name: 'Cable' });
+    const result = await s.create({ name: 'Cable' });
     expect(api.post).toHaveBeenCalledWith('/api/plugins/example/items', { name: 'Cable' });
     expect(s.rows.value).toEqual([{ id: 2, name: 'Cable' }]);
+    expect(result).toEqual({ ok: true });
+  });
+
+  // GDXA-1873: a refused create rejected out of create() and through the
+  // form's submit handler into the ErrorBoundary, replacing the page.
+  it.each([
+    [422, 'month must be a number'],
+    [403, "You don't have permission to do that."],
+  ])('create resolves {ok:false} on a %i instead of throwing', async (status, msg) => {
+    const api = fakeApi([{ id: 1, name: 'Spring Kit' }]);
+    const s = usePluginScreen('example', api);
+    await s.load();
+    api.post.mockRejectedValueOnce(Object.assign(new Error(msg), { status }));
+    const result = await s.create({ name: 'Sept 2026' });
+    expect(result).toEqual({ ok: false, message: msg });
+    expect(s.rows.value).toEqual([{ id: 1, name: 'Spring Kit' }]); // untouched
+  });
+
+  it('create reports ok when the save landed but the refresh failed', async () => {
+    const api = fakeApi([]);
+    const s = usePluginScreen('example', api);
+    await s.load();
+    api.get.mockRejectedValueOnce(new Error('refresh down'));
+    const result = await s.create({ name: 'Cable' });
+    expect(result).toEqual({ ok: true });
+    expect(s.error.value).toBe('refresh down');
   });
 
   it('records an error when the manifest fetch fails', async () => {
@@ -259,5 +285,33 @@ describe('screenLabel', () => {
     expect(screenLabel({ type: 'chart' }, 1)).toBe('Screen 2');
     expect(screenLabel({}, 0)).toBe('Screen 1');
     expect(screenLabel(null, 4)).toBe('Screen 5');
+  });
+});
+
+describe('refusalText', () => {
+  const err = (status, message) => Object.assign(new Error(message), { status });
+  it('turns a reasonless 403 into a plain sentence, as the toast does', () => {
+    for (const m of ['Forbidden', '', '{"x":1}', 'Request failed (403)']) {
+      expect(refusalText(err(403, m), 'fb')).toBe("You don't have permission to do that.");
+    }
+  });
+  it("keeps a 403's own reason and any other status's message", () => {
+    expect(refusalText(err(403, 'Missing permission: plugin.demo.write'), 'fb'))
+      .toBe('Missing permission: plugin.demo.write');
+    expect(refusalText(err(422, 'Enter the month as a number'), 'fb')).toBe('Enter the month as a number');
+  });
+  it('turns a stringified FastAPI validation list into readable text', () => {
+    const detail = [
+      { type: 'int_parsing', loc: ['body', 'month'], msg: 'Input should be a valid integer', input: 'Sept 2026' },
+      { type: 'missing', loc: ['body'], msg: 'Field required' },
+    ];
+    expect(refusalText(err(422, JSON.stringify(detail)), 'fb'))
+      .toBe('month: Input should be a valid integer; Field required');
+    expect(refusalText(err(422, '{"unrelated":true}'), 'fb')).toBe('fb');
+    expect(refusalText(err(422, '[not json'), 'fb')).toBe('fb');
+  });
+  it('falls back when there is no message at all', () => {
+    expect(refusalText(err(500, ''), 'fb')).toBe('fb');
+    expect(refusalText(undefined, 'fb')).toBe('fb');
   });
 });

@@ -27,6 +27,7 @@ and reported, never doubled.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -635,6 +636,8 @@ def _hours(minutes: int) -> float:
 @dataclass(frozen=True)
 class VacationBalance:
     technician_id: str
+    #: The year the person's vacation year starts in (``window[0].year``):
+    #: the calendar year under ``calendar_year``.
     year: int
     as_of: date
     allowance_hours: Decimal | None
@@ -642,6 +645,8 @@ class VacationBalance:
     allowance_source: str | None
     used_minutes: int = 0
     scheduled_minutes: int = 0
+    #: First and last shop day of the vacation year counted (both inclusive).
+    window: tuple[date, date] | None = None
 
     @property
     def used_hours(self) -> float:
@@ -689,24 +694,94 @@ class VacationBalance:
             "remaining_hours": self.remaining_hours,
             "remaining_at_as_of_hours": self.remaining_at_as_of_hours,
             "overdrawn": self.overdrawn,
+            "window_start": self.window[0].isoformat() if self.window else None,
+            "window_end": self.window[1].isoformat() if self.window else None,
         }
 
 
-def vacation_minutes_by_person(
-    db: Session, year: int, tz_name: Any, *, as_of: date, technician_ids: set[str] | None = None
-) -> dict[str, tuple[int, int]]:
-    """technician_id → (used minutes, of which after ``as_of``) for ``year``.
+# Which year a vacation allowance counts over (GDXA-1827, Doug 2026-10-19):
+# each company chooses (AppSettings.vacation_year_policy). Calendar year is
+# the default, and the anniversary policy falls back to the calendar year for
+# anyone with no hire date. Every balance reader goes through
+# `vacation_window` (GDXA-1855).
+VACATION_YEAR_CALENDAR = "calendar_year"
+VACATION_YEAR_ANNIVERSARY = "hire_anniversary"
+VACATION_YEAR_POLICIES = (VACATION_YEAR_CALENDAR, VACATION_YEAR_ANNIVERSARY)
 
-    The window is widened a day each side and the exact year decided in shop
-    time, because ``clock_in_at`` is UTC text. Raises on a database error: a
-    balance that silently reads zero used would tell someone they have hours
-    they have already spent.
+
+def vacation_year_policy_out(value: str | None) -> str:
+    """The stored policy, or the calendar year for a missing or unknown value."""
+    return value if value in VACATION_YEAR_POLICIES else VACATION_YEAR_CALENDAR
+
+
+def _anniversary(hire_date: date, year: int) -> date:
+    """The hire date's anniversary in ``year``; 29 February is 28 February
+    in a year without one."""
+    if hire_date.month == 2 and hire_date.day == 29 and not calendar.isleap(year):
+        return date(year, 2, 28)
+    return hire_date.replace(year=year)
+
+
+def vacation_year_start(policy: str | None, hire_date: date | None, on: date) -> date:
+    """First day of the vacation year that contains ``on`` for one person.
+
+    ``hire_anniversary`` counts from the most recent anniversary of the hire
+    date on or before ``on`` (a 29 February hire date falls on 28 February in
+    other years). With no hire date, or one after ``on``, it is the calendar
+    year, as is every other policy.
     """
-    lo = date(year - 1, 12, 31).isoformat()
-    hi = date(year + 1, 1, 2).isoformat()
-    stmt = select(
-        TimeclockEntry.technician_id, TimeclockEntry.clock_in_at, TimeclockEntry.minutes
-    ).where(
+    if not _counts_from_anniversary(policy, hire_date, on):
+        return date(on.year, 1, 1)
+    start = _anniversary(hire_date, on.year)
+    return start if start <= on else _anniversary(hire_date, on.year - 1)
+
+
+def _counts_from_anniversary(policy: str | None, hire_date: date | None, on: date) -> bool:
+    return (
+        vacation_year_policy_out(policy) == VACATION_YEAR_ANNIVERSARY
+        and hire_date is not None
+        and hire_date <= on
+    )
+
+
+def vacation_window(policy: str | None, hire_date: date | None, on: date) -> tuple[date, date]:
+    """(first day, last day) of the vacation year that contains ``on``.
+
+    The last day is the day before the next year starts: Dec 31 for a
+    calendar year, the day before the next anniversary otherwise. A hire date
+    after ``on`` means no anniversary has passed, so ``on`` is counted in the
+    calendar year (the same fallback as no hire date)."""
+    start = vacation_year_start(policy, hire_date, on)
+    if not _counts_from_anniversary(policy, hire_date, on):
+        return start, date(on.year, 12, 31)
+    return start, _anniversary(hire_date, start.year + 1) - timedelta(days=1)
+
+
+def vacation_windows(
+    db: Session, settings: AppSettings | None, technician_ids: set[str], *, on: date
+) -> dict[str, tuple[date, date]]:
+    """technician_id → the vacation year containing ``on`` for that person,
+    under the shop's policy and the person's ``hire_date``. Soft-deleted users
+    are read too, as `allowance_overrides` does. An id with no user row gets
+    the calendar year. Database errors propagate."""
+    policy = vacation_year_policy_out(getattr(settings, "vacation_year_policy", None))
+    hires: dict[str, date | None] = {}
+    if policy == VACATION_YEAR_ANNIVERSARY:
+        parsed = _parse_user_ids(technician_ids)
+        if parsed:
+            rows = db.execute(
+                select(User.id, User.hire_date).where(
+                    User.id.in_(list(parsed)), User.hire_date.is_not(None)
+                )
+            ).all()
+            hires = {parsed.get(uid, str(uid)): hired for uid, hired in rows}
+    return {tid: vacation_window(policy, hires.get(tid), on) for tid in technician_ids}
+
+
+def _paid_vacation_between(lo: str, hi: str) -> tuple[Any, ...]:
+    """Live, closed vacation entries whose ``clock_in_at`` (UTC text) is in
+    [lo, hi): the coarse filter; callers decide the shop day themselves."""
+    return (
         TimeclockEntry.deleted_at.is_(None),
         TimeclockEntry.entry_type == VACATION_TYPE,
         TimeclockEntry.clock_out_at.is_not(None),
@@ -714,19 +789,56 @@ def vacation_minutes_by_person(
         TimeclockEntry.clock_in_at >= lo,
         TimeclockEntry.clock_in_at < hi,
     )
-    if technician_ids is not None:
-        if not technician_ids:
-            return {}
-        stmt = stmt.where(TimeclockEntry.technician_id.in_(sorted(technician_ids)))
+
+
+def vacation_minutes_by_person(
+    db: Session,
+    windows: dict[str, tuple[date, date]],
+    tz_name: Any,
+    *,
+    as_of: date,
+) -> dict[str, tuple[int, int]]:
+    """technician_id → (used minutes, of which after ``as_of``), each person
+    counted over their own vacation year (``windows``, from `vacation_windows`).
+
+    The query is widened a day each side and the exact window decided in shop
+    time, because ``clock_in_at`` is UTC text. Only people with a vacation
+    entry inside their window are returned. Raises on a database error: a
+    balance that silently reads zero used would tell someone they have hours
+    they have already spent.
+    """
+    windows = {str(t): w for t, w in windows.items() if t}
+    if not windows:
+        return {}
+    lo = (min(w[0] for w in windows.values()) - timedelta(days=1)).isoformat()
+    hi = (max(w[1] for w in windows.values()) + timedelta(days=2)).isoformat()
+    stmt = select(
+        TimeclockEntry.technician_id, TimeclockEntry.clock_in_at, TimeclockEntry.minutes
+    ).where(
+        *_paid_vacation_between(lo, hi),
+        TimeclockEntry.technician_id.in_(sorted(windows)),
+    )
     out: dict[str, tuple[int, int]] = {}
     for tech, clock_in, minutes in db.execute(stmt).all():
         day = shop_day_of(clock_in, tz_name)
-        if day is None or day.year != year or not tech:
+        window = windows.get(str(tech)) if tech else None
+        if day is None or window is None or not window[0] <= day <= window[1]:
             continue
         paid = max(0, int(minutes))
         used, ahead = out.get(str(tech), (0, 0))
         out[str(tech)] = (used + paid, ahead + (paid if day > as_of else 0))
     return out
+
+
+def vacation_takers(db: Session, *, on: date) -> set[str]:
+    """Everyone with a closed, live vacation entry within a year either side
+    of ``on``: the candidates whose vacation year containing ``on`` may hold
+    one (any such year lies inside that span). Callers narrow it with
+    `vacation_minutes_by_person`. Database errors propagate."""
+    lo = (on - timedelta(days=367)).isoformat()
+    hi = (on + timedelta(days=368)).isoformat()
+    stmt = select(TimeclockEntry.technician_id).distinct().where(*_paid_vacation_between(lo, hi))
+    return {str(t) for t in db.execute(stmt).scalars().all() if t}
 
 
 def allowance_overrides(db: Session, technician_ids: set[str]) -> dict[str, Decimal]:
@@ -750,10 +862,13 @@ def vacation_balances(
     settings: AppSettings | None,
     technician_ids: set[str],
     *,
-    year: int,
+    on: date,
     as_of: date,
 ) -> dict[str, VacationBalance]:
-    """One `VacationBalance` per id in ``technician_ids`` for ``year``.
+    """One `VacationBalance` per id in ``technician_ids``, each over that
+    person's vacation year containing ``on`` (`vacation_windows`: the
+    calendar year, or the year from their hire anniversary under
+    ``hire_anniversary``). Allowance, used and scheduled all follow it.
 
     The single computation behind the read endpoint, the Timesheets card,
     the pay-period CSV and the PDF context (via
@@ -765,7 +880,8 @@ def vacation_balances(
     tz_name = shop_tz_name(settings)
     shop_default = getattr(settings, "vacation_allowance_hours", None)
     overrides = allowance_overrides(db, ids)
-    minutes = vacation_minutes_by_person(db, year, tz_name, as_of=as_of, technician_ids=ids)
+    windows = vacation_windows(db, settings, ids, on=on)
+    minutes = vacation_minutes_by_person(db, windows, tz_name, as_of=as_of)
     out: dict[str, VacationBalance] = {}
     for tid in ids:
         if tid in overrides:
@@ -777,11 +893,12 @@ def vacation_balances(
         used, ahead = minutes.get(tid, (0, 0))
         out[tid] = VacationBalance(
             technician_id=tid,
-            year=year,
+            year=windows[tid][0].year,
             as_of=as_of,
             allowance_hours=allowance,
             allowance_source=source,
             used_minutes=used,
             scheduled_minutes=ahead,
+            window=windows[tid],
         )
     return out

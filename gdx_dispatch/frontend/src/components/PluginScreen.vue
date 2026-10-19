@@ -111,7 +111,16 @@
               <Select v-model="orderedAdd" :options="orderedCandidates" placeholder="Add a field…"
                 size="small" class="plugin-screen__ordered-add" @change="addOrdered" />
             </div>
-            <Button label="Save" size="small" :loading="savingSettings" @click="saveSettings(screen)" />
+            <p v-if="settingsLoadError" class="plugin-screen__form-error" role="alert"
+               data-testid="plugin-settings-load-error">
+              {{ settingsLoadError }} — saving is off until the settings load.
+            </p>
+            <Button v-if="settingsLoadError" label="Retry" size="small" outlined
+              @click="loadSettings(screen)" />
+            <Button label="Save" size="small" :loading="savingSettings"
+              :disabled="!settingsLoaded" @click="saveSettings(screen)" />
+            <p v-if="settingsError" class="plugin-screen__form-error" role="alert"
+               data-testid="plugin-settings-error">{{ settingsError }}</p>
           </div>
 
           <!-- Upload screen: one file, POSTed multipart to the plugin's endpoint
@@ -159,7 +168,7 @@
           <form
             v-if="screen.create"
             class="plugin-screen__create"
-            @submit.prevent="onCreate(screen)"
+            @submit.prevent="onCreate(i, screen)"
           >
             <!-- optional labeled measurement diagram: renders its fields on the
                  picture; those fields are then skipped in the normal field list. -->
@@ -196,6 +205,8 @@
               <InputText v-else :id="`pf-${f.name}`" v-model="formState[f.name]" :required="f.required" />
             </span>
             <Button type="submit" label="Add" size="small" />
+            <p v-if="createErrors[i]" class="plugin-screen__form-error" role="alert"
+               data-testid="plugin-create-error">{{ createErrors[i] }}</p>
           </form>
         </TabPanel>
       </TabPanels>
@@ -211,6 +222,8 @@
       :breakpoints="{ '768px': '95vw' }"
     >
       <p v-if="detailLoading">Loading…</p>
+      <p v-if="detailError" class="plugin-screen__form-error" role="alert"
+         data-testid="plugin-detail-error">{{ detailError }}</p>
       <div v-for="sec in detailSections" :key="sec.title" class="plugin-screen__detail-sec">
         <h4>{{ sec.title }}</h4>
         <img v-if="sec.image" :src="sec.image" alt="Door" class="plugin-screen__photo" />
@@ -250,7 +263,7 @@ import InputNumber from 'primevue/inputnumber';
 import BrowserStream from './BrowserStream.vue';
 import MeasurementDiagram from './MeasurementDiagram.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { cellValue, screenLabel, usePluginScreen } from '../composables/usePluginScreen';
+import { cellValue, refusalText, screenLabel, usePluginScreen } from '../composables/usePluginScreen';
 import { useViewMode } from '../composables/useViewMode';
 
 const props = defineProps({ pluginKey: { type: String, required: true } });
@@ -323,6 +336,9 @@ const formState = reactive({});
 const fieldOptions = reactive({});
 const settingsFields = ref([]);   // [{ name, on }]
 const savingSettings = ref(false);
+const settingsError = ref('');
+const settingsLoaded = ref(false);
+const settingsLoadError = ref('');
 // Optional ordered field list on the settings screen (e.g. "these fields, in
 // this order, compose a line description") — present only when the plugin's
 // settings GET returns an `ordered` group.
@@ -370,6 +386,7 @@ const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detailTitle = ref('');
 const detailSections = ref([]);   // [{ title, rows: [{k,v}], text }]
+const detailError = ref('');
 
 // Turn a detail object {Section: {k:v} | "text" | [...]} into renderable sections.
 // Scalars/strings render as a text block; objects render as key/value rows with
@@ -395,22 +412,36 @@ async function onRowClick(screen, e) {
   if (id == null) return;
   detailTitle.value = e.data.qcd || `Capture #${id}`;
   detailSections.value = [];
+  detailError.value = '';
   detailVisible.value = true;
   detailLoading.value = true;
   try {
     const data = await api.get(screen.detail_endpoint.replace('{id}', id));
     detailSections.value = buildSections(data);
+  } catch (e) {
+    // Say it in the dialog; a rejection escaping this handler would take the
+    // whole page down through the ErrorBoundary (GDXA-1873).
+    detailError.value = refusalText(e, 'Could not load this record.');
   } finally {
     detailLoading.value = false;
   }
 }
 
-async function onCreate(screen) {
+// Refusal message per create form, keyed by screen index.
+const createErrors = reactive({});
+
+async function onCreate(i, screen) {
   // Send only this form's declared fields, then clear them (each create form
   // has its own field set; forms must not leak values into one another).
   const names = (screen?.create?.fields || []).map((f) => f.name);
   const values = Object.fromEntries(names.map((n) => [n, formState[n]]));
-  await create(values, screen);
+  createErrors[i] = '';
+  const { ok, message } = await create(values, screen);
+  if (!ok) {
+    // Keep what the user typed so they can correct it and resubmit.
+    createErrors[i] = message;
+    return;
+  }
   for (const n of names) delete formState[n];
   applyFieldDefaults(screen);
 }
@@ -476,21 +507,36 @@ function initCreateForms() {
   });
 }
 
+// Save stays off until the GET has succeeded: Save PUTs the whole field list,
+// so saving after a failed load would overwrite the plugin's stored settings
+// with an empty one.
 async function loadSettings(screen) {
-  const data = await api.get(screen.endpoint);
-  settingsFields.value = (data?.fields || []).map((f) => ({ name: f.name, on: !!f.on_quote }));
-  const g = data?.ordered;
-  orderedGroup.value = g && Array.isArray(g.candidates)
-    ? { title: g.title || '', hint: g.hint || '', selected: [...(g.selected || [])], candidates: [...g.candidates] }
-    : null;
+  settingsLoadError.value = '';
+  try {
+    const data = await api.get(screen.endpoint);
+    settingsFields.value = (data?.fields || []).map((f) => ({ name: f.name, on: !!f.on_quote }));
+    const g = data?.ordered;
+    orderedGroup.value = g && Array.isArray(g.candidates)
+      ? { title: g.title || '', hint: g.hint || '', selected: [...(g.selected || [])], candidates: [...g.candidates] }
+      : null;
+    settingsLoaded.value = true;
+  } catch (e) {
+    settingsLoaded.value = false;
+    settingsLoadError.value = refusalText(e, 'Could not load settings.');
+  }
 }
 
 async function saveSettings(screen) {
+  if (!settingsLoaded.value) return;
   savingSettings.value = true;
+  settingsError.value = '';
   try {
     const body = { fields: settingsFields.value.filter((f) => f.on).map((f) => f.name) };
     if (orderedGroup.value) body.ordered = [...orderedGroup.value.selected];
     await api.put(screen.endpoint, body, { successMessage: 'Saved' });
+  } catch (e) {
+    // The edits stay on screen; say why they were not saved (GDXA-1873).
+    settingsError.value = refusalText(e, 'Settings were not saved.');
   } finally {
     savingSettings.value = false;
   }
@@ -508,6 +554,7 @@ onMounted(async () => {
 .plugin-screen__detail-sec { margin-bottom: 1rem; }
 .plugin-screen__detail-sec h4 { margin: 0 0 0.25rem; color: var(--p-text-color, #1f2937); }
 .plugin-screen__hint { color: var(--p-text-color-secondary, #6b7280); font-size: 0.85rem; }
+.plugin-screen__form-error { color: var(--p-red-500, #dc2626); font-size: 0.85rem; margin: 0.4rem 0 0; }
 .plugin-screen__upload { display: flex; flex-direction: column; gap: 0.75rem; max-width: 42rem; }
 .plugin-screen__upload-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .plugin-screen__upload input[type='file'] { color: var(--p-text-color, #1f2937); }

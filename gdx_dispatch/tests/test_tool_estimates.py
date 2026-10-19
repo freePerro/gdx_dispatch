@@ -57,7 +57,7 @@ def test_descriptors_have_correct_shape():
 @pytest.mark.asyncio
 async def test_create_draft_preview_then_apply():
     cid = uuid4()
-    customer = SimpleNamespace(id=cid, name="ACME")
+    customer = SimpleNamespace(id=cid, name="ACME", deleted_at=None)
     db = MagicMock()
     db.get.return_value = customer
     # next_estimate_number reads existing numbers via .scalars().all() and takes
