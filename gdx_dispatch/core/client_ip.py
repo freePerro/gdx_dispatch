@@ -26,7 +26,9 @@ The rule has two trust sets, because they answer different questions:
 
 When the peer is trusted, the client is the LAST hop (the address our proxy
 saw), stepping further left only through upstream proxies. The client can
-write anything to the left of that, but never reaches past its own hop.
+write anything to the left of that, but never reaches past its own hop, as
+long as no stepped range is one a client can send from (see
+CLOUDFLARE_RANGES for the one that is left out for that reason).
 
 The private ranges are deliberately NOT stepped through. With Docker's
 userland proxy (the default), an IPv6 connection straight to the origin
@@ -59,13 +61,20 @@ DEFAULT_TRUSTED_PROXIES = (
 # https://www.cloudflare.com/ips-v4 and /ips-v6, fetched 2026-10-18 (API etag
 # 38f79d050aa027e3be3865e495dcc9bc). Cloudflare changes these rarely and
 # announces it; re-fetch when it does.
+#
+# Less one: 2a06:98c0::/29 is where Cloudflare Workers subrequests come from
+# (developers.cloudflare.com/fundamentals/reference/http-headers, read
+# 2026-10-18). A Worker writes its own X-Forwarded-For and Cloudflare appends
+# to it, so stepping through that block lands on a hop anyone with a free
+# Workers account chose. A real edge address in it is kept as the client,
+# which costs a shared bucket, not a spoof.
 CLOUDFLARE_RANGES = (
     "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,"
     "141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,"
     "197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,"
     "104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,"
     "2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,"
-    "2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32"
+    "2405:8100::/32,2c0f:f248::/32"
 )
 
 

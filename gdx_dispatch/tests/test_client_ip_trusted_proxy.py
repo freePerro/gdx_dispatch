@@ -117,7 +117,17 @@ def test_the_middleware_reads_both_env_lists(monkeypatch) -> None:
     monkeypatch.setenv("GDX_TRUSTED_UPSTREAM_PROXIES", "cloudflare")
     mw = ClientAddressMiddleware(app=None)
     assert mw.trusted == TRUSTED  # empty falls back to the default
-    assert mw.upstream == CF and len(CF) == 22
+    assert mw.upstream == CF and len(CF) == 21
+
+
+def test_a_cloudflare_worker_hop_is_not_stepped_through() -> None:
+    """A Worker's subrequest leaves from 2a06:98c0::/29 carrying whatever
+    X-Forwarded-For the Worker wrote; Cloudflare appends the Worker's address,
+    nginx appends the edge. Stepping through the Worker hop let the client pick
+    the key (second audit of GDXA-1597)."""
+    for spoof in ("198.51.100.1", "198.51.100.2"):
+        xff = f"{spoof}, 2a06:98c0:3600::103, 172.68.204.218"
+        assert resolve_client_host(NGINX, xff, TRUSTED, CF) == "2a06:98c0:3600::103"
 
 
 def test_a_wildcard_is_refused_and_junk_is_skipped() -> None:
