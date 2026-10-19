@@ -93,7 +93,7 @@ class UserPatchIn(BaseModel):
         default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
     )
     # GDXA-1827: the column existed with no writer. The anniversary vacation
-    # year counts from it (routers/settings.vacation_year_start). Null clears.
+    # year counts from it (core/time_off.vacation_year_start). Null clears.
     hire_date: date | None = None
 
     @field_validator("hire_date")

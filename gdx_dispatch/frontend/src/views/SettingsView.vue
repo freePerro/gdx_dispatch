@@ -1394,8 +1394,7 @@
                   />
                   <span class="muted" style="flex:1; min-width:16rem;" data-testid="time-off-vacation-year-hint">
                     Hire anniversary uses the hire date on each person's profile under Users;
-                    anyone without one stays on the calendar year. Vacation balances still
-                    count the calendar year until they read this setting.
+                    anyone without one stays on the calendar year.
                   </span>
                 </div>
                 <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
@@ -2872,7 +2871,7 @@ const timeOff = reactive({
   default_hours: 8, counts_toward_overtime: false, vacation_allowance_hours: null,
   vacation_year_policy: "calendar_year", holidays: [],
 });
-// GDXA-1827: the values routers/settings.py VACATION_YEAR_POLICIES accepts.
+// GDXA-1827: the values core/time_off.py VACATION_YEAR_POLICIES accepts.
 const VACATION_YEAR_OPTIONS = [
   { label: "January 1 (calendar year)", value: "calendar_year" },
   { label: "Each person's hire anniversary", value: "hire_anniversary" },

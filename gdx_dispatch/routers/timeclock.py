@@ -44,6 +44,7 @@ from gdx_dispatch.core.pay_periods import (
     shop_tz_name_from_settings,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.timeclock_policy import AUTO_CLOSE_NOTE
 from gdx_dispatch.core.timesheet_delivery import BLOCKED_UNREADABLE, SendOutcome, send_period_timesheet
 from gdx_dispatch.core.timesheet_export import (
     build_csv,
@@ -72,11 +73,13 @@ log = logging.getLogger(__name__)
 # The /status response surfaces both to the mobile UI so the warning text
 # tracks whatever we set here. Kept as floats (hours).
 #
-# Defined in core/timesheet_hours.py and imported at the top of this module
+# Defined in core/timeclock_policy.py and imported at the top of this module
 # (so `from ...routers.timeclock import MAX_SHIFT_HOURS` still resolves): the
 # export and the emailed timesheet apply the same ceiling, and two copies of
 # "how long is a possible shift" is how a row flagged on screen sails through
-# the file unflagged.
+# the file unflagged. AUTO_CLOSE_NOTE lives there too. The celery sweep must
+# not import this router: celery_app loads it during model import, and the
+# cycle through this module once nulled the webhook tasks (GDXA-1888).
 
 # D2 (tech weekly timesheet, 2026-08-13): how far back a tech may correct or
 # add their OWN shifts. Dispatch/admin are exempt — the office corrects
@@ -287,8 +290,6 @@ def _enforce_self_service_duration(current_user: Any, minutes: int | None) -> No
             ),
         )
 
-
-AUTO_CLOSE_NOTE = "Auto-closed — end time unknown, needs office review"
 
 
 def _append_note(existing: str | None, addition: str) -> str:

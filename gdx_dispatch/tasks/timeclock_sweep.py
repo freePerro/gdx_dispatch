@@ -22,7 +22,12 @@ from sqlalchemy import text
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
-from gdx_dispatch.routers.timeclock import AUTO_CLOSE_NOTE, MAX_SHIFT_HOURS
+from gdx_dispatch.core.timeclock_policy import AUTO_CLOSE_NOTE, MAX_SHIFT_HOURS
+
+# The two names above come from the leaf, never from routers/timeclock:
+# celery_app imports this module at load time, and a router import here closed
+# a cycle back into core/timesheet_hours that nulled the webhook tasks
+# (GDXA-1888).
 
 log = logging.getLogger(__name__)
 
