@@ -77,8 +77,11 @@ def void_invoice(
 
     Raises ``InvoiceVoidRefused`` (404 missing/deleted/unparseable, 409 live
     payments or a locked accounting period). A refusal leaves nothing of the
-    void in the session: a refusal after the status flip rolls the session
-    back first, so a caller that keeps its session cannot commit half a void.
+    void in the session: a locked-period refusal rolls the session back first,
+    so a caller that keeps its session cannot commit half a void. That
+    rollback is the whole session's, so call this on a session with nothing
+    else pending. (Not a savepoint: #661 was a `begin_nested()` around a
+    ledger writer whose guard installer commits on first use.)
     """
     if not actor or not str(actor).strip():
         raise ValueError("void_invoice needs the acting user's id")
@@ -108,12 +111,15 @@ def void_invoice(
             409, "invoice has recorded payments — void or remove them first",
         )
 
-    transition_invoice_status(db, invoice, "void", actor=actor)
     # GL S7: the P1 reversal alone would strand adjustment entries on AR.
     # GL S10: a pre-cutover-era invoice has no P1 to reverse — the void
     # posts its own entry clearing whatever AR it still holds (spec §5.7).
-    # Ledger refusals surface as 409s with the reason, never bare 500s.
+    # Ledger refusals surface as 409s with the reason, never bare 500s. The
+    # transition is inside the try too: with posting on it reverses the P1
+    # entry dated on the invoice date, so an invoice from a closed month is
+    # refused right there (GDXA-1848 audit; the route answered 500 before).
     try:
+        transition_invoice_status(db, invoice, "void", actor=actor)
         reverse_invoice_adjustments(db, invoice, actor=actor)
         settle_opening_on_void(db, invoice, actor=actor)
     except PeriodLockedError as exc:

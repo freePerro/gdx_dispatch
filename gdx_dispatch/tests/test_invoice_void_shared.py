@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import AuditLog, TenantBase, ensure_audit_table
 from gdx_dispatch.core.invoice_void import InvoiceVoidRefused, void_invoice
-from gdx_dispatch.models.tenant_models import Invoice, JobPartNeeded, Payment
+from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, JobPartNeeded, Payment
 
 TENANT = "tenant-void-shared"
 
@@ -144,7 +144,7 @@ def test_an_unparseable_id_is_a_404(db):
 
 
 def test_a_locked_period_refuses_and_leaves_the_session_clean(db, invoice):
-    """The status flip happens before the ledger step can refuse. A caller that
+    """The adjustment reversal refuses after the status flip. A caller that
     keeps its session and commits later must not land half a void."""
     from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 
@@ -160,3 +160,51 @@ def test_a_locked_period_refuses_and_leaves_the_session_clean(db, invoice):
     db.expire_all()
     assert db.get(Invoice, invoice.id).status == "sent"
     assert _voided_rows(db, invoice.id) == []
+
+
+def test_a_real_locked_period_refuses_at_the_transition_and_leaves_nothing(tenant_db, monkeypatch):
+    """No patches. With posting on, the transition itself reverses the P1 entry
+    dated on the invoice date, so a void of an invoice from a closed month is
+    refused there, before the adjustment step. That path raised a bare
+    PeriodLockedError with the void still pending in the session (GDXA-1848
+    audit, round 2)."""
+    import datetime as dt
+
+    from gdx_dispatch.modules.ledger.models import GlJournalEntry, GlPeriodLock
+    from gdx_dispatch.modules.ledger.service import ensure_gl_seed, transition_invoice_status
+
+    monkeypatch.delenv("GDX_ENV", raising=False)
+    db = tenant_db
+    company = "11111111-1111-1111-1111-111111111111"
+    ensure_gl_seed(db, company).ledger_posting_enabled = True
+    db.commit()
+    inv = Invoice(
+        id=uuid.uuid4(), customer_id=uuid.uuid4(), invoice_number="INV-VOID-LOCK",
+        status="draft", subtotal=Decimal("400.00"), tax_amount=Decimal("0"),
+        total=Decimal("400.00"), balance_due=Decimal("400.00"),
+        invoice_date=dt.date(2026, 7, 1), public_token=uuid.uuid4().hex, company_id=company,
+    )
+    db.add(inv)
+    db.flush()
+    db.add(InvoiceLine(
+        invoice_id=inv.id, description="Spring replacement", quantity=1,
+        unit_price=Decimal("400.00"), line_total=Decimal("400.00"), company_id=company,
+    ))
+    db.commit()
+    transition_invoice_status(db, inv, "sent")
+    db.commit()
+    db.add(GlPeriodLock(lock_date=dt.date(2026, 7, 31), company_id=company))
+    db.commit()
+
+    with patch("gdx_dispatch.core.invoice_void.enqueue_stale_intent_sweep") as sweep, \
+            pytest.raises(InvoiceVoidRefused) as exc:
+        void_invoice(db, inv.id, actor="office-user")
+
+    assert exc.value.status_code == 409
+    assert "locked accounting period" in exc.value.detail
+    sweep.assert_not_called()
+    db.commit()  # the caller carries on with its session
+    db.expire_all()
+    assert db.get(Invoice, inv.id).status == "sent"
+    assert len(db.query(GlJournalEntry).all()) == 1, "the P1 entry stays live, unreversed"
+    assert _voided_rows(db, inv.id) == []
