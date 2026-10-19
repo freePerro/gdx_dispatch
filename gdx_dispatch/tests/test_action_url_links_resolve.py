@@ -141,9 +141,9 @@ PKG = pathlib.Path(__file__).resolve().parents[1]
 
 # Discovery reads the parsed module, not its text. A regex over source finds
 # the spellings that ship a link —
-#   action_url="/x"             kwarg          (tasks/invoice_reminders_auto.py)
-#   "action_url": f"/x"         dict key       (core/next_action.py)
-#   existing.action_url = "/x"  attribute      (tasks/billing_followup.py)
+#   action_url="/x"             kwarg          (the synthetic fixture below)
+#   "action_url": f"/x"         dict key       (core/next_action.py, tasks/*)
+#   existing.action_url = "/x"  attribute      (the synthetic fixture below)
 #   row["action_url"] = "/x"    dict subscript
 #   send_push(..., url="/x")    push deep link (routers/parts_needed.py)
 # — and also finds them inside a COMMENT or a docstring, which in a repo this
@@ -372,8 +372,11 @@ def test_the_sweep_actually_found_the_links() -> None:
     # floor is the *measured* post-deletion count, not 22 − 12 done on paper.
     # The floor is what turns a broken discovery pass red instead of letting it
     # slip by finding fewer; raise it when rules are added, and only lower it
-    # when a rule is deliberately removed.
-    assert len(DISCOVERED) >= 10, DISCOVERED
+    # when a rule is deliberately removed. 9 since GDXA-1860 (2026-10-19):
+    # billing_followup.py wrote "/billing" twice (attribute on update, kwarg on
+    # create) and now writes it once, in the fields dict it hands
+    # upsert_system_action; every URL is still discovered.
+    assert len(DISCOVERED) >= 9, DISCOVERED
 
 
 def test_the_static_targets_these_links_point_at_still_exist() -> None:

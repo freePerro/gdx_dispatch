@@ -26,7 +26,7 @@ from sqlalchemy import func, select
 
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
-from gdx_dispatch.core.next_action import NextAction
+from gdx_dispatch.core.next_action import NextAction, upsert_system_action
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
 from gdx_dispatch.models.tenant_models import Invoice, PaymentReminder
 
@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 NUDGE_ACTION_TYPE = "dunning_disabled_nudge"
 NUDGE_REFERENCE_ID = "weekly"
+NUDGE_ACTOR = "system:invoice_reminders_auto"
 
 
 def _run_auto_sends(db, tenant_id: str) -> dict:
@@ -148,32 +149,27 @@ def _weekly_nudge(db, tenant_id: str, settings) -> bool:
         "who gets emailed first), or dismiss this permanently if you don't "
         "want automated dunning."
     )
-    existing = db.execute(
-        select(NextAction).where(
-            NextAction.tenant_id == tenant_id,
-            NextAction.action_type == NUDGE_ACTION_TYPE,
-            NextAction.reference_id == NUDGE_REFERENCE_ID,
-            NextAction.status.notin_(("completed",)),
-            NextAction.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        existing.description = description
-        existing.estimated_value = overdue_total
-        db.commit()
-        return True
-    db.add(NextAction(
+    # Created or refreshed in place, audited under the task's actor (GDXA-1860).
+    # wake=False: a refresh updates the overdue picture without moving the
+    # nag's status, even out of a snooze that has run out (the code this
+    # replaces never touched status either).
+    _, outcome = upsert_system_action(
+        db,
         tenant_id=tenant_id,
-        user_id=None,
+        actor=NUDGE_ACTOR,
         action_type=NUDGE_ACTION_TYPE,
-        title="Automated payment reminders are off",
-        description=description,
-        priority="medium",
-        action_url="/invoice-reminders",
-        estimated_value=overdue_total,
         reference_id=NUDGE_REFERENCE_ID,
-    ))
-    db.commit()
+        fields={
+            "title": "Automated payment reminders are off",
+            "description": description,
+            "priority": "medium",
+            "action_url": "/invoice-reminders",
+            "estimated_value": overdue_total,
+        },
+        wake=False,
+    )
+    if outcome != "unchanged":
+        db.commit()
     return True
 
 

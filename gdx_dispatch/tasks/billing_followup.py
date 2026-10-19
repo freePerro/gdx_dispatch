@@ -26,7 +26,7 @@ from sqlalchemy import func, select
 from gdx_dispatch.core.billing_predicates import job_billing_resolved
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
-from gdx_dispatch.core.next_action import NextAction
+from gdx_dispatch.core.next_action import resolve_system_action, upsert_system_action
 from gdx_dispatch.models.tenant_models import Invoice, Job, JobPartNeeded
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ STALE_DAYS = 3
 
 ACTION_TYPE = "billing_followup"
 REFERENCE_ID = "daily"
+ACTOR = "system:billing_followup"
 
 
 def _compute_counts(db) -> dict:
@@ -136,20 +137,12 @@ def _upsert_action(db, tenant_id: str, counts: dict) -> str:
         + counts["unbilled_change_orders"]
         + counts["unbilled_parts"]
     )
-    existing = db.execute(
-        select(NextAction).where(
-            NextAction.tenant_id == tenant_id,
-            NextAction.action_type == ACTION_TYPE,
-            NextAction.reference_id == REFERENCE_ID,
-            NextAction.status.notin_(("completed",)),
-            NextAction.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-
     if total_items == 0:
-        if existing is not None:
-            existing.status = "completed"
-            existing.completed_at = datetime.now(UTC)
+        # The nag clears itself: completed under the task's actor, audited.
+        if resolve_system_action(
+            db, tenant_id=tenant_id, actor=ACTOR,
+            action_type=ACTION_TYPE, reference_id=REFERENCE_ID,
+        ):
             db.commit()
             return "cleared"
         return "clean"
@@ -169,41 +162,28 @@ def _upsert_action(db, tenant_id: str, counts: dict) -> str:
         pieces.append(f"{counts['unbilled_parts']} used part(s) never billed")
     description = "Money is sitting in the pipeline: " + "; ".join(pieces) + ". Review on /billing."
 
-    if existing is not None:
-        existing.title = "Billing follow-up: work is waiting to be billed"
-        existing.description = description
-        existing.priority = "high"
-        existing.action_url = "/billing"
-        existing.estimated_value = counts["stale_draft_total"] + counts["unbilled_change_order_total"]
-        # Respect a live snooze (audit catch): the office deliberately parked
-        # the nag — refresh its numbers but don't force-wake it every day.
-        _su = existing.snoozed_until
-        if _su is not None and _su.tzinfo is None:
-            # SQLite returns naive datetimes from tz-aware columns.
-            _su = _su.replace(tzinfo=UTC)
-        is_snoozed = (
-            existing.status == "snoozed"
-            and _su is not None
-            and _su > datetime.now(UTC)
-        )
-        if not is_snoozed:
-            existing.status = "pending"
-        db.commit()
-        return "updated"
-
-    db.add(NextAction(
+    # Created or refreshed in place, audited under the task's actor (GDXA-1860).
+    # wake=True returns a nag whose snooze has run out to pending but respects
+    # a live snooze: the office deliberately parked it, so its numbers refresh
+    # without a daily force-wake.
+    _, outcome = upsert_system_action(
+        db,
         tenant_id=tenant_id,
-        user_id=None,
+        actor=ACTOR,
         action_type=ACTION_TYPE,
-        title="Billing follow-up: work is waiting to be billed",
-        description=description,
-        priority="high",
-        action_url="/billing",
-        estimated_value=counts["stale_draft_total"] + counts["unbilled_change_order_total"],
         reference_id=REFERENCE_ID,
-    ))
-    db.commit()
-    return "created"
+        fields={
+            "title": "Billing follow-up: work is waiting to be billed",
+            "description": description,
+            "priority": "high",
+            "action_url": "/billing",
+            "estimated_value": counts["stale_draft_total"] + counts["unbilled_change_order_total"],
+        },
+        wake=True,
+    )
+    if outcome != "unchanged":
+        db.commit()
+    return outcome
 
 
 @celery_app.task(name="billing_followup.daily_tick")
