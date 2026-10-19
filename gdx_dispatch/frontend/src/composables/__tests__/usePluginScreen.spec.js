@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cellValue, usePluginScreen } from '../usePluginScreen';
+import { cellValue, screenLabel, usePluginScreen } from '../usePluginScreen';
 
 const MANIFEST = {
   screens: [
@@ -239,5 +239,25 @@ describe('uploadTo / runAction — upload screens', () => {
     const refused = await s.runAction('/api/plugins/otherplugin/rematch');
     expect(refused).toBeNull();
     expect(s.error.value).toMatch(/refused action endpoint/);
+  });
+});
+
+// `title` is optional in a manifest screen; an untitled screen used to render a
+// blank tab (cellcomms Help, both eventlog screens).
+describe('screenLabel', () => {
+  it('uses the declared title', () => {
+    expect(screenLabel({ type: 'help', title: 'How it works' }, 0)).toBe('How it works');
+  });
+  it('falls back to the screen type when the title is missing or blank', () => {
+    expect(screenLabel({ type: 'help' }, 3)).toBe('Help');
+    expect(screenLabel({ type: 'list', title: '   ' }, 0)).toBe('List');
+    expect(screenLabel({ type: 'settings', title: null }, 0)).toBe('Settings');
+    expect(screenLabel({ type: 'upload' }, 0)).toBe('Upload');
+    expect(screenLabel({ type: 'browser' }, 0)).toBe('Workspace');
+  });
+  it('falls back to the position for an unknown type, never an empty tab', () => {
+    expect(screenLabel({ type: 'chart' }, 1)).toBe('Screen 2');
+    expect(screenLabel({}, 0)).toBe('Screen 1');
+    expect(screenLabel(null, 4)).toBe('Screen 5');
   });
 });
