@@ -13,12 +13,13 @@ def _mock_request(tenant_id="test-tenant"):
     r.client.host = "127.0.0.1"
     return r
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.pay_periods import shop_today_from_settings
-from gdx_dispatch.models.tenant_models import AppSettings
+from gdx_dispatch.models.tenant_models import AppSettings, Warranty
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.warranties import (
     create_warranty,
@@ -42,31 +43,13 @@ def tenant_db_session():
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = Session()
 
-    db.execute(
-        text(
-            """
-            CREATE TABLE warranties (
-                id TEXT PRIMARY KEY,
-                job_id TEXT NOT NULL,
-                customer_id TEXT NOT NULL,
-                description TEXT NOT NULL,
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                terms TEXT,
-                status TEXT NOT NULL,
-                claim_count INTEGER NOT NULL DEFAULT 0,
-                last_claim_at TEXT,
-                last_claim_notes TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT,
-                deleted_at TEXT
-            )
-            """
-        )
-    )
+    # The schema comes from the ORM, not hand-written DDL: the old DDL let
+    # updated_at be NULL where the model says NOT NULL (GDXA-1629).
+    Warranty.__table__.create(bind=engine)
     # The expiring read takes "today" from AppSettings.timezone (GDXA-509);
     # with no row it falls back to the default zone.
     AppSettings.__table__.create(bind=engine)
+    AuditLog.__table__.create(bind=engine)
     db.commit()
 
     try:
@@ -89,33 +72,21 @@ def _seed_warranty(
     claim_count: int = 0,
 ) -> str:
     warranty_id = str(uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    db.execute(
-        text(
-            """
-            INSERT INTO warranties (
-                id, job_id, customer_id, description, start_date, end_date,
-                terms, status, claim_count, created_at, updated_at, deleted_at
-            ) VALUES (
-                :id, :job_id, :customer_id, :description, :start_date, :end_date,
-                :terms, :status, :claim_count, :created_at, NULL, :deleted_at
-            )
-            """
-        ),
-        {
-            "id": warranty_id,
-            "job_id": job_id or str(uuid4()),
-            "customer_id": customer_id or str(uuid4()),
-            "description": description,
-            "start_date": (start_date or date.today()).isoformat(),
-            "end_date": (end_date or (date.today() + timedelta(days=365))).isoformat(),
-            "terms": "Standard terms",
-            "status": status,
-            "claim_count": claim_count,
-            "created_at": now,
-            "deleted_at": now if deleted else None,
-        },
-    )
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    db.add(Warranty(
+        id=warranty_id,
+        job_id=job_id or str(uuid4()),
+        customer_id=customer_id or str(uuid4()),
+        description=description,
+        start_date=start_date or date.today(),
+        end_date=end_date or (date.today() + timedelta(days=365)),
+        terms="Standard terms",
+        status=status,
+        claim_count=claim_count,
+        created_at=now,
+        updated_at=now,
+        deleted_at=now if deleted else None,
+    ))
     db.commit()
     return warranty_id
 
@@ -145,7 +116,8 @@ def test_create_and_get_warranty(tenant_db_session):
         "end_date": "2027-04-01",
         "terms": "Parts and labor",
     }
-    created = create_warranty(request=_mock_request(), payload=payload, user={}, db=tenant_db_session)
+    created = create_warranty(request=_mock_request(), payload=payload, user={"sub": "office-1"},
+                              db=tenant_db_session)
 
     assert created["id"]
     assert created["status"] == "active"
@@ -155,6 +127,12 @@ def test_create_and_get_warranty(tenant_db_session):
     detail = get_warranty(warranty_id=created["id"], _={}, db=tenant_db_session)
     assert detail["id"] == created["id"]
     assert detail["job_id"] == payload["job_id"]
+
+    (row,) = _audit_rows(tenant_db_session, "warranty_created", created["id"])
+    assert row.user_id == "office-1"
+    assert row.entity_type == "warranty"
+    assert row.details["job_id"] == payload["job_id"]
+    assert row.details["customer_id"] == payload["customer_id"]
 
 
 def test_create_warranty_rejects_missing_required_fields(tenant_db_session):
@@ -198,8 +176,15 @@ def test_patch_warranty_updates_fields(tenant_db_session):
 def test_delete_warranty_soft_deletes(tenant_db_session):
     warranty_id = _seed_warranty(tenant_db_session)
 
-    response = delete_warranty(warranty_id=warranty_id, request=_mock_request(), user={}, db=tenant_db_session)
+    response = delete_warranty(warranty_id=warranty_id, request=_mock_request(), user={"sub": "office-2"},
+                               db=tenant_db_session)
     assert response.status_code == 204
+
+    (row,) = _audit_rows(tenant_db_session, "warranty_deleted", warranty_id)
+    assert row.user_id == "office-2"
+    assert row.entity_type == "warranty"
+    stored = tenant_db_session.get(Warranty, warranty_id)
+    assert stored is not None and stored.deleted_at is not None  # soft, not hard
 
     rows = list_warranties(_={}, db=tenant_db_session)
     assert all(item["id"] != warranty_id for item in rows)
@@ -252,7 +237,7 @@ def test_claim_warranty_increments_count_and_sets_claimed(tenant_db_session):
         warranty_id=warranty_id,
         request=_mock_request(),
         payload={"notes": "Spring failed under normal use"},
-        user={},
+        user={"sub": "office-3"},
         db=tenant_db_session,
     )
 
@@ -261,6 +246,11 @@ def test_claim_warranty_increments_count_and_sets_claimed(tenant_db_session):
     assert body["status"] == "claimed"
     assert body["last_claim_notes"] == "Spring failed under normal use"
     assert body["last_claim_at"] is not None
+
+    (row,) = _audit_rows(tenant_db_session, "warranty_claim_filed", warranty_id)
+    assert row.user_id == "office-3"
+    assert row.entity_type == "warranty"
+    assert row.details["notes"] == "Spring failed under normal use"
 
 
 def test_claim_warranty_not_found(tenant_db_session):
@@ -271,19 +261,16 @@ def test_claim_warranty_not_found(tenant_db_session):
 
 # GDXA-997: the update audit row records what CHANGED, not what was sent.
 
-def _warranty_audit_rows(db, warranty_id: str) -> list[dict]:
-    from sqlalchemy import select
-
-    from gdx_dispatch.core.audit import AuditLog
-
-    # The audit table is created lazily on first write; a no-op PATCH never writes.
-    AuditLog.__table__.create(bind=db.get_bind(), checkfirst=True)
-    rows = db.execute(
+def _audit_rows(db, action: str, warranty_id: str) -> list[AuditLog]:
+    return db.execute(
         select(AuditLog)
-        .where(AuditLog.action == "warranty_updated", AuditLog.entity_id == warranty_id)
+        .where(AuditLog.action == action, AuditLog.entity_id == warranty_id)
         .order_by(AuditLog.created_at, AuditLog.id)
     ).scalars().all()
-    return [r.details for r in rows]
+
+
+def _warranty_audit_rows(db, warranty_id: str) -> list[dict]:
+    return [r.details for r in _audit_rows(db, "warranty_updated", warranty_id)]
 
 
 def _stored_updated_at(db, warranty_id: str):
@@ -330,6 +317,7 @@ def test_patch_audit_row_carries_date_and_terms_old_new(tenant_db_session):
 def test_same_value_patch_writes_no_audit_row_and_keeps_updated_at(tenant_db_session):
     warranty_id = _seed_warranty(tenant_db_session, description="Opener warranty", status="active")
     before = get_warranty(warranty_id=warranty_id, _={}, db=tenant_db_session)
+    stored_before = _stored_updated_at(tenant_db_session, warranty_id)
 
     body = update_warranty(
         warranty_id=warranty_id,
@@ -348,7 +336,8 @@ def test_same_value_patch_writes_no_audit_row_and_keeps_updated_at(tenant_db_ses
 
     assert body == before
     assert _warranty_audit_rows(tenant_db_session, warranty_id) == []
-    assert _stored_updated_at(tenant_db_session, warranty_id) is None  # seeded NULL, never bumped
+    assert stored_before is not None
+    assert _stored_updated_at(tenant_db_session, warranty_id) == stored_before  # never bumped
 
 
 def test_patch_with_only_unknown_keys_is_still_400(tenant_db_session):
