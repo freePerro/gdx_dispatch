@@ -30,10 +30,11 @@ router = APIRouter(
     dependencies=[Depends(require_module("jobs"))],
 )
 
-TEMPLATE_TYPES = [
-    "estimate", "invoice", "work_order",
-    "install_sheet", "purchase_order",
-]
+# Only types a renderer reads: every PdfTemplate reader is pdf._template_config,
+# called with "estimate" or "invoice". work_order, install_sheet and
+# purchase_order were editor tabs that saved and changed no document
+# (GDXA-1909); rows already saved for them are left in place and never read.
+TEMPLATE_TYPES = ["estimate", "invoice"]
 
 
 def _tid(request: Request) -> str:
@@ -229,8 +230,5 @@ def available_types(
     labels = {
         "estimate": "Estimate",
         "invoice": "Invoice",
-        "work_order": "Work Order",
-        "install_sheet": "Install Sheet",
-        "purchase_order": "Purchase Order",
     }
     return [{"key": k, "label": labels.get(k, k)} for k in TEMPLATE_TYPES]

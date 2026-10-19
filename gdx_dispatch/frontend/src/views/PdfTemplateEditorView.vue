@@ -192,9 +192,6 @@ const config = ref({
 const templateTypes = [
   { key: "estimate", label: "Estimate" },
   { key: "invoice", label: "Invoice" },
-  { key: "work_order", label: "Work Order" },
-  { key: "install_sheet", label: "Install Sheet" },
-  { key: "purchase_order", label: "Purchase Order" },
 ];
 
 const fontOptions = ["Helvetica", "Arial", "Times New Roman", "Georgia", "Courier New"];
