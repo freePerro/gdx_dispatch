@@ -107,6 +107,8 @@ class SurveyTemplatePatch(BaseModel):
 
 
 class SurveySendIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     template_id: str = Field(min_length=1, max_length=64)
     customer_id: str | None = Field(default=None, max_length=64)
     job_id: str | None = Field(default=None, max_length=64)
@@ -116,6 +118,8 @@ class SurveySendIn(BaseModel):
 
 
 class PublicSurveyResponseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     score: int = Field(ge=0, le=10)
     comment: str | None = Field(default=None, max_length=5000)
 

@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/reviews", tags=["reviews"], dependencies=[Depend
 
 
 class ReviewSubmitIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     job_id: str | None = None
     customer_id: str | None = None
