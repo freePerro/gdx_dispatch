@@ -1462,8 +1462,9 @@ def _upsert_sync_health_action(tdb: Session, tenant_id: str, problems: list[str]
         },
         wake=True,
     )
-    if outcome != "unchanged":
-        tdb.commit()
+    # Unconditional: an unchanged tick has nothing pending, so this commit is
+    # empty, and the audit-after-commit scan sees the row land on every path.
+    tdb.commit()
     return outcome
 
 
