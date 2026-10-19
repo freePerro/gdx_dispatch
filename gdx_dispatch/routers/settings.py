@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import calendar
 import functools
 import logging
 import re
 import zoneinfo
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
@@ -96,6 +97,40 @@ def allowance_hours_out(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
 
+# Which year a vacation allowance counts over (GDXA-1827, Doug 2026-10-19):
+# each company chooses. Calendar year is the default, and the anniversary
+# policy falls back to the calendar year for anyone with no hire date.
+VACATION_YEAR_CALENDAR = "calendar_year"
+VACATION_YEAR_ANNIVERSARY = "hire_anniversary"
+VACATION_YEAR_POLICIES = (VACATION_YEAR_CALENDAR, VACATION_YEAR_ANNIVERSARY)
+VacationYearPolicy = Literal["calendar_year", "hire_anniversary"]
+
+
+def vacation_year_policy_out(value: str | None) -> str:
+    """The stored policy, or the calendar year for a missing or unknown value."""
+    return value if value in VACATION_YEAR_POLICIES else VACATION_YEAR_CALENDAR
+
+
+def vacation_year_start(policy: str | None, hire_date: date | None, on: date) -> date:
+    """First day of the vacation year that contains ``on`` for one person.
+
+    ``hire_anniversary`` counts from the most recent anniversary of the hire
+    date on or before ``on`` (a 29 February hire date falls on 28 February in
+    other years). With no hire date, or one after ``on``, it is the calendar
+    year, as is every other policy.
+    """
+    if vacation_year_policy_out(policy) != VACATION_YEAR_ANNIVERSARY or hire_date is None or hire_date > on:
+        return date(on.year, 1, 1)
+
+    def anniversary(year: int) -> date:
+        if hire_date.month == 2 and hire_date.day == 29 and not calendar.isleap(year):
+            return date(year, 2, 28)
+        return hire_date.replace(year=year)
+
+    start = anniversary(on.year)
+    return start if start <= on else anniversary(on.year - 1)
+
+
 class SettingsPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -156,6 +191,16 @@ class SettingsPatchIn(BaseModel):
     vacation_allowance_hours: Decimal | None = Field(
         default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
     )
+    # GDXA-1827: the year that allowance counts over. Not nullable: the column
+    # always holds a policy, so an explicit null is refused, not stored.
+    vacation_year_policy: VacationYearPolicy | None = None
+
+    @field_validator("vacation_year_policy")
+    @classmethod
+    def _vacation_year_policy(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError(f"vacation_year_policy must be one of: {', '.join(VACATION_YEAR_POLICIES)}")
+        return value
 
     @field_validator("google_review_url")
     @classmethod
@@ -296,6 +341,9 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "vacation_allowance_hours": allowance_hours_out(
             getattr(row, "vacation_allowance_hours", None)
         ),
+        "vacation_year_policy": vacation_year_policy_out(
+            getattr(row, "vacation_year_policy", None)
+        ),
     }
 
 
@@ -433,6 +481,10 @@ def patch_settings(
         )
         if previous != audit_updates["vacation_allowance_hours"]:
             audit_updates["vacation_allowance_hours_previous"] = previous
+    if "vacation_year_policy" in updates:
+        previous = vacation_year_policy_out(row.vacation_year_policy)
+        if previous != updates["vacation_year_policy"]:
+            audit_updates["vacation_year_policy_previous"] = previous
     for key in (
         "company_name", "address", "phone", "email", "logo", "timezone",
         "primary_color", "secondary_color", "google_review_url",
@@ -446,6 +498,7 @@ def patch_settings(
         "payroll_autosend_enabled", "payroll_autosend_hour",
         "holiday_calendar", "time_off_default_minutes",
         "time_off_counts_toward_overtime", "vacation_allowance_hours",
+        "vacation_year_policy",
     ):
         if key in updates:
             setattr(row, key, updates[key])
