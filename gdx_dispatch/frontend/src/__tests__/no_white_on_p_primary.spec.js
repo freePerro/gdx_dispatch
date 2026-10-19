@@ -31,7 +31,6 @@ const SRC_DIR = join(__dirname, '..');
 
 // `<file relative to src/> <selector>` — keyed by selector, not line number.
 const PENDING = new Set([
-  'views/PlannerView.vue .msg.mine', // jobs-dispatch
   'views/SegmentsView.vue .segment-chip.active', // customers-crm
 ]);
 
