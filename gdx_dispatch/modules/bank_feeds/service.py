@@ -78,7 +78,8 @@ def tenant_zoneinfo(db: Session) -> ZoneInfo:
     """Tenant timezone from AppSettings, through the shared shop-zone reader
     (``core.pay_periods.shop_tz_name_from_settings`` / ``resolve_zone``), so a
     missing row or a bad zone name lands where every other shop-day reader
-    lands (GDXA-1620). Only the failed read below is handled here."""
+    lands, with the reader's own warning (GDXA-1618, GDXA-1620). Only the
+    failed read below is handled here."""
     from gdx_dispatch.core.pay_periods import resolve_zone, shop_tz_name_from_settings  # noqa: PLC0415
 
     # A failed read has no answer from the shared reader to fall back on;
@@ -103,14 +104,7 @@ def tenant_zoneinfo(db: Session) -> ZoneInfo:
         # swallowed read shifts every day boundary computed from this helper.
         # Was a bare ``except: pass`` until 2026-09-17.
         log.exception("bank_feeds_tenant_timezone_read_failed — falling back to %s", tz_name)
-    zone = resolve_zone(tz_name)
-    if str(zone) != tz_name:
-        # Same consequence as the failed read above: a bad zone NAME in
-        # app_settings shifts every day boundary, so it must not be silent.
-        # One line, no traceback: this is persistent config, so it repeats on
-        # every 5-minute beat tick and every status request until fixed.
-        log.warning("bank_feeds_tenant_timezone_invalid tz=%r — falling back to %s", tz_name, zone)
-    return zone
+    return resolve_zone(tz_name)
 
 
 # ── parsing helpers ────────────────────────────────────────────────────

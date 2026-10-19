@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError as JWTError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -79,10 +79,14 @@ router = APIRouter(
 
 
 class PortalLoginIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: str = Field(min_length=3, max_length=254)
 
 
 class PortalPasswordLoginIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # Bounds mirror the staff LoginBody: 254 = RFC 5321 max, 128 = bcrypt-safe ceiling.
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=128)
@@ -90,10 +94,14 @@ class PortalPasswordLoginIn(BaseModel):
 
 
 class PortalSetPasswordIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     new_password: str = Field(min_length=8, max_length=128)
 
 
 class MessageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     subject: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=10000)
 
@@ -840,30 +848,12 @@ def portal_invoice_pdf(
 # nothing called it — and a second card mint site that could not carry the
 # card surcharge would have breached the networks' "surcharge consistently"
 # rule the day the office turned the fee on.
-
-
-@router.get("/documents", response_model=None)
-def portal_documents(
-    principal: PortalPrincipal = Depends(get_current_portal_customer),
-    db: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
-    rows = db.execute(
-        select(Document)
-        .where(Document.customer_id == principal.customer_id, Document.deleted_at.is_(None))
-        .order_by(Document.uploaded_at.desc())
-    ).scalars()
-    return [
-        {
-            "id": str(row.id),
-            "customer_id": str(row.customer_id) if row.customer_id else None,
-            "filename": row.filename,
-            "original_name": row.original_name,
-            "title": row.title,
-            "description": row.description,
-            "uploaded_at": row.uploaded_at.isoformat() if row.uploaded_at else None,
-        }
-        for row in rows
-    ]
+#
+# NOTE: ``GET /portal/documents`` was removed 2026-10-19 (GDXA-1732). No portal
+# view ever called it and nothing served the bytes, so a customer could not
+# open what it listed — yet it returned the original_name, title and
+# description of every Document carrying their customer_id, office-only notes
+# included. A customer documents tab is a product decision, not a revival.
 
 
 @router.post("/message", response_model=None)
@@ -959,6 +949,8 @@ def _require_listing_submission(db: Session, principal: PortalPrincipal) -> None
 
 
 class PortalListingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=5000)
     condition: str | None = None
@@ -1320,6 +1312,8 @@ def portal_estimate_pdf(
 
 
 class DeclineEstimateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     reason: str | None = Field(default=None, max_length=2000)
 
 
@@ -1531,11 +1525,15 @@ staff_router = APIRouter(
 
 
 class PortalToggleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     portal_enabled: bool
     email: str | None = Field(default=None, max_length=254)
 
 
 class PortalInviteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     customer_id: UUID
     email: str | None = Field(default=None, max_length=254)
 

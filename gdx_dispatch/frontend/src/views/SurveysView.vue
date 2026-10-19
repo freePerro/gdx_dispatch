@@ -74,18 +74,18 @@
       responsiveLayout="scroll" v-else :value="responses" dataKey="id" striped-rows>
           <Column header="Template">
             <template #body="slotProps">
-              {{ slotProps.data.template_name || slotProps.data.template?.name || '—' }}
+              {{ slotProps.data.template_name || '—' }}
             </template>
           </Column>
           <Column header="Respondent">
             <template #body="slotProps">
-              {{ slotProps.data.respondent_name || slotProps.data.customer_name || '—' }}
+              {{ slotProps.data.respondent_name || '—' }}
             </template>
           </Column>
           <Column field="score" header="Score" style="width:110px" />
           <Column header="Comment">
             <template #body="slotProps">
-              {{ slotProps.data.comment || slotProps.data.response || '—' }}
+              {{ slotProps.data.comment || '—' }}
             </template>
           </Column>
           <Column field="created_at" header="Received" />

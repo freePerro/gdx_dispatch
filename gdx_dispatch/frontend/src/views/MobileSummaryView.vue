@@ -1,10 +1,11 @@
 <script setup>
 // Sprint tech_mobile Phase 4.2 (S4-B3) — Day summary screen.
 //
-// Persistent /mobile/summary route. Same data the wrap card on
-// /mobile/today shows, but with a date picker so a tech can look
-// back. No clock-out modal — friction-free wrap.
+// /mobile/summary, reached from the Day summary button in the Today's
+// Route header (the wrap card that used to link here went in #396).
+// A date picker lets a tech look back. No clock-out modal.
 import { onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import DatePicker from 'primevue/datepicker'
 import Tag from 'primevue/tag'
@@ -13,6 +14,7 @@ import { useToast } from 'primevue/usetoast'
 
 const api = useApi()
 const toast = useToast()
+const router = useRouter()
 
 const summary = ref(null)
 const loading = ref(true)
@@ -38,6 +40,11 @@ async function load() {
   }
 }
 
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else router.push('/mobile')
+}
+
 watch(selectedDate, load)
 onMounted(load)
 </script>
@@ -45,9 +52,18 @@ onMounted(load)
 <template>
     <section class="summary-page">
       <header class="summary-header">
-        <h1>Day wrap</h1>
+        <Button
+          icon="pi pi-arrow-left"
+          text
+          rounded
+          aria-label="Back"
+          data-testid="mobile-summary-back"
+          @click="goBack"
+        />
+        <h1>Day summary</h1>
         <DatePicker
           v-model="selectedDate"
+          class="summary-date"
           showIcon
           :maxDate="new Date()"
           dateFormat="M d, yy"
@@ -104,7 +120,11 @@ onMounted(load)
 <style scoped>
 .summary-page { padding: 0.75rem; max-width: 800px; margin: 0 auto; }
 .summary-header { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; }
-.summary-header h1 { font-size: 1.25rem; margin: 0; }
+.summary-header h1 { font-size: 1.25rem; margin: 0; flex: 1; white-space: nowrap; }
+/* Too narrow for back + title + a full date: the picker takes its own row. */
+.summary-header { flex-wrap: wrap; }
+.summary-date { flex: 1 0 12rem; }
+.summary-date :deep(input) { width: 100%; }
 
 .summary-loading { padding: 2rem; text-align: center; color: var(--p-text-muted-color); }
 

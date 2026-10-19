@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event
+from gdx_dispatch.core.pay_periods import DEFAULT_SHOP_TZ
 from gdx_dispatch.modules.timeclock.models import TimeClock
 
 
@@ -19,7 +20,7 @@ def _audit(db: Session, event_type: str, actor_id: str, entity_id: str, payload:
     asyncio.run(log_audit_event(db, event_type, actor_id, "timeclock", entity_id, payload))
 
 
-def clock_in(technician_id: str, job_id, db: Session, tenant_timezone: str = "America/New_York", company_id: str = "") -> TimeClock:
+def clock_in(technician_id: str, job_id, db: Session, tenant_timezone: str = DEFAULT_SHOP_TZ, company_id: str = "") -> TimeClock:
     open_row = db.execute(select(TimeClock).where(TimeClock.technician_id == technician_id, TimeClock.clock_out_at.is_(None))).scalar_one_or_none()
     if open_row:
         raise ValueError("Already clocked in")

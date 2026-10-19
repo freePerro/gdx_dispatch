@@ -220,7 +220,7 @@ hardening, not correctness). The confirmed defects to fix:
   unconditional `sign_payload(payload, endpoint.secret)` (`delivery.py:51`)
   can't crash on NULL and every PII delivery is signed.
 
-Kill the now-dead duplicate layer (truth-F8): `core/webhook_delivery.py`
+Kill the now-dead duplicate layer (truth-F8): `core/webhook_delivery.py` <!-- link-ok: deleted 2026-10-19 (GDXA-1678) -->
 (`deliver_webhook_event`, `ping_endpoint` — the latter POSTs with no SSRF
 guard) and `core/webhooks/monitor.py` become lies-in-code after unification.
 

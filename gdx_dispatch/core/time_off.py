@@ -39,7 +39,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
-from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of
+from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of, shop_tz_name
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry, User
 
 log = logging.getLogger(__name__)
@@ -320,7 +320,7 @@ def create_time_off_entries(
     kind = str(entry_type or "").strip().lower()
     if kind not in TIME_OFF_TYPES:
         raise ValueError(f"not a time-off type: {entry_type!r}")
-    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    tz_name = shop_tz_name(settings)
     schedule = person_schedule(db, settings, technician_id)
     taken = existing_time_off_days(db, technician_id, days, tz_name)
     now = datetime.now(UTC).isoformat()
@@ -433,7 +433,7 @@ def unposted_holidays(
     rows = holidays_between(settings, start, end)
     if not rows:
         return []
-    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    tz_name = shop_tz_name(settings)
     posted = posted_holiday_counts(db, [date.fromisoformat(h["date"]) for h in rows], tz_name)
     return [h for h in rows if not posted.get(date.fromisoformat(h["date"]), 0)]
 
@@ -616,7 +616,7 @@ def vacation_balances(
     ids = {str(t) for t in technician_ids if t}
     if not ids:
         return {}
-    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    tz_name = shop_tz_name(settings)
     shop_default = getattr(settings, "vacation_allowance_hours", None)
     overrides = allowance_overrides(db, ids)
     minutes = vacation_minutes_by_person(db, year, tz_name, as_of=as_of, technician_ids=ids)

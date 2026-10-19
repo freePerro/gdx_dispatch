@@ -40,6 +40,7 @@ from gdx_dispatch.core.pay_periods import (
     settings_config,
     shop_day_of,
     shop_today,
+    shop_tz_name,
     shop_tz_name_from_settings,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -1061,7 +1062,7 @@ def pay_periods(
     """
     _ = _tenant_id(request)
     row = db.query(AppSettings).first()
-    tz_name = (row.timezone if row and row.timezone else "America/New_York")
+    tz_name = shop_tz_name(row)
     cfg = settings_config(row)
     today = shop_today(tz_name)
 
@@ -1134,7 +1135,7 @@ def _export_context(
         raise HTTPException(status_code=422, detail="end must be on or after start")
     tenant_id = _tenant_id(request)
     row = db.query(AppSettings).first()
-    tz_name = (row.timezone if row and row.timezone else "America/New_York")
+    tz_name = shop_tz_name(row)
     cfg = settings_config(row)
     period = PayPeriod(start, end)
 

@@ -20,7 +20,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
@@ -163,6 +163,8 @@ def _find_possible_duplicate_lead(db: Session, lead: Lead) -> dict[str, Any] | N
 
 
 class LandingLeadIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, max_length=200)
     email: str | None = Field(default=None, max_length=254)
     phone: str | None = Field(default=None, max_length=30)
@@ -175,6 +177,8 @@ class LandingLeadIn(BaseModel):
 
 
 class LandingLeadStatusIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # "promoted" is deliberately absent: only the convert endpoint may set it.
     status: str = Field(pattern=r"^(new|contacted|completed|discarded)$")
 
@@ -188,6 +192,8 @@ def _lower_stage(v: Any) -> Any:
 
 
 class LeadIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     landing_lead_id: str | None = Field(default=None, max_length=64)
     name: str = Field(min_length=1, max_length=200)
     email: str | None = Field(default=None, max_length=254)
@@ -207,6 +213,8 @@ class LeadIn(BaseModel):
 
 
 class LeadPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=200)
     email: str | None = Field(default=None, max_length=254)
     phone: str | None = Field(default=None, max_length=30)
@@ -224,6 +232,8 @@ class LeadPatch(BaseModel):
 
 
 class LeadIntakeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     email: str | None = Field(default=None, max_length=254)
     phone: str | None = Field(default=None, max_length=30)
@@ -236,6 +246,8 @@ class LeadIntakeIn(BaseModel):
 
 
 class StageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     stage: str = Field(pattern=r"^(new|contacted|qualified|quoted|won|lost)$")
 
     _norm_stage = field_validator("stage", mode="before")(_lower_stage)
@@ -248,6 +260,8 @@ class ConvertToCustomerIn(BaseModel):
     service-call path) or "quoted" (we're drafting an estimate). Anything
     else stays on the explicit advance-stage endpoint.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     stage: str = Field(default="won", pattern=r"^(won|quoted)$")
 
@@ -1028,6 +1042,8 @@ def list_lead_estimates(
 
 
 class SelectedEstimateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     estimate_id: UUID | None = None
 
 

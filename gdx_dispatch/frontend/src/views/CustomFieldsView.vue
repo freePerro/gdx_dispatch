@@ -107,6 +107,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -122,6 +123,7 @@ import Toolbar from 'primevue/toolbar';
 import ToggleSwitch from 'primevue/toggleswitch';
 
 const api = useApiWithToast();
+const { confirmAsync } = useDestructiveConfirm();
 
 const definitions = ref([]);
 const loading = ref(true);
