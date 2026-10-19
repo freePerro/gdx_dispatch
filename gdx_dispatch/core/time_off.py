@@ -375,11 +375,10 @@ class ApprovedTimeOff:
 def _user_key(raw: Any) -> str:
     """A user id in one spelling. `time_off_requests.technician_id` and
     `technicians.user_id` are both text and either may hold the dashed or
-    dashless form; parsing as UUID makes them compare equal."""
-    try:
-        return UUID(str(raw)).hex
-    except (ValueError, TypeError):
-        return str(raw or "").strip()
+    dashless form; dropping the dashes and the case makes them compare equal.
+    Both sides go through this one function, so a text id that is not a UUID
+    still matches only its own spelling."""
+    return str(raw or "").strip().replace("-", "").lower()
 
 
 def approved_time_off_for_range(
