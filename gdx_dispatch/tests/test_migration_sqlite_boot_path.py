@@ -23,6 +23,7 @@ SQLite (107).
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -81,18 +82,30 @@ def _head() -> str:
     return ScriptDirectory.from_config(cfg).get_current_head()
 
 
-def _schema_gap(con: sqlite3.Connection) -> set[tuple[str, str]]:
-    """Every (table, column) the ORM maps that the migrated database lacks."""
-    import gdx_dispatch.models  # noqa: F401 — register every model on the metadata
-    from gdx_dispatch.core.audit import TenantBase
-    from gdx_dispatch.core.tenant_settings import Base
+# Runs in a subprocess: in the suite, earlier tests have imported module models
+# (modules/locations, purchase_orders, ...) that gdx_dispatch.models does not,
+# so the test process's metadata maps tables create_orm_tables never saw.
+_SCHEMA_GAP = """
+import json, sqlite3, sys
+import gdx_dispatch.models  # noqa: F401 — the same models create_orm_tables registers
+from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.core.tenant_settings import Base
 
-    gap = set()
-    for metadata in (TenantBase.metadata, Base.metadata):
-        for table in metadata.tables.values():
-            have = {row[1] for row in con.execute(f'PRAGMA table_info("{table.name}")')}
-            gap |= {(table.name, c.name) for c in table.columns if c.name not in have}
-    return gap
+con = sqlite3.connect(sys.argv[1])
+gap = []
+for metadata in (TenantBase.metadata, Base.metadata):
+    for table in metadata.tables.values():
+        have = {row[1] for row in con.execute(f'PRAGMA table_info("{table.name}")')}
+        gap += [[table.name, c.name] for c in table.columns if c.name not in have]
+print(json.dumps(gap))
+"""
+
+
+def _schema_gap(env: dict[str, str], db: Path) -> set[tuple[str, str]]:
+    """Every (table, column) the boot path's ORM maps that the migrated database lacks."""
+    proc = _run(env, "-c", _SCHEMA_GAP, str(db))
+    _ok(proc)
+    return {tuple(pair) for pair in json.loads(proc.stdout.strip().splitlines()[-1])}
 
 
 def _create_orm_tables(env: dict[str, str]) -> None:
@@ -122,7 +135,7 @@ def test_sqlite_boot_path_past_the_pg_only_stretch(tmp_path):
         users = con.execute("SELECT id, role, deleted_at FROM users").fetchall()
         assert len(users) == 1 and users[0][1] == "owner" and users[0][2] is None
         assert len(users[0][0]) == 32
-        assert _schema_gap(con) == _KNOWN_GAP
+        assert _schema_gap(env, db) == _KNOWN_GAP
     finally:
         con.close()
 
