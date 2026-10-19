@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import functools
 import logging
 import re
+import zoneinfo
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
@@ -62,6 +64,25 @@ def _clean_review_url(value: str | None) -> str | None:
         return ""
     if not value.lower().startswith(("http://", "https://")):
         raise ValueError("Review link must be a full URL starting with http:// or https://")
+    return value
+
+
+@functools.cache
+def _iana_zones() -> frozenset[str]:
+    return frozenset(zoneinfo.available_timezones())
+
+
+def _clean_timezone(value: str | None) -> str:
+    """The shop's zone must be an IANA name. Every reader (time clock,
+    payroll, bank feeds, planner) falls back to UTC or New York on a name
+    ZoneInfo cannot load, so a typo saved here would silently shift every
+    shop-day boundary rather than fail. The column is NOT NULL, so an
+    explicit null is refused here instead of as a 500 at commit."""
+    if value is None:
+        raise ValueError("Timezone cannot be empty")
+    value = value.strip()
+    if value not in _iana_zones():
+        raise ValueError(f"Unknown timezone {value!r}; use an IANA name such as America/Chicago")
     return value
 
 
@@ -140,6 +161,11 @@ class SettingsPatchIn(BaseModel):
     @classmethod
     def _review_url(cls, value: str | None) -> str | None:
         return _clean_review_url(value)
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone(cls, value: str | None) -> str:
+        return _clean_timezone(value)
 
 
 # Keys served by GET /api/settings/branding (300s cache). Either PATCH that
