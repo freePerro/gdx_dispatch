@@ -17,7 +17,7 @@ from sqlalchemy import DateTime, Float, String, Text
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
 
-from gdx_dispatch.core.audit import TenantBase, utcnow
+from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.models.tenant_models import Invoice, Job
 
@@ -89,6 +89,44 @@ def _make_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _find(tenant_db: Session, tenant_id: str, action_id: str) -> NextAction | None:
+    """The live persisted action with this id, or None."""
+    return (
+        tenant_db.query(NextAction)
+        .filter(
+            NextAction.id == _to_uuid(action_id),
+            NextAction.tenant_id == tenant_id,
+            NextAction.deleted_at.is_(None),
+        )
+        .first()
+    )
+
+
+def _audit(
+    tenant_db: Session,
+    tenant_id: str,
+    verb: str,
+    action: NextAction,
+    details: dict,
+    request: Any,
+    user_id: str | None = None,
+) -> None:
+    """Flush an audit row into the caller's transaction, before its commit,
+    so a change and its trail land together or not at all (invariant #1;
+    GDXA-1808 found create, complete and snooze writing none). With no
+    ``user_id`` the actor is resolved from ``request``."""
+    log_audit_event_sync(
+        tenant_db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action=f"next_action.{verb}",
+        entity_type="next_action",
+        entity_id=str(action.id),
+        details=details,
+        request=request,
+    )
 
 
 def _action_to_dict(action: NextAction) -> dict:
@@ -195,22 +233,17 @@ class NextActionQueue:
         tenant_id: str,
         action_id: str,
         tenant_db: Session,
+        request: Any = None,
     ) -> dict:
-        """Mark a persisted action as completed."""
+        """Mark a persisted action as completed, audited in the same commit."""
         try:
-            action = (
-                tenant_db.query(NextAction)
-                .filter(
-                    NextAction.id == _to_uuid(action_id),
-                    NextAction.tenant_id == tenant_id,
-                    NextAction.deleted_at.is_(None),
-                )
-                .first()
-            )
+            action = _find(tenant_db, tenant_id, action_id)
             if action is None:
                 return {"error": "Action not found", "id": action_id}
+            previous = action.status
             action.status = "completed"
             action.completed_at = _utcnow()
+            _audit(tenant_db, tenant_id, "complete", action, {"from": previous, "to": "completed"}, request)
             tenant_db.commit()
             return {"id": action_id, "status": "completed"}
         except Exception as exc:
@@ -228,22 +261,21 @@ class NextActionQueue:
         action_id: str,
         until_dt: datetime,
         tenant_db: Session,
+        request: Any = None,
     ) -> dict:
-        """Defer a persisted action until a future datetime."""
+        """Defer a persisted action until a future datetime, audited in the
+        same commit."""
         try:
-            action = (
-                tenant_db.query(NextAction)
-                .filter(
-                    NextAction.id == _to_uuid(action_id),
-                    NextAction.tenant_id == tenant_id,
-                    NextAction.deleted_at.is_(None),
-                )
-                .first()
-            )
+            action = _find(tenant_db, tenant_id, action_id)
             if action is None:
                 return {"error": "Action not found", "id": action_id}
+            previous = action.status
             action.status = "snoozed"
             action.snoozed_until = until_dt
+            _audit(
+                tenant_db, tenant_id, "snooze", action,
+                {"from": previous, "to": "snoozed", "until": until_dt.isoformat()}, request,
+            )
             tenant_db.commit()
             return {
                 "id": action_id,
@@ -271,8 +303,9 @@ class NextActionQueue:
         estimated_value: float,
         reference_id: str | None,
         tenant_db: Session,
+        request: Any = None,
     ) -> dict:
-        """Create and persist a new next action."""
+        """Create and persist a new next action, audited in the same commit."""
         try:
             action = NextAction(
                 tenant_id=tenant_id,
@@ -287,6 +320,18 @@ class NextActionQueue:
                 status="pending",
             )
             tenant_db.add(action)
+            tenant_db.flush()
+            _audit(
+                tenant_db, tenant_id, "create", action,
+                {
+                    "action_type": action_type,
+                    "title": title,
+                    "priority": priority,
+                    "action_url": action_url,
+                    "reference_id": reference_id,
+                },
+                request, user_id=user_id,
+            )
             tenant_db.commit()
             tenant_db.refresh(action)
             return _action_to_dict(action)
