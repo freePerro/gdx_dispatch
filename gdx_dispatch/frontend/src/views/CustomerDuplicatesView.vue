@@ -214,8 +214,6 @@
           />
         </div>
       </Dialog>
-
-      <Toast />
     </section>
 </template>
 
@@ -233,7 +231,6 @@ import Dialog from "primevue/dialog";
 import ProgressSpinner from "primevue/progressspinner";
 import RadioButton from "primevue/radiobutton";
 import Tag from "primevue/tag";
-import Toast from "primevue/toast";
 
 const api = useApiWithToast();
 const toast = useToast();
