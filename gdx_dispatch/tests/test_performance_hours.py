@@ -191,7 +191,14 @@ def test_an_unreadable_timeclock_is_unavailable_and_spares_the_other_stats(db):
     assert row["unavailable"]["hours_worked"] == perf.REASON_READ_FAILED
     # The reads after it still ran.
     assert row["stats"]["tasks_completed"] == 0
-    assert row["stats"]["safety_checklists"] == 0
+
+
+def test_the_retired_safety_checklist_stat_is_not_reported(db):
+    """GDXA-1714: the safety checklist was retired; its count was always 0."""
+    tech = _user(db, "Alex")
+    row = _all(db)[tech]
+    assert "safety_checklists" not in row["stats"]
+    assert "safety_checklists" not in row["unavailable"]
 
 
 def test_a_shift_the_timesheet_flags_makes_the_month_unknown_not_zero(db):

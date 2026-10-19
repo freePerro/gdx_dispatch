@@ -243,7 +243,7 @@ def _build_user_stats(
     shape is the real performance problem here and it is older than this change.
 
     Contained, not re-raised: the degraded answer stays the answer. The savepoint
-    only stops one unreadable table from silently zeroing the six that are fine.
+    only stops one unreadable table from silently zeroing the rest that are fine.
     """
     stats: dict[str, Any] = {
         "jobs_completed": None,
@@ -254,7 +254,6 @@ def _build_user_stats(
         "hours_worked": None,
         "tasks_completed": None,
         "commission_earned": None,
-        "safety_checklists": None,
     }
     unavailable: dict[str, str] = {}
 
@@ -400,23 +399,6 @@ def _build_user_stats(
         except Exception:
             log.debug("commission_entries table query failed for user stats")
             unavailable["commission_earned"] = REASON_READ_FAILED
-
-    # Safety checklists completed
-    try:
-        with contained_read(db):
-            row = db.execute(
-                text(f"""
-                    SELECT COUNT(*) AS cnt FROM safety_checklists
-                    WHERE company_id = :tid AND technician_id = :user_id
-                      AND completed = true AND deleted_at IS NULL
-                      {period_filter.replace('created_at', 'COALESCE(signed_at, created_at)')}
-                """),  # noqa: S608 — period_filter is a literal clause; dates are bound
-                params,
-            ).mappings().first()
-        stats["safety_checklists"] = _safe_int(row["cnt"]) if row else 0
-    except Exception:
-        log.debug("safety_checklists table query failed for user stats")
-        unavailable["safety_checklists"] = REASON_READ_FAILED
 
     return stats, unavailable
 

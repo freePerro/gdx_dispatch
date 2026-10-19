@@ -432,16 +432,16 @@ def test_pg_the_name_read_in_the_send_task_has_its_own_containment(pg_test_engin
 
 
 # ---------------------------------------------------------------------------
-# routers/performance.py — seven reads in a row, one session
+# routers/performance.py — several reads in a row, one session
 # ---------------------------------------------------------------------------
 
 
 def test_pg_one_unreadable_table_does_not_zero_every_other_performance_stat(
     pg_test_engine,
 ):
-    """``_build_user_stats`` runs seven swallowed reads back to back.
+    """``_build_user_stats`` runs its swallowed reads back to back.
 
-    Break the first (``jobs``) and, without containment, the six after it fail
+    Break the first (``jobs``) and, without containment, every read after it fails
     too: the page shows a row of noughts for every user with nothing but
     ``log.debug`` to say why. This seeds a real ``planner_tasks`` row and asserts
     it is still counted after the ``jobs`` read failed — a number that an

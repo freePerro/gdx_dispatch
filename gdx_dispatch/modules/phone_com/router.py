@@ -619,31 +619,6 @@ def list_cold_leads(
 # ── pc-s10: messages ───────────────────────────────────────────────────
 
 
-class MessageThreadOut(BaseModel):
-    thread_key: str
-    other_party_number: str | None
-    customer_id: UUID | None
-    customer_name: str | None
-    last_message_at: datetime | None
-    last_message_body: str | None
-    last_message_direction: str | None
-    message_count: int
-
-
-class MessageOut(BaseModel):
-    id: UUID
-    direction: str
-    from_number: str | None
-    to_number: str | None
-    body: str | None
-    sent_at: datetime | None
-    received_at: datetime | None
-    delivery_status: str | None
-    attachments: list[Any]
-    customer_id: UUID | None
-    job_id: UUID | None
-
-
 @router.get("/messages/unread-count")
 def unread_message_count(
     tenant_db: Session = Depends(get_tenant_db),
