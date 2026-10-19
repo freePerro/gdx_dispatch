@@ -55,7 +55,10 @@ def run_migrations_online():
             # panel) takes the same transaction-scoped advisory lock here. A
             # second migrator blocks until the first commits, then proceeds.
             # xact-scoped so it auto-releases at commit and is pooler-safe.
-            connection.execute(text("SELECT pg_advisory_xact_lock(823641723)"))
+            # Postgres only: SQLite has no such function, and its file-level
+            # write lock already serializes migrators.
+            if connection.dialect.name == "postgresql":
+                connection.execute(text("SELECT pg_advisory_xact_lock(823641723)"))
             context.run_migrations()
 
 
