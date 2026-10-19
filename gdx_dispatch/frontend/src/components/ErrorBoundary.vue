@@ -71,7 +71,7 @@ function retry() {
   border-radius: 6px;
   border: 1px solid var(--p-primary-color);
   background: var(--p-primary-color);
-  color: white;
+  color: var(--text-on-p-primary);
   cursor: pointer;
 }
 .retry-btn:hover {

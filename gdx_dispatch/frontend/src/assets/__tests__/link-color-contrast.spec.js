@@ -60,8 +60,10 @@ describe('GDXA-885 — text-link colour clears WCAG AA', () => {
   });
 
   it('re-points --p-primary-color at the link token on links, buttons and labels, light mode only', () => {
+    // The same rule also sets --text-on-p-primary (GDXA-1761), so the fill and
+    // its text colour change on the same elements.
     expect(css).toMatch(
-      /:where\(:root:not\(\[data-theme="dark"\]\)\)\s*:where\(a, button, label\)\s*\{\s*--p-primary-color:\s*var\(--link-color\);\s*\}/,
+      /:where\(:root:not\(\[data-theme="dark"\]\)\)\s*:where\(a, button, label\)\s*\{[^}]*--p-primary-color:\s*var\(--link-color\);[^}]*\}/,
     );
   });
 
