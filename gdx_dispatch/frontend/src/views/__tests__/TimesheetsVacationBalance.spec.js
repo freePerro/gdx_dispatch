@@ -3,6 +3,9 @@
  *
  * Pins, named for the failure each prevents:
  *  - the card asks for EVERYONE for the year the selected range ends in;
+ *  - each row names that person's own vacation year, and the title names no
+ *    year: under hire_anniversary the windows differ person to person
+ *    (GDXA-1902);
  *  - "no allowance set" is said in words, never as 0h left;
  *  - an overdrawn balance shows negative and in danger, not clamped to 0;
  *  - a failed read says so; it never renders as an empty crew;
@@ -77,11 +80,14 @@ const BALANCES = {
   year: 2026, as_of: '2026-05-20', timezone: 'America/Chicago', shop_allowance_hours: 80,
   balances: [
     { technician_id: 'u-a', technician_name: 'Dana Ruiz', year: 2026, allowance_hours: 80, allowance_source: 'shop',
-      used_hours: 24, taken_hours: 16, scheduled_hours: 8, remaining_hours: 56, overdrawn: false },
+      used_hours: 24, taken_hours: 16, scheduled_hours: 8, remaining_hours: 56, overdrawn: false,
+      window_start: '2026-01-01', window_end: '2026-12-31' },
     { technician_id: 'u-b', technician_name: 'Lee Park', year: 2026, allowance_hours: 16, allowance_source: 'person',
-      used_hours: 24.5, taken_hours: 24.5, scheduled_hours: 0, remaining_hours: -8.5, overdrawn: true },
+      used_hours: 24.5, taken_hours: 24.5, scheduled_hours: 0, remaining_hours: -8.5, overdrawn: true,
+      window_start: '2026-01-01', window_end: '2026-12-31' },
     { technician_id: 'u-c', technician_name: 'Sam Ode', year: 2026, allowance_hours: null, allowance_source: null,
-      used_hours: 0, taken_hours: 0, scheduled_hours: 0, remaining_hours: null, overdrawn: false },
+      used_hours: 0, taken_hours: 0, scheduled_hours: 0, remaining_hours: null, overdrawn: false,
+      window_start: '2026-01-01', window_end: '2026-12-31' },
   ],
 };
 
@@ -122,13 +128,31 @@ describe('TimesheetsView — vacation balances', () => {
     const urls = apiGet.mock.calls.map(([u]) => u).filter((u) => u.startsWith('/api/timeclock/time-off/balances'));
     expect(urls.at(-1)).toBe('/api/timeclock/time-off/balances?all_technicians=true&year=2026');
     const card = w.find('[data-testid="vacation-balances"]');
-    expect(card.text()).toContain('Vacation 2026');
+    expect(card.text()).toContain('Vacation balances');
+    expect(w.find('[data-testid="vacation-window-u-a"]').text()).toBe('2026 ·');
     expect(card.text()).toContain('as of 2026-05-20');
     const dana = w.find('[data-testid="vacation-balance-u-a"]').text();
     expect(dana).toContain('24h used');
     expect(dana).toContain('(8h of it still ahead)');
     expect(dana).toContain('of 80h');
     expect(w.find('[data-testid="vacation-remaining-u-a"]').text()).toBe('56h left');
+  });
+
+  it('names each person\'s anniversary window on their row, not one year for all', async () => {
+    const anniversary = {
+      ...BALANCES,
+      balances: [
+        { ...BALANCES.balances[0], year: 2025, window_start: '2025-06-03', window_end: '2026-06-02' },
+        { ...BALANCES.balances[1], year: 2026, window_start: '2026-03-01', window_end: '2027-02-28' },
+        // No hire date: the calendar year.
+        BALANCES.balances[2],
+      ],
+    };
+    const w = await mountRange({ balances: anniversary });
+    expect(w.find('[data-testid="vacation-window-u-a"]').text()).toBe('Jun 3 2025 – Jun 2 2026 ·');
+    expect(w.find('[data-testid="vacation-window-u-b"]').text()).toBe('Mar 1 2026 – Feb 28 2027 ·');
+    expect(w.find('[data-testid="vacation-window-u-c"]').text()).toBe('2026 ·');
+    expect(w.find('[data-testid="vacation-balances"]').text()).not.toMatch(/Vacation 20\d\d/);
   });
 
   it('shows an overdrawn balance as negative, and an unset one in words', async () => {

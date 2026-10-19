@@ -474,8 +474,6 @@ POST /api/v1/customers
 POST /api/v1/jobs
 POST /api/v1/landing-leads
 POST /api/v1/webhooks
-POST /api/van-inventory
-POST /api/van-inventory/use
 POST /api/vehicle-inspections
 POST /api/vendors
 POST /api/warranties
