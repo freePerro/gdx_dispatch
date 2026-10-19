@@ -38,6 +38,10 @@
 
   --interactive-primary: var(--color-brand-400);
   --interactive-primary-soft: rgba(99, 179, 255, 0.22);
+  /* Text on a solid --interactive-primary fill. White on dark #63b3ff is
+     2.2:1, so dark uses the app background (8.2:1); light keeps white on
+     #2563eb (5.2:1). Guarded by no_white_on_interactive_primary.spec.js. */
+  --text-on-interactive-primary: var(--color-bg-900);
 
   /* Text-link colour. Dark keeps Aura's dark primary (#34d399, 9.2:1 on
      #18181b); the light value is set in both light blocks below. */
@@ -118,6 +122,7 @@
 
   --interactive-primary: var(--color-brand-400);
   --interactive-primary-soft: rgba(37, 99, 235, 0.1);
+  --text-on-interactive-primary: #fff;
 
   --link-color: #047857;
 
@@ -170,6 +175,7 @@
 
     --interactive-primary: var(--color-brand-400);
     --interactive-primary-soft: rgba(37, 99, 235, 0.1);
+    --text-on-interactive-primary: #fff;
 
     --link-color: #047857;
 

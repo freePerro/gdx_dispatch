@@ -1602,12 +1602,12 @@ def save_attachment_to_job(
         title=original_name,
         description=(payload.description or f"From email: {(msg.subject or '').strip()}")[:500],
         job_id=payload.job_id,
-        # customer_id is deliberately LEFT NULL. The customer portal lists
-        # documents by customer_id (routers/portal.py portal_documents) and
-        # returns original_name + title + description — so filing a supplier's
+        # customer_id is deliberately LEFT NULL. The user asked to put it on
+        # a JOB; job_id is what that means. Anything that later lists
+        # documents by customer_id would otherwise publish a supplier's
         # "Acme margin.pdf" with the subject "our markup on the Smith job"
-        # would publish both straight to that customer's portal. The user
-        # asked to put it on a JOB; job_id is what that means.
+        # under that customer — the customer portal did exactly that until
+        # GET /portal/documents was removed 2026-10-19 (GDXA-1732).
     )
     tenant_db.add(doc)
     try:

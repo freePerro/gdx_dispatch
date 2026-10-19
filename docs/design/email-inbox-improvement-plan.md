@@ -65,6 +65,8 @@ cut. What they caught, and what changed:
 3. **`save-to-job` published to the customer portal.** `portal_documents`
    lists by `customer_id`, so the filename + email subject would have reached
    the customer. `customer_id` is now left NULL — the user asked for a *job*.
+   [2026-10-19: `GET /portal/documents` itself was removed (GDXA-1732) — no
+   portal view ever called it. The NULL `customer_id` stays.]
 4. **`save-to-job` poisoned vendor-invoice dedup.** `Document.content_hash` is
    the vendor pipelines' tenant-wide key (`find_existing_document` is unscoped
    and hard-raises), so filing an emailed statement onto a job would have
