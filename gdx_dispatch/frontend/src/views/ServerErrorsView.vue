@@ -153,7 +153,7 @@ onMounted(loadAll);
 .server-errors-filters { display: flex; gap: 1rem; align-items: center; margin: 0.75rem 0; flex-wrap: wrap; }
 .filter-tabs { display: flex; gap: 0.25rem; }
 .filter-tabs button { padding: 0.35rem 0.9rem; border: 1px solid var(--p-content-border-color, #ccc); background: transparent; border-radius: 6px; cursor: pointer; }
-.filter-tabs button.active { background: var(--p-primary-color); color: #fff; border-color: transparent; }
+.filter-tabs button.active { background: var(--p-primary-color); color: var(--text-on-p-primary); border-color: transparent; }
 .spinner-wrap { display: flex; justify-content: center; padding: 2rem; }
 .detail-grid { display: flex; flex-direction: column; gap: 0.5rem; }
 .detail-msg { color: var(--p-text-muted-color, #555); }
