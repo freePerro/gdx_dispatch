@@ -118,6 +118,28 @@ def _get_scoped_tag(db: Session, tag_id: UUID, tenant_id: str) -> Tag:
     return row
 
 
+def tag_by_name(db: Session, name: str) -> Tag | None:
+    """The row holding ``name``, live or soft-deleted.
+
+    ``uq_tag_name`` has no ``deleted_at`` condition, so a soft-deleted tag
+    keeps its name: a create must revive that row rather than insert, and a
+    rename onto it collides. Shared with ``admin_customer_tags``.
+    """
+    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    return db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
+
+
+def revive_tag(tag: Tag, *, color: str, description: str | None) -> None:
+    """Bring a soft-deleted tag back under its old id, with the new fields.
+
+    Its assignments were removed at delete time, so it returns unattached.
+    """
+    tag.deleted_at = None
+    tag.color = color
+    tag.description = description
+    tag.updated_at = utcnow()
+
+
 def _parse_tag_id(raw: str) -> UUID:
     try:
         return UUID(str(raw))
@@ -186,17 +208,11 @@ def create_tag(
 
     # Pre-check to convert uniqueness violations into 409 before hitting the DB
     # (also resurrects any existing soft-deleted tag with the same name).
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-    existing = db.execute(
-        select(Tag).where(Tag.name == name)
-    ).scalar_one_or_none()
+    existing = tag_by_name(db, name)
     if existing:
         if existing.deleted_at is None:
             raise HTTPException(status_code=409, detail="Tag name already exists")
-        existing.deleted_at = None
-        existing.color = payload.color
-        existing.description = payload.description
-        existing.updated_at = utcnow()
+        revive_tag(existing, color=payload.color, description=payload.description)
         db.commit()
         db.refresh(existing)
         _audit(
