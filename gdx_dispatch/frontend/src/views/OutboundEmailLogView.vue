@@ -89,7 +89,6 @@
           title="Email body" data-testid="oel-body" />
       </div>
     </Dialog>
-    <Toast />
   </section>
 </template>
 
@@ -103,7 +102,6 @@ import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Select from "primevue/select";
 import Tag from "primevue/tag";
-import Toast from "primevue/toast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatDateTime } from "../composables/useFormatters";
 
