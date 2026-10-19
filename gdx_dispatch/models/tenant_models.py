@@ -1607,27 +1607,6 @@ class Vendor(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-LIFECYCLE_TRANSITIONS = {"lead": {"estimate", "cancelled"}, "estimate": {"scheduled", "cancelled"}, "scheduled": {"in_progress", "cancelled"}, "in_progress": {"completed", "cancelled"}, "completed": set(), "cancelled": set()}
-DISPATCH_TRANSITIONS = {"unassigned": {"assigned", "en_route", "on_site", "done"}, "assigned": {"en_route", "on_site", "done"}, "en_route": {"on_site", "done"}, "on_site": {"done"}, "done": set()}
-BILLING_TRANSITIONS = {"unbilled": {"invoiced", "partial_paid", "paid", "overdue", "void"}, "invoiced": {"partial_paid", "paid", "overdue", "void"}, "partial_paid": {"paid", "overdue", "void"}, "paid": set(), "overdue": {"void"}, "void": set()}
-
-
-def validate_job_transition(job: Job, field: str, new_value: str) -> None:
-    mapping = {
-        "lifecycle_stage": LIFECYCLE_TRANSITIONS,
-        "dispatch_status": DISPATCH_TRANSITIONS,
-        "billing_status": BILLING_TRANSITIONS,
-    }
-    if field not in mapping:
-        raise ValueError(f"Unsupported transition field '{field}'.")
-    current = getattr(job, field)
-    if current == new_value:
-        return
-    allowed = mapping[field].get(current, set())
-    if new_value not in allowed:
-        raise ValueError(f"Invalid {field} transition: {current} -> {new_value}. Allowed: {sorted(allowed)}")
-
-
 # ---------------------------------------------------------------------------
 # Batch 2: collections, invoice_reminders, appointments, scheduling, leads,
 #           tasks, messages, signatures, onboarding
