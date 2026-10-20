@@ -222,6 +222,43 @@ describe('UsersView lockout', () => {
     );
   });
 
+  // GDXA-1995: a live login lockout (too many failed passwords) leaves the
+  // user active; the page must still show it and offer Unlock.
+  const inFifteen = () => new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+  it('shows Locked + Unlock for an active user with a live login lockout, and still allows Lock Out', async () => {
+    const wrapper = await mountWithUsers([user({ id: 'f1', locked_until: inFifteen() })]);
+    expect(wrapper.find('[data-testid="users-locked-badge-f1"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="users-unlock-f1"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="users-lockout-f1"]').exists()).toBe(true);
+  });
+
+  it('ignores a lapsed login lockout', async () => {
+    const past = new Date(Date.now() - 1000).toISOString();
+    const wrapper = await mountWithUsers([user({ id: 'f1', locked_until: past })]);
+    expect(wrapper.find('[data-testid="users-locked-badge-f1"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="users-unlock-f1"]').exists()).toBe(false);
+  });
+
+  it('the badge on a login lockout explains it without fetching admin lockout-info', async () => {
+    const wrapper = await mountWithUsers([user({ id: 'f1', locked_until: inFifteen() })]);
+    await wrapper.find('[data-testid="users-locked-badge-f1"]').trigger('click');
+    await flushPromises();
+    expect(apiGet).not.toHaveBeenCalledWith('/api/users/f1/lockout-info');
+    expect(wrapper.find('[data-testid="users-lockout-info-reason"]').text()).toContain('Too many failed sign-ins');
+  });
+
+  it('Unlock on a login lockout clears the badge', async () => {
+    apiPost.mockResolvedValueOnce({ id: 'f1', active: true, locked_until: null });
+    const wrapper = await mountWithUsers([user({ id: 'f1', locked_until: inFifteen() })]);
+    await wrapper.find('[data-testid="users-unlock-f1"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="users-unlock-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).toHaveBeenCalledWith('/api/users/f1/unlock', {}, expect.anything());
+    expect(wrapper.find('[data-testid="users-locked-badge-f1"]').exists()).toBe(false);
+  });
+
   it('hides Lock Out + Unlock buttons when current user is a dispatcher', async () => {
     // Dispatcher with users.write (custom tenant role) — the backend
     // still 403s, but the UI gate cuts off the surface entirely.
