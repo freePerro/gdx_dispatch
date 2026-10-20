@@ -30,6 +30,7 @@ from gdx_dispatch.models.tenant_models import (
     Payment,
     WarrantyClaim,
 )
+from gdx_dispatch.modules.forecasting.service import DATED_JOB_STAGES
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -868,7 +869,8 @@ def daily_snapshot(
     # Dispatch board shows: jobs scheduled in the window AND assigned to a
     # technician AND still active (not completed/cancelled). The Dashboard
     # "Open Jobs" tile is the broader backlog; this tile answers
-    # "what's actually on the board for today."
+    # "what's actually on the board for today." The stages are the shared
+    # pre-completion set: a dated service call is on the board too (GDXA-1939).
     assigned_jobs_today = db.scalar(
         select(func.count()).where(
             Job.deleted_at.is_(None),
@@ -877,7 +879,7 @@ def daily_snapshot(
             Job.scheduled_at < end_dt,
             Job.assigned_to.is_not(None),
             Job.assigned_to != "",
-            Job.lifecycle_stage.in_(("scheduled", "in_progress")),
+            Job.lifecycle_stage.in_(DATED_JOB_STAGES),
         )
     ) or 0
 

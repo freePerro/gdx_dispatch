@@ -46,14 +46,15 @@ from gdx_dispatch.modules.bank_feeds.models import BankFeedAccount
 from gdx_dispatch.modules.bank_feeds.service import tenant_zoneinfo
 from gdx_dispatch.modules.forecasting.accuracy import _open_invoices
 from gdx_dispatch.modules.forecasting.service import (
+    DATED_JOB_STAGES,
     DIRECTION_IN,
     DIRECTION_OUT,
     _combined_recurring,
     _observed_stream_projection,
     _qbo_template_projection,
+    accepted_estimate_totals,
     get_or_create_settings,
 )
-from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.modules.vendor_invoices.models import STATUS_OPEN as BILL_STATUS_OPEN
 from gdx_dispatch.modules.vendor_invoices.models import VendorInvoice
 from gdx_dispatch.modules.vendor_invoices.payments import open_balance
@@ -140,22 +141,7 @@ def _customer_names(db: Session, invoices: list[Invoice]) -> dict[Any, str]:
     return {inv.id: names.get(inv.customer_id) or "Customer" for inv in invoices}
 
 
-# Pre-completion stages a dated job can be in. "estimate" is deliberately not
-# here: an estimate visit is a sales call, not money anyone has agreed to pay.
-JOB_STAGES = ("scheduled", "service_call", "in_progress")
 BILLED_INVOICE_STATUSES = ("sent", "overdue", "paid")
-
-
-def _accepted_totals(db: Session, ids: list[Any]) -> dict[Any, Decimal]:
-    """Job id → total of its ACCEPTED, non-deleted estimates."""
-    return {
-        jid: _money(total)
-        for jid, total in db.execute(
-            select(Estimate.job_id, func.sum(Estimate.total))
-            .where(Estimate.job_id.in_(ids), Estimate.status == "accepted", Estimate.deleted_at.is_(None))
-            .group_by(Estimate.job_id)
-        ).all()
-    }
 
 
 def _unbilled_value(db: Session, jobs: list[Job]) -> tuple[dict[Any, Decimal], set[Any], set[Any]]:
@@ -178,7 +164,7 @@ def _unbilled_value(db: Session, jobs: list[Job]) -> tuple[dict[Any, Decimal], s
     if not jobs:
         return {}, set(), set()
     ids = [j.id for j in jobs]
-    accepted = _accepted_totals(db, ids)
+    accepted = accepted_estimate_totals(db, ids)
     billed: dict[Any, Decimal] = {}
     for jid, total in db.execute(
         select(Invoice.job_id, func.sum(Invoice.total))
@@ -213,9 +199,10 @@ def _job_labels(db: Session, jobs: list[Job]) -> dict[Any, str]:
 
 def _scheduled_jobs(db: Session, tz, today: date, last_day: date) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Jobs scheduled in the window (shop-local days) with their unbilled
-    value. Not the revenue forecast's jobs projection, which sums every
-    estimate on a job and is discounted by a realization rate; a dated cash
-    row cannot be."""
+    value. The same stages (DATED_JOB_STAGES) and the same accepted estimates
+    as the revenue forecast's jobs projection, but bounded at shop-local
+    midnights where the forecast's window is not, net of what is billed, and
+    not discounted by a realization rate; a dated cash row cannot be."""
     start = datetime.combine(today, datetime.min.time(), tz).astimezone(UTC).replace(tzinfo=None)
     end = datetime.combine(last_day + timedelta(days=1), datetime.min.time(), tz).astimezone(UTC).replace(tzinfo=None)
     jobs = list(db.execute(
@@ -223,7 +210,7 @@ def _scheduled_jobs(db: Session, tz, today: date, last_day: date) -> tuple[list[
             Job.scheduled_at.is_not(None),
             Job.scheduled_at >= start,
             Job.scheduled_at < end,
-            Job.lifecycle_stage.in_(JOB_STAGES),
+            Job.lifecycle_stage.in_(DATED_JOB_STAGES),
             Job.deleted_at.is_(None),
         )
     ).scalars().all())
@@ -274,7 +261,7 @@ def _finished_unbilled(db: Session, tz) -> list[dict[str, Any]]:
     if not jobs:
         return []
     ids = [j.id for j in jobs]
-    accepted = _accepted_totals(db, ids)
+    accepted = accepted_estimate_totals(db, ids)
     # Deposits at their total as issued, not net of credit memos (GDXA-593,
     # as in _unbilled_value). Whether a credited deposit's concession carries
     # onto the final invoice is the office's call; gross gives the lower

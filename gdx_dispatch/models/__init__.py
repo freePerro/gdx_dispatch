@@ -106,7 +106,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     TeamMessageRecipient,
     TechCommissionRate,
     Technician,
-    TechUnavailability,
     TenantRole,
     TimeclockBreak,
     TimeclockEntry,

@@ -1881,11 +1881,15 @@ def _earlier_day_open_refusal(
     }, 409)
 
 
-def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, user: Any) -> None:
-    """The completion write shared by /complete and /close-without-work: the
-    stage, the "Completed" spelling, completed_at, dispatch done, the job's
-    visits (F1), and the job.completed webhook staged before the caller's
-    commit."""
+def _mark_job_completed(
+    db: Session, job: Job, now: datetime, tenant_id: str, user: Any, *, emit: bool = True
+) -> None:
+    """The completion write shared by /complete, /close-without-work and
+    /closeout: the stage, the "Completed" spelling, completed_at, dispatch
+    done, the job's visits (F1), and the job.completed webhook staged before
+    the caller's commit. ``emit=False`` is for a closeout restatement: the job
+    was already completed, so a second job.completed would announce a
+    completion that did not happen (GDXA-1954)."""
     _finish_visits(db, job, now, user)
     job.lifecycle_stage = "completed"
     job.status = "Completed"
@@ -1893,7 +1897,8 @@ def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, us
     job.dispatch_status = "done"
     job.updated_at = now
     db.flush()
-    _emit_job_event(db, job, "job.completed", tenant_id)
+    if emit:
+        _emit_job_event(db, job, "job.completed", tenant_id)
 
 
 class JobCompletePayload(BaseModel):
@@ -3092,18 +3097,18 @@ def closeout_job(
 
         # 4) Flip the job to completed. Stamp signature for back-compat
         #    with the Phase 1 /complete reader path that checks job.signature_data.
-        #    Its visits first (F1).
+        #    The completion write is the shared one, so a first closeout stages
+        #    job.completed like /complete does; a restatement of an already
+        #    completed job stages none (GDXA-1954).
         stage_before = (job.lifecycle_stage, job.status)
-        _finish_visits(db, job, now, current_user)
-        job.lifecycle_stage = "completed"
-        job.status = "Completed"
-        job.completed_at = now
-        job.dispatch_status = "done"
         if payload.signature_data:
             job.signature_data = payload.signature_data
         if payload.notes:
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
-        job.updated_at = now
+        _mark_job_completed(
+            db, job, now, tenant_id, current_user,
+            emit=stage_before[0] != "completed",
+        )
 
         # 5) Parts the job still NEEDS (Doug 2026-08-04) — filed as the same
         #    row the job-screen Parts card creates (status='needed',
@@ -5462,23 +5467,31 @@ def _apply_reopen(
     db: Session, job: Job, plan: Any, payload: StateOverridePayload, user: Any,
 ) -> tuple[Job, dict[str, Any]]:
     """The re-open's writes after its status flip: the job's date and crew,
-    its visits (R0 and E4), and recompute. Returns the job and the crew
-    change for the caller's audit row ({} when the crew was not touched)."""
-    from gdx_dispatch.services.visit_sync import UNSET
+    its dispatch status, its visits (R0 and E4), and recompute. Returns the
+    job and the details for the caller's audit row: the crew change (absent
+    when the crew was not touched) and the dispatch_status from/to.
+
+    A re-opened job is live again, so dispatch starts over from the crew it
+    now has (GDXA-1929): left at "done", mobile refused every forward move
+    and the job dropped off the tech's list."""
+    from gdx_dispatch.services.visit_sync import UNSET, job_crew
 
     if plan.scheduled_at is not UNSET:
         job.scheduled_at = plan.scheduled_at
     db.flush()
-    crew_change: dict[str, Any] = {}
+    details: dict[str, Any] = {}
+    prior_dispatch = job.dispatch_status
     if payload.assigned_to:
-        crew_change = _set_job_assignments(
+        details = _set_job_assignments(
             db, job_id=str(job.id), tech_ids=[payload.assigned_to],
             lead_tech_id=payload.assigned_to, user_id=_user_id(user),
             prior_primary=str(job.assigned_to) if job.assigned_to else None,
         )
         job = db.get(Job, job.id)
+    job.dispatch_status = "assigned" if job_crew(db, job) else "unassigned"
+    details["dispatch_status"] = {"from": prior_dispatch, "to": job.dispatch_status}
     _apply_visits(db, job, plan, user, "job_reopened")
-    return job, crew_change
+    return job, details
 
 
 def _validate_reason(reason: str | None) -> str | None:
@@ -5535,12 +5548,12 @@ def uncomplete_job(
         job.status = "In Progress"
         job.completed_at = None
         job.updated_at = now
-        job, crew_change = _apply_reopen(db, job, plan, payload, current_user)
+        job, reopen_details = _apply_reopen(db, job, plan, payload, current_user)
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_uncompleted", entity_type="job", entity_id=str(job.id),
             details={
-                **crew_change,
+                **reopen_details,
                 "reason": cleaned,
                 **_stage_move(*prior, job),
                 "prior_completed_at": prior_completed_at.isoformat() if prior_completed_at else None,
@@ -5598,11 +5611,9 @@ def reactivate_job(
         prior = (job.lifecycle_stage, job.status)
         # Live first, so recompute sees a live job; the stage is picked below.
         job.lifecycle_stage = "service_call"
-        if payload.assigned_to:
-            job.dispatch_status = "assigned"
         job.updated_at = now
         prior_scheduled_at = job.scheduled_at
-        job, crew_change = _apply_reopen(db, job, plan, payload, current_user)
+        job, reopen_details = _apply_reopen(db, job, plan, payload, current_user)
         # Reactivate to "scheduled" only if the job has a date — read AFTER
         # recompute. Cancelling retired its visits, so a re-activate sent with
         # no date and no Current visit left has only the stale date: clear it
@@ -5648,7 +5659,7 @@ def reactivate_job(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_reactivated", entity_type="job", entity_id=str(job.id),
             details={
-                **crew_change,
+                **reopen_details,
                 "reason": cleaned,
                 **_stage_move(*prior, job),
                 "new_scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,

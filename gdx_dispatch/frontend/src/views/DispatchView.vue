@@ -615,7 +615,7 @@
             v-for="tech in technicianColumns"
             :key="tech.id"
             class="tech-column"
-            :class="{ 'drag-over': dragOverTechId === tech.id }"
+            :class="{ 'drag-over': dragOverTechId === tech.id && !tech.timeOff, 'tech-column--time-off': tech.timeOff }"
             :data-testid="`tech-column-${tech.id}`"
             @dragover.prevent="onDragOver(tech.id)"
             @dragleave="dragOverTechId = null"
@@ -639,7 +639,8 @@
                 :class="{ 'tech-capacity--over': tech.isOverCapacity, 'tech-capacity--off': tech.isOffToday }"
                 :data-testid="`tech-capacity-${tech.id}`"
               >
-                <span v-if="tech.isOffToday" class="tech-capacity-label">Off today</span>
+                <span v-if="tech.timeOff" class="tech-capacity-label">Time off</span>
+                <span v-else-if="tech.isOffToday" class="tech-capacity-label">Off today</span>
                 <span v-else class="tech-capacity-label">
                   {{ formatDurationHours(tech.scheduledKnownHours) }} of {{ formatDurationHours(tech.capacityHours) }}
                   <span v-if="tech.scheduledUnknownCount" class="tech-capacity-unknown">
@@ -655,6 +656,16 @@
               </div>
             </template>
             <template #content>
+              <div
+                v-if="tech.timeOff"
+                class="time-off-block"
+                role="note"
+                :data-testid="`tech-time-off-${tech.id}`"
+              >
+                <i class="pi pi-calendar-minus" aria-hidden="true" />
+                <span class="time-off-block-title">Time off · {{ tech.timeOff.label }}</span>
+                <span class="time-off-block-meta">{{ timeOffRange(tech.timeOff) }} · approved, takes no new work</span>
+              </div>
               <!-- Sprint dispatch-timeline (2026-05-21) — vertical hour-axis
                    layout. The TechTimelineColumn owns drops + tray + block
                    positioning. Card-wrapper @drop above is now a no-op for
@@ -718,14 +729,21 @@
                 :class="{
                   'is-today': cell.isToday,
                   'is-off': cell.isOff,
+                  'is-time-off': cell.timeOff,
                   'is-over': cell.isOver,
-                  'drag-over': dragOverTechId === `${row.id}|${cell.date}`,
+                  'drag-over': dragOverTechId === `${row.id}|${cell.date}` && !cell.timeOff,
                 }"
                 :data-testid="`week-cell-${row.id}-${cell.date}`"
                 @dragover.prevent="onDragOver(`${row.id}|${cell.date}`)"
                 @dragleave="onWeekCellLeave"
                 @drop.prevent="onWeekCellDrop($event, row.unassigned ? null : row.id, cell.date)"
               >
+                <span
+                  v-if="cell.timeOff"
+                  class="week-time-off"
+                  v-tooltip.bottom="`${cell.timeOff.label}, ${timeOffRange(cell.timeOff)} (approved)`"
+                  :data-testid="`week-time-off-${row.id}-${cell.date}`"
+                >Time off · {{ cell.timeOff.label }}</span>
                 <div
                   v-for="job in cell.jobs"
                   :key="job.card_key || job.id"
@@ -745,7 +763,7 @@
                   </span>
                   <span v-if="visitDayLabel(job)" class="week-chip-meta" :data-testid="`week-day-badge-${job.card_key}`">{{ visitDayLabel(job) }}</span>
                 </div>
-                <span v-if="cell.isOff && !cell.jobs.length" class="week-cell-note">off</span>
+                <span v-if="cell.isOff && !cell.timeOff && !cell.jobs.length" class="week-cell-note">off</span>
                 <span v-else-if="cell.hoursLabel" class="week-cell-note" :class="{ 'is-over': cell.isOver }">{{ cell.hoursLabel }}</span>
               </div>
             </template>
@@ -1161,6 +1179,11 @@ watch(permissionsLoaded, (loaded) => { if (loaded) loadLateOpen({ keepOnError: t
 // server keeps the two lists disjoint (one predicate, partial_clause).
 const partialJobs = ref([]);
 const partialJobIds = computed(() => new Set(partialJobs.value.map((j) => String(j.id))));
+// Normalized like the day list, for the holding-area lanes and the drawer.
+const normalizedPartialJobs = computed(() => partialJobs.value.map(normalizeJob));
+// Reads in flight of the lists the drawer opens from (see repointDrawer).
+let drawerListReads = 0;
+let drawerCloseDeferred = false;
 
 // Returns whether the list was read: a kept list is not evidence of anything.
 async function loadPartialJobs({ keepOnError = false } = {}) {
@@ -1168,14 +1191,19 @@ async function loadPartialJobs({ keepOnError = false } = {}) {
     partialJobs.value = [];
     return false;
   }
+  let ok = false;
+  drawerListReads += 1;
   try {
     const res = await api.get('/api/dispatch/partial-jobs');
     partialJobs.value = Array.isArray(res?.items) ? res.items : [];
+    ok = true;
     return true;
   } catch (e) {
     console.warn('partial_jobs_failed', e);
     if (!keepOnError) partialJobs.value = [];
     return false;
+  } finally {
+    settleDrawerRead(ok);
   }
 }
 
@@ -1551,6 +1579,40 @@ function normalizeJob(rawJob) {
 const boardVisits = ref([]);
 const visitJobIds = computed(() => new Set(boardVisits.value.map((v) => String(v.id))));
 
+// Approved time off in the window, from GET /api/dispatch/time-off
+// (GDXA-1829). The approved TimeOffRequest is the one record of it: a tech
+// who is off that day has no capacity, shows a "Time off" block in the day
+// column and the week cell, and takes no drop there. Pending, denied and
+// revoked requests never come back from the route.
+const boardTimeOff = ref([]);
+let timeOffUnread = false;
+
+function timeOffOn(techId, dateStr) {
+  if (!techId || !dateStr) return null;
+  return boardTimeOff.value.find((o) => String(o.technician_id) === String(techId)
+    && o.start_date <= dateStr && dateStr <= o.end_date) || null;
+}
+
+function timeOffRange(off) {
+  const fmt = (iso) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'numeric', day: 'numeric' });
+  };
+  return off.start_date === off.end_date ? fmt(off.start_date) : `${fmt(off.start_date)} – ${fmt(off.end_date)}`;
+}
+
+function refuseTimeOffDrop(techId, dayStr) {
+  const off = timeOffOn(techId, dayStr);
+  if (!off) return false;
+  toast.add({
+    severity: 'warn',
+    summary: 'Nothing was moved',
+    detail: `${techName(techId)} has approved time off (${off.label}) that day. Pick another tech or day, or revoke the time off first.`,
+    life: 6000,
+  });
+  return true;
+}
+
 function hoursBetween(startIso, endIso) {
   const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
   return Number.isFinite(ms) && ms > 0 ? Math.round((ms / 3_600_000) * 100) / 100 : null;
@@ -1615,6 +1677,7 @@ function parseHHMM(s) {
   return Number(m[1]) + Number(m[2]) / 60;
 }
 function techCapacityHours(tech, date) {
+  if (timeOffOn(tech.id, toDateStr(date instanceof Date ? date : new Date(date)))) return 0;
   if (!isShiftDay(tech, date)) return 0;
   const start = parseHHMM(tech.effective_shift_start);
   const end = parseHHMM(tech.effective_shift_end);
@@ -1820,6 +1883,7 @@ const technicianColumns = computed(() =>
       scheduledKnownHours: totals.known,
       scheduledUnknownCount: totals.unknown,
       isOffToday: off,
+      timeOff: timeOffOn(tech.id, selectedDateStr.value),
       capacityRatio: ratio,
       isOverCapacity: capacity > 0 && totals.known > capacity,
     };
@@ -1876,6 +1940,7 @@ const weekRows = computed(() => {
         isToday: day.isToday,
         jobs: cellJobs,
         isOff: capacity === 0,
+        timeOff: timeOffOn(tech.id, day.date),
         isOver: capacity > 0 && totals.known > capacity,
         hoursLabel: cellJobs.length
           ? `${formatDurationHours(totals.known)}${capacity > 0 ? ` / ${formatDurationHours(capacity)}` : ''}${totals.unknown ? ` +${totals.unknown}?` : ''}`
@@ -2173,6 +2238,7 @@ async function sendVisitMove(card, techId, day, time) {
 // The New Jobs dropdown on an unassigned day: that day gets the tech, at its time.
 async function assignVisitTech(card, techId) {
   if (!techId) return;
+  if (refuseTimeOffDrop(techId, zonedDateKey(card.scheduled_at))) return;
   await moveVisitCard(card, techId, card.scheduled_at);
 }
 
@@ -2311,6 +2377,7 @@ async function onWeekCellDrop(event, techId, dayStr) {
   draggingJobId.value = null;
   const card = takeDraggedVisit(jobId);
   const from = takeDragOrigin();
+  if (techId && refuseTimeOffDrop(techId, dayStr)) return;
   const source = card
     || jobs.value.find((j) => String(j.id) === String(jobId))
     || partialJobs.value.find((j) => String(j.id) === String(jobId))
@@ -2961,6 +3028,7 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
   if (!jobId || !techId || !startISO) return;
   const card = takeDraggedVisit(jobId);
   const from = takeDragOrigin();
+  if (refuseTimeOffDrop(techId, selectedDateStr.value)) return;
   if (card) {
     await moveVisitCard(card, techId, startISO);
     return;
@@ -3010,6 +3078,7 @@ async function onTimelinePlaceTray({ jobId, techId }) {
   if (!jobId || !techId) return;
   const card = takeDraggedVisit(jobId);
   const from = takeDragOrigin();
+  if (refuseTimeOffDrop(techId, selectedDateStr.value)) return;
   if (card) {
     // The tray is the day with no time: shop midnight of the board day.
     await sendVisitMove(card, techId, selectedDateStr.value, '00:00');
@@ -3044,6 +3113,8 @@ async function assignFromPicker(jobId, techId) {
   }
   try {
     if (refuseFinishedOrStartedDrop(job, techId)) return;
+    const dayStr = job?.scheduled_at ? zonedDateKey(job.scheduled_at) : selectedDateStr.value;
+    if (refuseTimeOffDrop(techId, dayStr)) return;
     if (day && !partialJobIds.value.has(String(jobId))
       && await scheduleUndatedDrop(jobId, techId, day, job)) return;
     if (await placeCrewJob(jobId, techId, day, null)) return;
@@ -3130,15 +3201,49 @@ function visitsReadable(query) {
   return span >= 0 && span < VISIT_WINDOW_MAX_DAYS;
 }
 
-async function fetchJobs({ keepOnError = false } = {}) {
+async function fetchJobs(opts) {
+  let ok = false;
+  drawerListReads += 1;
+  try {
+    ok = await readJobs(opts);
+  } finally {
+    settleDrawerRead(ok);
+  }
+}
+
+// Returns whether the jobs list was replaced.
+async function readJobs({ keepOnError = false } = {}) {
   const seq = ++fetchSeq;
   const query = jobsDateQuery();
   const settle = (p) => p.then((d) => ({ ok: true, d }), (e) => ({ ok: false, e }));
-  const [jobsRes, visitsRes] = await Promise.all([
+  const boardReadable = visitsReadable(query);
+  const [jobsRes, visitsRes, timeOffRes] = await Promise.all([
     settle(api.get(`/api/jobs?${query}`)),
-    visitsReadable(query) ? settle(api.get(`/api/dispatch/visits?${query}`)) : Promise.resolve(null),
+    boardReadable ? settle(api.get(`/api/dispatch/visits?${query}`)) : Promise.resolve(null),
+    boardReadable ? settle(api.get(`/api/dispatch/time-off?${query}`)) : Promise.resolve(null),
   ]);
-  if (seq !== fetchSeq) return;
+  if (seq !== fetchSeq) return false;
+  if (timeOffRes === null) {
+    boardTimeOff.value = [];
+    timeOffUnread = false;
+  } else if (timeOffRes.ok) {
+    boardTimeOff.value = Array.isArray(timeOffRes.d?.items) ? timeOffRes.d.items : [];
+    timeOffUnread = false;
+  } else {
+    console.warn('board_time_off_failed', timeOffRes.e);
+    if (!keepOnError) boardTimeOff.value = [];
+    // A board that silently shows nobody off would take a drop onto
+    // someone's vacation; say so once per outage, not on every poll.
+    if (!timeOffUnread) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Time off could not be loaded',
+        detail: 'The board may not show who is off. Check the time-off list before booking.',
+        life: 8000,
+      });
+    }
+    timeOffUnread = true;
+  }
   if (visitsRes === null) {
     boardVisits.value = [];
   } else if (visitsRes.ok) {
@@ -3149,30 +3254,43 @@ async function fetchJobs({ keepOnError = false } = {}) {
   }
   if (!jobsRes.ok) {
     if (!keepOnError) jobs.value = [];
-    return;
+    return false;
   }
-  {
-    const data = jobsRes.d;
-    const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
-    jobs.value = rows.map(normalizeJob);
-    // The drawer must describe the job as it IS, not as it was when opened.
-    // The board polls every 45 s and replaces jobs.value, but drawerJob
-    // pointed at the old object — so after the tech closed out from the
-    // truck, the drawer still said "In Progress" and still offered Close
-    // out, and a second closeout would supersede the tech's attestation
-    // (audit 2026-08-28, #526). Re-point it; if the job left the board,
-    // close the drawer rather than keep describing a ghost.
-    // A visit card is found by its card key first, so the drawer keeps
-    // describing the same day.
-    if (drawerJob.value) {
-      const cards = boardJobs.value;
-      const key = drawerJob.value.card_key;
-      const fresh = (key && cards.find((j) => j.card_key === key))
-        || cards.find((j) => String(j.id) === String(drawerJob.value.id));
-      if (fresh) drawerJob.value = fresh;
-      else closeJobDrawer();
-    }
-  }
+  const data = jobsRes.d;
+  const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
+  jobs.value = rows.map(normalizeJob);
+  return true;
+}
+
+// The drawer must describe the job as it IS, not as it was when opened.
+// The board polls every 45 s and replaces its lists, but drawerJob pointed at
+// the old object — so after the tech closed out from the truck, the drawer
+// still said "In Progress" and still offered Close out, and a second closeout
+// would supersede the tech's attestation (audit 2026-08-28, #526). Re-point
+// it; if the job left every list the drawer opens from, close the drawer
+// rather than keep describing a ghost. A visit card is found by its card key
+// first, so the drawer keeps describing the same day.
+// It runs after every read of any of those lists, not the jobs read alone
+// (GDXA-1989). A poll reads them all at once and they answer in any order, so
+// a job moving between lists (booked from the partial list onto the board) is
+// briefly on none: re-pointing is safe on partial evidence, closing is not, so
+// the close waits until no read is in flight. A failed read keeps the drawer
+// as it was, unless a close is waiting on it.
+function repointDrawer() {
+  if (!drawerJob.value) { drawerCloseDeferred = false; return; }
+  const cards = drawerSourceJobs();
+  const key = drawerJob.value.card_key;
+  const fresh = (key && cards.find((j) => j.card_key === key))
+    || cards.find((j) => String(j.id) === String(drawerJob.value.id));
+  drawerCloseDeferred = false;
+  if (fresh) drawerJob.value = fresh;
+  else if (drawerListReads > 0) drawerCloseDeferred = true;
+  else closeJobDrawer();
+}
+
+function settleDrawerRead(ok) {
+  drawerListReads -= 1;
+  if (ok || drawerCloseDeferred) repointDrawer();
 }
 
 // The visits read is gated on jobs.read_all, which may resolve after the
@@ -3198,10 +3316,17 @@ async function fetchScheduledUnassigned({ keepOnError = false } = {}) {
     scheduledUnassigned.value = [];
     return;
   }
+  let ok = false;
+  drawerListReads += 1;
   try {
     const res = await api.get("/api/dispatch/scheduled-unassigned");
     scheduledUnassigned.value = Array.isArray(res?.items) ? res.items : [];
-  } catch { if (!keepOnError) scheduledUnassigned.value = []; }
+    ok = true;
+  } catch {
+    if (!keepOnError) scheduledUnassigned.value = [];
+  } finally {
+    settleDrawerRead(ok);
+  }
 }
 
 function isOverdue(job) {
@@ -3267,10 +3392,19 @@ function getHoldingAreaJobs(areaId) {
   // Normalized like the day list, so the lane total and the drawer read
   // the same fields.
   const seen = new Set(here.map((j) => String(j.id)));
-  const parked = partialJobs.value.filter(
+  const parked = normalizedPartialJobs.value.filter(
     (j) => j.holding_area_id && String(j.holding_area_id) === String(areaId) && !seen.has(String(j.id)),
-  ).map(normalizeJob);
+  );
   return [...here, ...parked];
+}
+
+// Every list the drawer is opened from, board cards first, each normalized
+// like the day list. repointDrawer reads this; re-pointing from the board
+// alone closed a drawer opened on a parked partial job or a Scheduled — Not
+// Assigned card dated outside the board's window, neither of which the jobs
+// read loads (GDXA-1989).
+function drawerSourceJobs() {
+  return [...boardJobs.value, ...normalizedPartialJobs.value, ...scheduledUnassigned.value.map(normalizeJob)];
 }
 
 // Park or release a partial job: only the holding area changes (no crew or
@@ -4108,6 +4242,21 @@ defineExpose({
 }
 .tech-capacity--over .tech-capacity-label { color: var(--p-red-500, #ef4444); }
 .tech-capacity--off { opacity: 0.55; }
+.time-off-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px dashed var(--p-orange-400, #fb923c);
+  border-radius: var(--p-border-radius);
+  background: color-mix(in srgb, var(--p-orange-400, #fb923c) 12%, transparent);
+  color: var(--p-text-color);
+  font-size: 0.8rem;
+}
+.time-off-block-title { font-weight: 600; }
+.time-off-block-meta { color: var(--p-text-muted-color); font-size: 0.74rem; }
 .job-duration { font-weight: 500; opacity: 0.85; }
 /* Job cards */
 .job-card {
@@ -4406,6 +4555,19 @@ defineExpose({
   transition: background 0.1s;
 }
 .week-cell.is-today { background: color-mix(in srgb, var(--p-primary-color) 6%, transparent); }
+.week-cell.is-off.is-time-off { background: color-mix(in srgb, var(--p-orange-400, #fb923c) 12%, transparent); }
+.week-time-off {
+  display: block;
+  padding: 0.1rem 0.35rem;
+  border: 1px dashed var(--p-orange-400, #fb923c);
+  border-radius: var(--p-border-radius);
+  color: var(--p-text-color);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .week-cell.is-off {
   background: repeating-linear-gradient(
     135deg, transparent, transparent 6px,

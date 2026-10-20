@@ -6,6 +6,7 @@ Routes:
   GET  /api/dispatch/late-open — open jobs whose scheduled day has passed
   GET  /api/dispatch/partial-jobs — a day worked, no day booked
   GET  /api/dispatch/visits — the visit cards of jobs not drawn by their job row
+  GET  /api/dispatch/time-off — approved time off in the board's window
 
 Every route here lists other people's jobs, so every route is gated on
 jobs.read_all (GDXA-1063: two were open to the default technician role's jobs.read_own).
@@ -398,6 +399,23 @@ def partial_jobs(
 _VISIT_WINDOW_MAX_DAYS = 366
 
 
+def _board_window(date: str | None, date_from: str | None, date_to: str | None) -> tuple[Any, Any]:
+    """The board's day window, inclusive: one ``date``, or ``date_from`` and
+    ``date_to``; 422 on a bad, reversed or over-long window."""
+    from datetime import date as _date_type
+
+    try:
+        first = _date_type.fromisoformat(date_from or date or "")
+        last = _date_type.fromisoformat(date_to or date or "")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date, or date_from and date_to, as YYYY-MM-DD") from None
+    if last < first:
+        raise HTTPException(status_code=422, detail="date_to is before date_from")
+    if (last - first).days + 1 > _VISIT_WINDOW_MAX_DAYS:
+        raise HTTPException(status_code=422, detail=f"At most {_VISIT_WINDOW_MAX_DAYS} days")
+    return first, last
+
+
 def _drawn_by_job_row(job: Any, live: list[Any], crew: list[str], tz_name: str) -> bool:
     from gdx_dispatch.services import visit_sync as vs
 
@@ -423,7 +441,7 @@ def board_visits(
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     _ = user
-    from datetime import date as _date_type
+    first, last = _board_window(date, date_from, date_to)
 
     from sqlalchemy import select as _select
 
@@ -432,15 +450,6 @@ def board_visits(
     from gdx_dispatch.models.tenant_models import Appointment, Customer, Job, JobAssignment, Technician
     from gdx_dispatch.services import visit_sync as vs
 
-    try:
-        first = _date_type.fromisoformat(date_from or date or "")
-        last = _date_type.fromisoformat(date_to or date or "")
-    except ValueError:
-        raise HTTPException(status_code=422, detail="date, or date_from and date_to, as YYYY-MM-DD") from None
-    if last < first:
-        raise HTTPException(status_code=422, detail="date_to is before date_from")
-    if (last - first).days + 1 > _VISIT_WINDOW_MAX_DAYS:
-        raise HTTPException(status_code=422, detail=f"At most {_VISIT_WINDOW_MAX_DAYS} days")
 
     tz_name = shop_tz_name_from_settings(db)
     # Shop days, not UTC: an evening visit in Minnesota is tomorrow in UTC.
@@ -548,3 +557,37 @@ def board_visits(
             })
     items.sort(key=lambda i: (i["visit_start"], i["id"], i["visit_id"]))
     return {"items": items, "job_ids": [str(job.id) for job, _c, _l, _h in drawn], "timezone": tz_name}
+
+
+@router.get(
+    "/api/dispatch/time-off",
+    dependencies=[Depends(get_current_user), Depends(require_permission("jobs.read_all"))],
+)
+def board_time_off(
+    db: Session = Depends(get_db), date: str | None = None, date_from: str | None = None, date_to: str | None = None
+) -> dict[str, Any]:
+    """Approved time off in the board's window, one item per request and tech.
+
+    The board blocks those days (GDXA-1829). The one source is the approved
+    `TimeOffRequest`, through core/time_off.approved_time_off_for_range, so
+    pending, denied, cancelled and revoked requests never appear. Notes and
+    reviewers stay on the time-off screen: the board needs who, which days and
+    what kind, nothing more."""
+    from gdx_dispatch.core.time_off import approved_time_off_for_range, type_label
+
+    first, last = _board_window(date, date_from, date_to)
+
+    items = [
+        {
+            "technician_id": off.technician_id,
+            "request_id": off.request_id,
+            "entry_type": off.entry_type,
+            "label": type_label(off.entry_type),
+            "start_date": off.start_date.isoformat(),
+            "end_date": off.end_date.isoformat(),
+        }
+        for offs in approved_time_off_for_range(db, first, last).values()
+        for off in offs
+    ]
+    items.sort(key=lambda i: (i["start_date"], i["technician_id"], i["request_id"]))
+    return {"items": items, "date_from": first.isoformat(), "date_to": last.isoformat()}

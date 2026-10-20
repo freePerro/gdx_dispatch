@@ -1,7 +1,11 @@
-"""Tests for the scheduling router (calendar views + unavailability + conflicts)."""
+"""Tests for the scheduling router (calendar views, available slots, conflicts).
+
+Approved time off blocking a slot is pinned against the real time-off routes in
+test_dispatch_time_off_board.py (GDXA-1829)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -182,31 +186,6 @@ def test_available_slots_excludes_booked_hours(client):
     assert any("T11:00" in s for s in starts)
 
 
-def test_available_slots_excludes_unavailability(client):
-    # Tech is unavailable 14:00–16:00 on 2026-04-16
-    r = client.post(
-        "/api/tech-unavailability",
-        json={
-            "tech_id": "tech-2",
-            "start_at": "2026-04-16T14:00:00+00:00",
-            "end_at": "2026-04-16T16:00:00+00:00",
-            "reason": "doctor appointment",
-        },
-    )
-    assert r.status_code == 201, r.text
-
-    r = client.get(
-        "/api/appointments/available-slots",
-        params={"tech_id": "tech-2", "date": "2026-04-16", "duration_minutes": 60},
-    )
-    assert r.status_code == 200
-    starts = {s["start_at"] for s in r.json()}
-    assert not any("T14:00" in s for s in starts)
-    assert not any("T15:00" in s for s in starts)
-    assert any("T13:00" in s for s in starts)
-    assert any("T16:00" in s for s in starts)
-
-
 def test_conflicts_detects_overlap(client):
     d = datetime(2026, 4, 17, 10, 0, tzinfo=timezone.utc)
     _insert_appt(client, tech_id="tech-x", start=d, end=d + timedelta(hours=2))  # 10:00–12:00
@@ -219,52 +198,12 @@ def test_conflicts_detects_overlap(client):
     assert conflicts[0]["tech_id"] == "tech-x"
 
 
-# ---------------------------------------------------------------------------
-# Tech unavailability CRUD
-# ---------------------------------------------------------------------------
-
-
-def test_tech_unavailability_crud(client):
-    r = client.post(
-        "/api/tech-unavailability",
-        json={
-            "tech_id": "tech-7",
-            "start_at": "2026-05-01T00:00:00+00:00",
-            "end_at": "2026-05-08T00:00:00+00:00",
-            "reason": "vacation",
-        },
-    )
-    assert r.status_code == 201, r.text
-    created = r.json()
-    assert created["tech_id"] == "tech-7"
-    assert created["reason"] == "vacation"
-
-    # List
-    r = client.get("/api/tech-unavailability", params={"tech_id": "tech-7"})
-    assert r.status_code == 200
-    assert len(r.json()) == 1
-
-    # Delete
-    r = client.delete(f"/api/tech-unavailability/{created['id']}")
-    assert r.status_code == 204
-
-    # Should no longer appear
-    r = client.get("/api/tech-unavailability", params={"tech_id": "tech-7"})
-    assert r.status_code == 200
-    assert len(r.json()) == 0
-
-
-def test_reject_unavail_end_before_start(client):
-    r = client.post(
-        "/api/tech-unavailability",
-        json={
-            "tech_id": "tech-8",
-            "start_at": "2026-05-10T12:00:00+00:00",
-            "end_at": "2026-05-10T10:00:00+00:00",  # before start
-            "reason": "bad data",
-        },
-    )
-    assert r.status_code == 422
+def test_tech_unavailability_routes_are_gone(client):
+    """GDXA-1829: time off is the approved TimeOffRequest; the parallel
+    /api/tech-unavailability CRUD (no UI caller) was retired."""
+    assert client.get("/api/tech-unavailability").status_code == 404
+    assert client.post("/api/tech-unavailability", json={}).status_code == 404
+    assert client.delete(f"/api/tech-unavailability/{uuid4()}").status_code == 404
 
 
 def test_bad_date_param_returns_422(client):

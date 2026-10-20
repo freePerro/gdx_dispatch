@@ -1,17 +1,27 @@
-"""Sprint 1.x-S13 — customers.mark_contacted MCP tool contract."""
+"""Sprint 1.x-S13 — customers.mark_contacted MCP tool contract.
+
+GDXA-1849: the handler set ``last_contacted_at``, which is not a column on
+``Customer``, and these tests passed on a MagicMock that accepted it. With no
+note the call committed nothing and wrote no trail while returning
+``{"ok": True}``. The behaviour tests now run against SQLite built from the
+ORM and read back the ``customer_contacted`` audit row and the stored note.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import gdx_dispatch.core.mcp_tools.mark_customer_contacted  # noqa: F401  — register_tool side-effect
+from gdx_dispatch.core.audit import AuditLog, TenantBase, ensure_audit_table
 from gdx_dispatch.core.mcp_invoke import invoke_tool
 from gdx_dispatch.core.mcp_registry import get_tool
+from gdx_dispatch.models.tenant_models import Customer
 
 
 @dataclass
@@ -21,20 +31,33 @@ class _Principal:
     capabilities: list[Any] = field(default_factory=list)
 
 
-def _mock_db_with_customer(customer_id: str, *, exists: bool = True, notes: str | None = None) -> Any:
-    """Build a sync Session mock that resolves db.get(Customer, id) to a row
-    (or None when ``exists=False``)."""
-    db = MagicMock()
-    if exists:
-        row = SimpleNamespace(
-            id=customer_id,
-            last_contacted_at=None,
-            notes_appended=notes,
-        )
-        db.get.return_value = row
-    else:
-        db.get.return_value = None
-    return db
+@pytest.fixture
+def db():
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    ensure_audit_table(session)
+    yield session
+    session.close()
+    engine.dispose()
+
+
+def _customer(db, *, notes: str | None = None) -> str:
+    row = Customer(id=uuid4(), name="Contact Test", company_id="c1", notes_appended=notes)
+    db.add(row)
+    db.commit()
+    return str(row.id)
+
+
+def _contacted_rows(db, cid: str):
+    return db.query(AuditLog).filter(
+        AuditLog.action == "customer_contacted", AuditLog.entity_id == cid
+    ).all()
+
+
+CAPS = [("write", "customer.contact"), ("read", "customer")]
 
 
 def test_descriptor_shape():
@@ -59,67 +82,53 @@ def test_tool_registers_at_import():
 
 
 @pytest.mark.asyncio
-async def test_marks_customer_contacted_on_success():
-    cid = str(uuid4())
-    db = _mock_db_with_customer(cid)
-    p = _Principal(capabilities=[("write", "customer.contact"), ("read", "customer")])
-    r = await invoke_tool(
-        "customers.mark_contacted",
-        {"customer_id": cid},
-        principal=p, db=db,
-    )
+async def test_marks_customer_contacted_on_success(db):
+    cid = _customer(db)
+    p = _Principal(capabilities=CAPS)
+    r = await invoke_tool("customers.mark_contacted", {"customer_id": cid}, principal=p, db=db)
+
     assert r.ok is True, f"expected ok=True, got {r.error_type}: {r.error_body}"
-    # last_contacted_at is now non-None on the row the mock returned.
-    row = db.get.return_value
-    assert row.last_contacted_at is not None
-    # commit was called.
-    assert db.commit.called
+    assert r.result["customer_id"] == cid
+    assert r.result["note_appended"] is False
+    db.expire_all()
+    rows = _contacted_rows(db, cid)
+    assert len(rows) == 1, "the contact is the audit row; without it nothing was recorded"
+    assert rows[0].user_id == str(p.identity_id)
 
 
 @pytest.mark.asyncio
-async def test_appends_note_when_supplied():
-    cid = str(uuid4())
-    db = _mock_db_with_customer(cid, notes="Prior note.")
-    p = _Principal(capabilities=[("write", "customer.contact"), ("read", "customer")])
+async def test_appends_note_when_supplied(db):
+    cid = _customer(db, notes="Prior note.")
+    p = _Principal(capabilities=CAPS)
     r = await invoke_tool(
         "customers.mark_contacted",
         {"customer_id": cid, "note": "Followup scheduled."},
         principal=p, db=db,
     )
-    assert r.ok is True
-    row = db.get.return_value
-    assert "Followup scheduled." in (row.notes_appended or "")
+    assert r.ok is True, f"{r.error_type}: {r.error_body}"
+    db.expire_all()
+    stored = db.get(Customer, UUID(cid)).notes_appended
     # The previous note content is preserved (append, not replace).
-    assert "Prior note." in (row.notes_appended or "")
+    assert stored == "Prior note.\n\nFollowup scheduled."
+    assert _contacted_rows(db, cid)[0].details["note_appended"] is True
 
 
 @pytest.mark.asyncio
-async def test_capability_denied_without_write_cap():
-    cid = str(uuid4())
-    db = _mock_db_with_customer(cid)
+async def test_capability_denied_without_write_cap(db):
+    cid = _customer(db)
     p = _Principal(capabilities=[("read", "customer")])  # read-only — no write cap
-    r = await invoke_tool(
-        "customers.mark_contacted",
-        {"customer_id": cid},
-        principal=p, db=db,
-    )
+    r = await invoke_tool("customers.mark_contacted", {"customer_id": cid}, principal=p, db=db)
     assert r.ok is False
     assert r.error_type and "capability" in r.error_type.lower()
+    assert _contacted_rows(db, cid) == []
 
 
 @pytest.mark.asyncio
-async def test_unknown_customer_returns_input_invalid_or_execution_error():
-    """When the customer doesn't exist, the tool should NOT silently no-op.
-    The exact error_type is up to the implementer (input_invalid or
-    execution_error are both reasonable); the contract is r.ok is False AND
-    no commit fired."""
-    cid = str(uuid4())
-    db = _mock_db_with_customer(cid, exists=False)
-    p = _Principal(capabilities=[("write", "customer.contact"), ("read", "customer")])
-    r = await invoke_tool(
-        "customers.mark_contacted",
-        {"customer_id": cid},
-        principal=p, db=db,
-    )
+@pytest.mark.parametrize("raw", [str(uuid4()), "not-a-uuid"])
+async def test_unknown_customer_is_refused_and_records_nothing(db, raw):
+    """When the customer doesn't exist, the tool must NOT silently no-op."""
+    p = _Principal(capabilities=CAPS)
+    r = await invoke_tool("customers.mark_contacted", {"customer_id": raw}, principal=p, db=db)
     assert r.ok is False
-    assert not db.commit.called
+    assert r.error_type == "execution_error"
+    assert db.query(AuditLog).filter(AuditLog.action == "customer_contacted").count() == 0

@@ -141,9 +141,9 @@ PKG = pathlib.Path(__file__).resolve().parents[1]
 
 # Discovery reads the parsed module, not its text. A regex over source finds
 # the spellings that ship a link —
-#   action_url="/x"             kwarg          (tasks/invoice_reminders_auto.py)
-#   "action_url": f"/x"         dict key       (core/next_action.py)
-#   existing.action_url = "/x"  attribute      (tasks/billing_followup.py)
+#   action_url="/x"             kwarg          (the synthetic fixture below)
+#   "action_url": f"/x"         dict key       (core/next_action.py, tasks/*)
+#   existing.action_url = "/x"  attribute      (the synthetic fixture below)
 #   row["action_url"] = "/x"    dict subscript
 #   send_push(..., url="/x")    push deep link (routers/parts_needed.py)
 # — and also finds them inside a COMMENT or a docstring, which in a repo this
@@ -372,11 +372,13 @@ def test_the_sweep_actually_found_the_links() -> None:
     # floor is the *measured* post-deletion count, not 22 − 12 done on paper.
     # The floor is what turns a broken discovery pass red instead of letting it
     # slip by finding fewer; raise it when rules are added, and only lower it
-    # when a rule is deliberately removed. 9 since GDXA-1862: the outlook
-    # sync-health action spelled its one "/inbox" link twice (create kwarg and
-    # refresh attribute); routed through upsert_system_action it is one dict
-    # key. Same link, still discovered — one literal fewer, not one rule.
-    assert len(DISCOVERED) >= 9, DISCOVERED
+    # when a rule is deliberately removed. Two duplicate spellings of one link
+    # each, routed through upsert_system_action into one dict key, took one
+    # literal apiece: GDXA-1862 (the outlook sync-health "/inbox", create kwarg
+    # and refresh attribute) and GDXA-1860 (billing_followup.py's "/billing",
+    # attribute on update and kwarg on create). Same links, still discovered —
+    # literals fewer, not rules. 8 measured on the merged tree, 2026-10-19.
+    assert len(DISCOVERED) >= 8, DISCOVERED
 
 
 def test_the_static_targets_these_links_point_at_still_exist() -> None:

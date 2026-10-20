@@ -22,7 +22,7 @@ sums three components:
 | Component | How it's computed | Weakness |
 |---|---|---|
 | **Open AR** | Each open invoice's `balance_due` × a static per-bucket **lifetime** collection rate (`collect_rate_0_30` … `_90_plus`, defaults 95/80/60/30%). Not bounded to the window. | Rates are global guesses, not learned from the tenant's own history. Lifetime, not window-specific. Ignores per-customer pay behavior. |
-| **Scheduled jobs** | Latest estimate total per job × one global `scheduled_realization_rate` (default 70%). | One knob for all lifecycle stages and job sizes. |
+| **Scheduled jobs** | Jobs dated in the window in a `DATED_JOB_STAGES` stage (scheduled, service call, in progress; the cash calendar uses the same set), valued at the sum of their accepted, non-deleted estimates × one global `scheduled_realization_rate` (default 70%). Since GDXA-1939 (2026-10-19); before that the stage set included estimate visits, left out jobs in progress, and summed every estimate on the job. | One knob for all lifecycle stages and job sizes. |
 | **Recurring** | Deterministic schedule walk; midpoint of observed min/max. | Most reliable input. |
 
 Output is a single point estimate; no confidence range.
