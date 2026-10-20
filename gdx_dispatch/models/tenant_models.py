@@ -1717,22 +1717,6 @@ class Appointment(Base):
     technician_id: Mapped[str] = mapped_column(String(36), nullable=True)
 
 
-class TechUnavailability(Base):
-    __tablename__ = "tech_unavailability"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    tech_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    reason: Mapped[str] = mapped_column(String(200), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(200), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=utcnow
-    )
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class LandingLead(Base):
     __tablename__ = "landing_leads"
 

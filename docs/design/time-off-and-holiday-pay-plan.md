@@ -25,7 +25,7 @@ vacation day or holiday pay." Shape decisions, all Doug's, same day:
 | Pay-period export: one hours authority, CSV + PDF + email built from the same `PeriodTimesheet` | shipped | `core/timesheet_hours.py`, `core/timesheet_export.py`, `core/timesheet_delivery.py` |
 | Pay-period settings card in Settings → Feature Settings, saved through `PATCH /api/settings` | shipped | `views/SettingsView.vue` (~1114), `routers/settings.py` |
 | Shop hours: `default_shift_start`, `default_workdays` bitmask (Mon=1 … Sun=64), per-user overrides on `users.shift_start` / `users.workdays` | shipped | `AppSettings`, `User` |
-| `tech_unavailability` (vacation/sick/other, scheduling only) | **retired**: no route reads or writes it. The `routers/technicians.py` routes were removed 2026-10-19 (GDXA-1828), and `/api/tech-unavailability` plus the available-slots reader were removed 2026-10-19 (GDXA-1829). The table drop is GDXA-1775's last child | the model in `models/tenant_models.py` |
+| `tech_unavailability` (vacation/sick/other, scheduling only) | **retired**: no route reads or writes it. The `routers/technicians.py` routes were removed 2026-10-19 (GDXA-1828), and `/api/tech-unavailability` plus the available-slots reader were removed 2026-10-19 (GDXA-1829). The model and the table were dropped by migration 134 (GDXA-1830, 2026-10-19), which refuses if the table holds any row | `migrations/versions/134_drop_tech_unavailability.py` |
 | In-app payroll summary with weekly overtime math | **orphan**: no frontend caller, reads job-level `time_entries`, revenue side 503s by design | `routers/payroll.py` |
 
 Nothing links a day off to hours or pay today. The Pay Runs page is a shell
