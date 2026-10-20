@@ -30,6 +30,10 @@
  * 13. A failed re-read after a drop claims neither outcome.
  * 14. A parked partial job counts its hours in the lane total and opens the
  *     drawer with the same fields a day-list job has (tech, window).
+ * 15. A board refresh keeps a drawer opened from a list the jobs read does not
+ *     load (a parked partial job, a Scheduled — Not Assigned card), and still
+ *     closes it once the job is on no list, whichever list answers last
+ *     (GDXA-1989).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -116,17 +120,27 @@ const PARTIAL = {
 let partialRows = [];
 let boardJobs = [];
 let holdingAreas = [];
+let scheduledRows = [];
+let settings = {};
+// Set to a promise to hold that read's answer until a test releases it.
+let partialGate = null;
+let jobsGate = null;
+const gate = () => { let open; const p = new Promise((r) => { open = r; }); return [p, open]; };
 
 async function mountBoard() {
   getMock.mockImplementation((url) => {
     const u = String(url || "");
-    if (u.includes("/api/dispatch/partial-jobs")) return Promise.resolve({ items: partialRows });
+    if (u.includes("/api/dispatch/partial-jobs")) {
+      return (partialGate || Promise.resolve()).then(() => ({ items: partialRows }));
+    }
     if (u.includes("/api/dispatch/late-open")) return Promise.resolve({ items: [] });
     if (u.includes("/api/technicians")) return Promise.resolve([
       { id: "tech-1", name: "Mike", active: true }, { id: "tech-2", name: "Ana", active: true },
     ]);
     if (u.includes("/api/holding-areas")) return Promise.resolve(holdingAreas);
-    if (u.includes("/api/jobs")) return Promise.resolve(boardJobs);
+    if (u.includes("/api/dispatch/scheduled-unassigned")) return Promise.resolve({ items: scheduledRows });
+    if (u.includes("/api/dispatch-settings")) return Promise.resolve(settings);
+    if (u.includes("/api/jobs")) return (jobsGate || Promise.resolve()).then(() => boardJobs);
     return Promise.resolve([]);
   });
   const w = mount(DispatchView, { global: { stubs } });
@@ -149,6 +163,7 @@ describe("DispatchView — Partial Jobs", () => {
     getMock.mockReset(); patchMock.mockReset(); toastAdd.mockReset();
     granted = new Set(["jobs.read_all"]);
     partialRows = []; boardJobs = []; holdingAreas = [];
+    scheduledRows = []; settings = {}; partialGate = null; jobsGate = null;
   });
 
   it("does not render when no job is partial", async () => {
@@ -195,6 +210,108 @@ describe("DispatchView — Partial Jobs", () => {
     const drawer = w.get(".job-drawer-content").text();
     expect(drawer).toContain("Technician: Mike");
     expect(drawer).toContain("Window: Anytime");
+  });
+
+  it("a board refresh keeps the drawer of a parked partial job open, and re-points it", async () => {
+    holdingAreas = [{ id: "ha-parts", name: "Needs Parts" }];
+    partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts" }];
+    const w = await mountBoard();
+    await w.get('[data-testid="lane-job-ha-parts-job-7"]').trigger("click");
+    await flushAll();
+    expect(w.get(".job-drawer-content").text()).toContain("Dana Ruiz");
+    // The jobs read never carries it: it is dated the day it was last worked.
+    partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts", customer_name: "Dana Ruiz-Ortega" }];
+    await w.get('[data-testid="dispatch-refresh-btn"]').trigger("click");
+    await flushAll();
+    const drawer = w.get(".job-drawer-content").text();
+    expect(drawer).toContain("Dana Ruiz-Ortega");
+    expect(drawer).toContain("Technician: Mike");
+  });
+
+  it("a board refresh closes the drawer once the parked partial job is on no list", async () => {
+    holdingAreas = [{ id: "ha-parts", name: "Needs Parts" }];
+    partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts" }];
+    const w = await mountBoard();
+    await w.get('[data-testid="lane-job-ha-parts-job-7"]').trigger("click");
+    await flushAll();
+    expect(w.find(".job-drawer-content").exists()).toBe(true);
+    partialRows = [];
+    await w.get('[data-testid="dispatch-refresh-btn"]').trigger("click");
+    await flushAll();
+    expect(w.find(".job-drawer-content").exists()).toBe(false);
+  });
+
+  it("the drawer closes when the partial list answers after the jobs read, not on the next poll", async () => {
+    holdingAreas = [{ id: "ha-parts", name: "Needs Parts" }];
+    partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts" }];
+    const w = await mountBoard();
+    await w.get('[data-testid="lane-job-ha-parts-job-7"]').trigger("click");
+    await flushAll();
+    let release;
+    [partialGate, release] = gate();
+    partialRows = [];
+    await w.get('[data-testid="dispatch-refresh-btn"]').trigger("click");
+    await flushAll();
+    // The jobs read is in; the partial list it was checked against is the old one.
+    expect(w.find(".job-drawer-content").exists()).toBe(true);
+    release();
+    await flushAll();
+    expect(w.find(".job-drawer-content").exists()).toBe(false);
+  });
+
+  // Booked from its lane onto today's board, the job is on one list or the
+  // other at every moment, but the lists answer in either order.
+  for (const last of ["jobs", "partial"]) {
+    it(`the drawer stays open when the parked job moves onto the board (${last} answers last)`, async () => {
+      holdingAreas = [{ id: "ha-parts", name: "Needs Parts" }];
+      partialRows = [{ ...PARTIAL, holding_area_id: "ha-parts" }];
+      const w = await mountBoard();
+      await w.get('[data-testid="lane-job-ha-parts-job-7"]').trigger("click");
+      await flushAll();
+      let release;
+      if (last === "jobs") [jobsGate, release] = gate();
+      else [partialGate, release] = gate();
+      partialRows = [];
+      boardJobs = [{ ...PARTIAL, scheduled_at: inDays(0), technician_id: "tech-1", customer_name: "Dana Ruiz-Ortega" }];
+      await w.get('[data-testid="dispatch-refresh-btn"]').trigger("click");
+      await flushAll();
+      expect(w.find(".job-drawer-content").exists()).toBe(true);
+      release();
+      await flushAll();
+      expect(w.get(".job-drawer-content").text()).toContain("Dana Ruiz-Ortega");
+    });
+  }
+
+  it("the drawer of a Scheduled — Not Assigned card stays open when the job is assigned onto the board", async () => {
+    settings = { dispatch_show_unassigned_lane: true };
+    const job = { ...PARTIAL, id: "job-9", scheduled_at: inDays(0), assigned_to: null, last_worked_day: null, worked_by: [] };
+    scheduledRows = [job];
+    const w = await mountBoard();
+    await w.get('[data-testid="scheduled-unassigned-job-job-9"]').trigger("click");
+    await flushAll();
+    let release;
+    [jobsGate, release] = gate();
+    scheduledRows = [];
+    boardJobs = [{ ...job, technician_id: "tech-2", customer_name: "Dana Ruiz-Ortega" }];
+    await w.get('[data-testid="dispatch-refresh-btn"]').trigger("click");
+    await flushAll();
+    expect(w.find(".job-drawer-content").exists()).toBe(true);
+    release();
+    await flushAll();
+    expect(w.get(".job-drawer-content").text()).toContain("Dana Ruiz-Ortega");
+  });
+
+  it("a board refresh keeps the drawer of a Scheduled — Not Assigned card off the board's window", async () => {
+    settings = { dispatch_show_unassigned_lane: true };
+    const later = { ...PARTIAL, id: "job-9", scheduled_at: inDays(20), assigned_to: null, last_worked_day: null, worked_by: [] };
+    scheduledRows = [later];
+    const w = await mountBoard();
+    await w.get('[data-testid="scheduled-unassigned-job-job-9"]').trigger("click");
+    await flushAll();
+    expect(w.get(".job-drawer-content").text()).toContain("Dana Ruiz");
+    await w.vm.fetchJobs();
+    await flushAll();
+    expect(w.find(".job-drawer-content").exists()).toBe(true);
   });
 
   it("Release on a parked partial job clears only its holding area", async () => {

@@ -401,6 +401,7 @@ def test_email_send_still_emits_estimate_sent(db, monkeypatch):
         "customer": cust, "subject": "s", "html": "<p>h</p>",
         "recipient": SimpleNamespace(ok=True, email="pat@example.com", to_name="Pat",
                                      source="customer", contact_id=None),
+        "pdf_valid_until": None,
     })
     monkeypatch.setattr(est_router, "_estimate_pdf_bytes", lambda *a, **k: b"%PDF-1.4")
     monkeypatch.setattr(est_router, "_estimate_extra_attachment_payloads", lambda *a, **k: ([], []))
@@ -429,6 +430,7 @@ def test_email_send_never_undoes_a_decision_made_while_sending(db, monkeypatch):
         "customer": cust, "subject": "s", "html": "<p>h</p>",
         "recipient": SimpleNamespace(ok=True, email="pat@example.com", to_name="Pat",
                                      source="customer", contact_id=None),
+        "pdf_valid_until": None,
     })
     monkeypatch.setattr(est_router, "_estimate_pdf_bytes", lambda *a, **k: b"%PDF-1.4")
     monkeypatch.setattr(est_router, "_estimate_extra_attachment_payloads", lambda *a, **k: ([], []))

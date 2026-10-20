@@ -60,9 +60,14 @@ CSV_HEADER = [
     # the calendar year of the period's last day; under `hire_anniversary`
     # it is the year of the anniversary that opened it (2026 for a year
     # running 2026-03-15 to 2027-03-14).
-    # Used and remaining count vacation through the period's last day, so a
-    # past period's file says the same thing when downloaded again; days
+    # Used and remaining count vacation through the period's last day; days
     # already booked after it are their own column.
+    # Nothing stores a sent period: every download rebuilds the file. The
+    # hours rows come from the time entries as they stand, and the balance
+    # cells (year, allowance, used, remaining) from the vacation-year policy,
+    # the hire date and the allowance as of the download. A past period
+    # downloaded after any of those is edited can differ from what payroll
+    # was sent (GDXA-1925).
     "vacation_year",
     "vacation_allowance_hours",
     "vacation_used_hours",

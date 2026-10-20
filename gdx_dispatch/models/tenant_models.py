@@ -430,6 +430,10 @@ class Job(Base):
     assigned_to: Mapped[str] = mapped_column(String(50), nullable=True)
     source: Mapped[str] = mapped_column(String(50), nullable=True)
     is_return_visit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # GDXA-1946 (135): which path made this return visit — "closeout" (a
+    # day-2 continuation), "callback" (spawn-return-visit) or "follow_up".
+    # NULL on a child with no creation audit row reads as a callback.
+    return_visit_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     parent_job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
     # Plan §9 (audit round 2): the canonical service spelling. Constructors
     # that omit job_type inherit THIS — the old "Service" default was the leak

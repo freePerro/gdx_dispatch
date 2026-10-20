@@ -489,6 +489,16 @@ def _preview_estimate_or_404(token: str, preview: str, db: Session) -> Estimate:
     return est
 
 
+def _as_texted(est: Estimate) -> dict[str, Any] | None:
+    """What the staff preview shows: the estimate the customer gets once the
+    text goes. Sending moves a not-yet-decided estimate to "sent" with the
+    send expiry re-applied (core/estimate_sms.as_texted, the read-only twin
+    of its stamp()); accepted/declined come back None and show as-is. One
+    projection for the page and the PDF, so the two cannot disagree. Nothing
+    is written: the row is never touched, so no autoflush can save it."""
+    return estimate_sms.as_texted(est, utcnow())
+
+
 @router.get("/proposals/{token}")
 def get_public_proposal(
     token: str,
@@ -499,11 +509,7 @@ def get_public_proposal(
     if preview is not None:
         est = _preview_estimate_or_404(token, preview, db)
         body = _serialize_public_estimate(est, db, request)
-        # Show the page the customer gets once the text goes: sending moves a
-        # not-yet-decided estimate to "sent" with the send expiry re-applied
-        # (core/estimate_sms.as_texted, the read-only twin of its stamp()).
-        # Accepted/declined are shown as-is. Nothing here is written.
-        texted = estimate_sms.as_texted(est, utcnow())
+        texted = _as_texted(est)
         if texted is not None:
             body["estimate"]["status"] = texted["status"]
             vu = texted["valid_until"]
@@ -548,21 +554,27 @@ def get_public_proposal_pdf(
     Same gates as the page: a customer token needs sent_at and no deleted_at,
     a staff ``?preview=`` needs a live signature for this estimate, and every
     miss is the same 404. Read-only, and no view is recorded — loading the
-    page that carries the button already recorded one."""
+    page that carries the button already recorded one. A preview prints the
+    page's as-texted expiry (`_as_texted`); the PDF has no status line."""
     from gdx_dispatch.models.tenant_models import Customer
     from gdx_dispatch.routers.estimates import _estimate_pdf_bytes  # lazy: import cycle
 
-    est = (
-        _preview_estimate_or_404(token, preview, db)
-        if preview is not None
-        else _get_public_estimate_or_404(token, db)
-    )
+    valid_until_override = None
+    if preview is not None:
+        est = _preview_estimate_or_404(token, preview, db)
+        texted = _as_texted(est)
+        if texted is not None:
+            valid_until_override = texted["valid_until"]
+    else:
+        est = _get_public_estimate_or_404(token, db)
     customer = None
     if est.customer_id:
         customer = db.execute(
             select(Customer).where(Customer.id == est.customer_id, Customer.deleted_at.is_(None))
         ).scalar_one_or_none()
-    pdf = _estimate_pdf_bytes(db, est, customer, _public_tenant_id(request, est))
+    pdf = _estimate_pdf_bytes(
+        db, est, customer, _public_tenant_id(request, est), valid_until_override=valid_until_override
+    )
     number = "".join(c for c in str(est.estimate_number or "") if c.isalnum() or c in "-_") or "estimate"
     return Response(
         content=pdf,
