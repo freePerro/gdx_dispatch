@@ -76,7 +76,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # 342 → 340 (2026-10-19): POST /api/tech-unavailability and DELETE
 # /api/tech-unavailability/{unavail_id} were deleted; approved time off is
 # the one record the schedule reads (GDXA-1829).
-BASELINE_SIZE = 340
+# 340 → 339 (2026-10-19): POST /api/mobile/jobs/{job_id}/complete was deleted
+# past its sunset; completion is /api/jobs/{id}/closeout (GDXA-1937).
+BASELINE_SIZE = 339
 
 
 def _baseline() -> set[str]:

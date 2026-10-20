@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
@@ -143,12 +142,6 @@ class ArrivedBody(BaseModel):
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
     accuracy: float | None = Field(default=None, ge=0, le=1_000_000)
-
-
-class CompleteBody(BaseModel):
-    completion_notes: str | None = Field(default=None, max_length=5000)
-    signature_data: str | None = Field(default=None, max_length=1_400_000)
-    signed_by: str | None = Field(default=None, max_length=200)
 
 
 # Sprint tech_mobile S1-B2 — forward-only state machine.
@@ -569,18 +562,6 @@ def _build_navigation_link(address: str | None) -> str | None:
     if not addr:
         return None
     return f"https://maps.google.com/?q={quote_plus(addr)}"
-
-
-def _validate_signature_data(signature_data: str) -> bool:
-    data = (signature_data or "").strip()
-    if not data.startswith("data:image/") or "," not in data:
-        return False
-    try:
-        base64.b64decode(data.split(",", 1)[1])
-        return True
-    except Exception:  # Validation failure is expected and handled by returning False.
-        log.exception("validate_signature_data_failed")
-        return False
 
 
 def _audit_state_change(
@@ -2901,206 +2882,6 @@ def mobile_job_arrived(
     )
 
 
-@router.post("/jobs/{job_id}/complete", response_model=None, deprecated=True)
-def mobile_job_complete(
-    job_id: str,
-    payload: CompleteBody,
-    request: Request,
-    current_user: Any = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """DEPRECATED — Phase 2 / C3.5 (2026-05-10) replaced this with the
-    unified /api/jobs/{id}/closeout endpoint. MobileTodayView no longer
-    calls this; only an offline-queued or pre-update PWA client should
-    still hit it. Scheduled for removal in C6 (~2026-06-10) once audit
-    logs show zero traffic.
-
-    Adds a deprecation log line on every call so we can grep for active
-    clients before deletion. Sets RFC 8594 Sunset + Deprecation headers
-    so well-behaved clients know to migrate.
-    """
-    # The user_agent + x-request-id let us identify WHICH client (PWA
-    # build hash, mobile app version, curl/cron) is still hitting this
-    # route at deletion time. Without them, tenant_id alone won't tell
-    # us whether to chase a stale browser cache, an offline-queued
-    # replay, or a third-party integration.
-    _hdrs = request.headers if request else {}
-    log.warning(
-        "deprecated_route_called",
-        extra={
-            "route": "POST /api/mobile/jobs/{job_id}/complete",
-            "replacement": "POST /api/jobs/{job_id}/closeout",
-            "sunset_planned": "2026-06-10",
-            "tenant_id": _tenant_id(request),
-            "user_id": _user_id(current_user or {}),
-            "job_id": str(job_id),
-            "user_agent": _hdrs.get("user-agent", ""),
-            "request_id": _hdrs.get("x-request-id", ""),
-            "referer": _hdrs.get("referer", ""),
-        },
-    )
-    tenant_id = _tenant_id(request)
-    user = current_user or {}
-    user_id = _user_id(user)
-    _assert_job_access(db, request, current_user, job_id)
-    job = _get_job(db, tenant_id, job_id)
-    if not job:
-        return jsonable_response({"detail": "job not found"}, 404)
-
-    # S1-B5 — signature gating + surface check.
-    from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting
-
-    sig_required_setting = get_tenant_mobile_setting(
-        db, "tech_mobile.signature_required_completion", request=request
-    )
-    sig_surface = get_tenant_mobile_setting(
-        db, "tech_mobile.signature_surface", request=request
-    )
-
-    signature_data = (payload.signature_data or "").strip()
-    existing_signature = (job.get("signature_data") or "").strip()
-
-    # phone_handoff (default) — customer signs on the tech's device,
-    # signature_data must be present in the body or already on the job.
-    # customer_link — send the customer a tokenized URL to sign at; the
-    # /complete request must NOT carry signature_data (it's collected
-    # asynchronously). v1 ships phone_handoff only; customer_link is
-    # 501 until the tokenized-link flow lands in a future slice.
-    if sig_surface == "customer_link":
-        return jsonable_response(
-            {
-                "detail": (
-                    "tech_mobile.signature_surface='customer_link' is not yet "
-                    "implemented; set it to 'phone_handoff' to complete jobs "
-                    "with on-device signatures."
-                )
-            },
-            501,
-        )
-    if sig_surface not in (None, "phone_handoff"):
-        return jsonable_response(
-            {"detail": f"unknown signature_surface: {sig_surface!r}"}, 400
-        )
-
-    if sig_required_setting == "required":
-        if not signature_data and not existing_signature:
-            return jsonable_response(
-                {"detail": "Signature is required to complete job"}, 400
-            )
-    elif sig_required_setting == "off":
-        # Tenant has fully opted out of signatures — discard any sent.
-        signature_data = ""
-    # "optional" — accept whatever's sent (or not), no gating.
-
-    now = datetime.now(UTC)
-    if signature_data:
-        if not _validate_signature_data(signature_data):
-            return jsonable_response({"detail": "Invalid signature_data base64 payload"}, 400)
-        # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-        db.execute(
-            _text(
-                """
-                UPDATE jobs
-                SET signature_data = :signature_data,
-                    signed_by = :signed_by,
-                    signed_at = :signed_at
-                WHERE id = :job_id
-                  AND deleted_at IS NULL
-                """
-            ),
-            {
-                "signature_data": signature_data,
-                "signed_by": (payload.signed_by or "").strip() or None,
-                "signed_at": now,
-                "job_id": job_id,
-            },
-        )
-
-    try:
-        _jid = _UUID(job_id)
-    except (ValueError, AttributeError):
-        logging.getLogger(__name__).exception("mobile_job_complete caught exception")
-        _jid = None
-    if _jid is not None:
-        # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-        _job_obj = db.execute(
-            select(Job).where(
-                Job.id == _jid,
-                Job.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
-        if _job_obj is not None:
-            # S1-B2 — Job.dispatch_status enum is (unassigned, assigned,
-            # en_route, on_site, done). Earlier code wrote "completed"
-            # here, which is NOT a valid enum value and would raise on
-            # PG (loose on SQLite). Use "done"; capture completion in
-            # Job.completed_at for the timestamp axis.
-            _validate_forward_transition(_job_obj.dispatch_status, "done")
-            _job_obj.dispatch_status = "done"
-            _job_obj.completed_at = now
-
-    # Phase 1.4 D2 — per-tech completed_at on JobAssignment so multi-tech
-    # jobs preserve who finished (vs. who started or visited). No user-id
-    # fallback: tech_id must be a technicians.id or the ownership gate
-    # can never match the row (2026-08-06 poisoned-assignment incident).
-    _technician_id_done = _get_technician_id(db, tenant_id, user_id)
-    if _technician_id_done:
-        from gdx_dispatch.routers.job_assignments import (
-            ensure_assignment_for_legacy_job,
-            stamp_tech_state,
-        )
-        ensure_assignment_for_legacy_job(
-            db, job_id=job_id, tech_id=_technician_id_done, user_id=user_id,
-        )
-        stamp_tech_state(
-            db, job_id=job_id, tech_id=_technician_id_done,
-            state="complete", when=now,
-        )
-
-    _audit_state_change(
-        db,
-        event_type="complete",
-        actor_id=user_id,
-        entity_type="job",
-        entity_id=job_id,
-        payload={"completion_notes": payload.completion_notes},
-        request=request,
-        actor_role=user.get("role"),
-    )
-    db.commit()
-
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="mobile_job_complete",
-                entity_type="mobile_job_complete",
-                entity_id=str(job_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('mobile_job_complete_audit_failed')
-    return jsonable_response(
-        {
-            "ok": True,
-            "job_id": job_id,
-            "dispatch_status": "done",
-            "completed_at": now.isoformat(),
-        }
-    )
-
-
 # Removed 2026-09-07 (follow-up to #480, which was swept from a candidate list
 # rather than the full router): four handlers with no SPA caller — POST
 # /jobs/{id}/status, POST /job/{id}/status, POST /clock-in, POST /clock-out —
@@ -3108,6 +2889,12 @@ def mobile_job_complete(
 # notes. The SPA drives /jobs/{id}/en-route and /arrived here, completes a job
 # through the closeout sheet (never /jobs/{id}/complete — guarded by
 # MobileCloseoutOwnership.spec.js), and clocks the day through /api/timeclock/*.
+#
+# Removed 2026-10-19 (GDXA-1937): POST /jobs/{id}/complete, deprecated since
+# 2026-05-10 and past its sunset. It wrote dispatch_status='done' and
+# completed_at without moving lifecycle_stage, so a job it touched left the
+# tech's list while the office still saw it open, and no endpoint could clear
+# the stale 'done'. /api/jobs/{id}/closeout is the one completion path.
 
 
 @router.post("/jobs/{job_id}/clock-in", response_model=None)

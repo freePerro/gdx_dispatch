@@ -3,10 +3,11 @@
 D1: list/create/delete the (job, tech) edges that say who is assigned.
 D5: per-job ``is_lead`` designation, optional and at-most-one per job.
 
-Per-tech state-machine timestamps (en_route_at / arrived_at /
-completed_at) are written by ``gdx_dispatch/routers/mobile.py`` when the calling
-tech taps the corresponding button — this router only manages the
-membership and lead-tech bits.
+Per-tech state-machine timestamps en_route_at and arrived_at are written by
+``gdx_dispatch/routers/mobile.py`` when the calling tech taps the
+corresponding button — this router only manages the membership and
+lead-tech bits. Nothing writes the per-tech completed_at since the mobile
+/complete route was deleted (GDXA-1937); the closeout completes the job.
 
 Backwards-compat: ``Job.assigned_to`` is kept as a denormalization of
 "the primary tech." On every assignment write we recompute it as
