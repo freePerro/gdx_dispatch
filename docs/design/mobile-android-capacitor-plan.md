@@ -73,6 +73,7 @@ JAVA_HOME=/home/doug/android-studio/jbr ANDROID_HOME=/home/doug/Android/Sdk ./gr
   - Ambient `window.fetch` interceptor prefixing relative `/api/...`, `/auth/...`, `/portal/...` endpoints to configured server URL while preserving local assets on `https://localhost/`.
   - Options gear button in `LoginView.vue` and "More Modules" drawer in `AppBottomNav.vue`.
   - Modal dialog (`MobileServerConfigDialog.vue`) with input, presets ("Public Demo", "Local Dev"), live `/health` connection test, and save action.
+  - Build-time default server (GDXA-1993, 2026-10-19): set `VITE_DEFAULT_SERVER_URL` when running `vite build` for the APK (e.g. `VITE_DEFAULT_SERVER_URL=https://dispatch.yourshop.example npm run build`, then `npx cap sync android`). It goes first in the presets as "This shop", and the native app uses it when no URL is saved in Preferences/localStorage. A URL the tech saved still wins, and clearing it falls back to the default. Leave it unset and nothing changes. The web build ignores it: the web app always talks to the server that served it.
   - Android hardware back-button listener (`nativeBridge.js`) hooked into Vue Router with modal dismissal.
   - Verified on running Pixel 8 emulator with live connection test to `http://10.0.2.2:8001/health` and verified persistence across app restarts.
 

@@ -52,6 +52,15 @@ npx cap sync android
 ```
 *(Or run the combined script: `npm run cap:build`)*
 
+### Baking In Your Shop's Server
+Set `VITE_DEFAULT_SERVER_URL` on the build to give the app a default server:
+```bash
+VITE_DEFAULT_SERVER_URL=https://dispatch.yourshop.example npm run cap:build
+```
+It is listed first in the server dialog as "This shop" and is used whenever
+no server is saved on the phone. A server the tech saves still wins. Unset,
+the app has no default and the tech picks one in the dialog.
+
 ### Compiling Debug APKs
 Using the environment's JDK 21 and Android SDK:
 ```bash
