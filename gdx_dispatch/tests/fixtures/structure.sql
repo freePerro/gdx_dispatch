@@ -401,6 +401,7 @@ CREATE TABLE public.app_settings (
     time_off_default_minutes smallint DEFAULT 480 NOT NULL,
     time_off_counts_toward_overtime boolean DEFAULT false NOT NULL,
     vacation_allowance_hours numeric(6,2),
+    vacation_year_policy character varying(20) DEFAULT 'calendar_year'::character varying NOT NULL,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL
 );
@@ -2506,6 +2507,7 @@ CREATE TABLE public.jobs (
     assigned_to character varying(50),
     source character varying(50),
     is_return_visit boolean DEFAULT false NOT NULL,
+    return_visit_source character varying(20),
     parent_job_id uuid,
     job_type character varying(100),
     status character varying(50),
@@ -4233,24 +4235,6 @@ CREATE TABLE public.role_permissions (
 
 
 --
--- Name: safety_checklists; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.safety_checklists (
-    id character varying(36) NOT NULL,
-    company_id character varying(36) NOT NULL,
-    job_id character varying(36) NOT NULL,
-    technician_id character varying(36) NOT NULL,
-    items text NOT NULL,
-    completed boolean,
-    photo_url text,
-    signed_at timestamp with time zone,
-    created_at timestamp with time zone,
-    deleted_at timestamp with time zone
-);
-
-
---
 -- Name: saved_reports; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4656,23 +4640,6 @@ CREATE TABLE public.tech_locations (
 
 
 --
--- Name: tech_unavailability; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.tech_unavailability (
-    id uuid NOT NULL,
-    company_id character varying(64) NOT NULL,
-    tech_id character varying(64) NOT NULL,
-    start_at timestamp with time zone NOT NULL,
-    end_at timestamp with time zone NOT NULL,
-    reason character varying(200),
-    created_by character varying(200),
-    created_at timestamp with time zone NOT NULL,
-    deleted_at timestamp with time zone
-);
-
-
---
 -- Name: technician_locations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4943,8 +4910,6 @@ CREATE TABLE public.users (
     updated_at timestamp with time zone,
     deleted_at timestamp with time zone,
     address text,
-    auth_email character varying(254),
-    google_email character varying(254),
     google_id character varying(200),
     department character varying(100),
     hire_date date,
@@ -4957,57 +4922,18 @@ CREATE TABLE public.users (
     field_territory character varying(200),
     route_start_lat numeric(10,7),
     route_start_lng numeric(10,7),
-    availability_status character varying(30),
     failed_login_count integer,
     locked_until timestamp with time zone,
-    mfa_enabled boolean,
-    mfa_secret character varying(200),
     last_seen timestamp with time zone,
     tc_can_approve boolean,
     tc_can_edit boolean,
     tc_can_view_others boolean,
-    tc_permissions text,
     emergency_contact_name character varying(200),
     emergency_contact_phone character varying(50),
-    mcp_enabled boolean,
     shift_start time without time zone,
     shift_end time without time zone,
     workdays smallint,
     vacation_allowance_hours numeric(6,2)
-);
-
-
---
--- Name: van_inventory; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.van_inventory (
-    id uuid NOT NULL,
-    company_id character varying(36) NOT NULL,
-    truck_id character varying(36) NOT NULL,
-    sku character varying(100),
-    name character varying(300) NOT NULL,
-    quantity integer NOT NULL,
-    min_stock integer NOT NULL,
-    category character varying(100),
-    created_at timestamp with time zone,
-    updated_at timestamp with time zone,
-    deleted_at timestamp with time zone
-);
-
-
---
--- Name: van_inventory_log; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.van_inventory_log (
-    id uuid NOT NULL,
-    van_inventory_id uuid NOT NULL,
-    job_id character varying(36),
-    quantity_change integer NOT NULL,
-    reason character varying(500),
-    created_by character varying(36) NOT NULL,
-    created_at timestamp with time zone
 );
 
 
@@ -7179,14 +7105,6 @@ ALTER TABLE ONLY public.role_permissions
 
 
 --
--- Name: safety_checklists safety_checklists_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.safety_checklists
-    ADD CONSTRAINT safety_checklists_pkey PRIMARY KEY (id);
-
-
---
 -- Name: saved_reports saved_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7368,14 +7286,6 @@ ALTER TABLE ONLY public.tech_commission_rates
 
 ALTER TABLE ONLY public.tech_locations
     ADD CONSTRAINT tech_locations_pkey PRIMARY KEY (id);
-
-
---
--- Name: tech_unavailability tech_unavailability_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.tech_unavailability
-    ADD CONSTRAINT tech_unavailability_pkey PRIMARY KEY (id);
 
 
 --
@@ -7760,22 +7670,6 @@ ALTER TABLE ONLY public.user_tour_progress
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-
-
---
--- Name: van_inventory_log van_inventory_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.van_inventory_log
-    ADD CONSTRAINT van_inventory_log_pkey PRIMARY KEY (id);
-
-
---
--- Name: van_inventory van_inventory_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.van_inventory
-    ADD CONSTRAINT van_inventory_pkey PRIMARY KEY (id);
 
 
 --
@@ -10284,20 +10178,6 @@ CREATE INDEX ix_tech_locations_technician_id ON public.tech_locations USING btre
 --
 
 CREATE INDEX ix_tech_locations_user_id ON public.tech_locations USING btree (user_id);
-
-
---
--- Name: ix_tech_unavailability_company_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_tech_unavailability_company_id ON public.tech_unavailability USING btree (company_id);
-
-
---
--- Name: ix_tech_unavailability_tech_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_tech_unavailability_tech_id ON public.tech_unavailability USING btree (tech_id);
 
 
 --

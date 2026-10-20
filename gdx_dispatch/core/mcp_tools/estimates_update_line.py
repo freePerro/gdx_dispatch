@@ -6,7 +6,7 @@ from typing import Any
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid, estimate_line_dict
 
 DESCRIPTOR = ToolDescriptor(
     name="estimates.update_line",
@@ -93,12 +93,9 @@ async def handler(
             "line": {
                 "preview": True,
                 "id": str(line.id),
-                "before": {
-                    "description": line.description,
-                    "quantity": int(line.quantity),
-                    "unit_price": float(line.unit_price),
-                    "line_total": float(line.line_total),
-                },
+                # Nothing is mutated before approval_ref, so the row still
+                # holds the pre-edit values here.
+                "before": estimate_line_dict(line, with_id=False),
                 "after": {
                     "description": new_desc,
                     "quantity": new_qty,
@@ -122,11 +119,7 @@ async def handler(
     return {
         "line": {
             "preview": False,
-            "id": str(line.id),
-            "description": line.description,
-            "quantity": int(line.quantity),
-            "unit_price": float(line.unit_price),
-            "line_total": float(line.line_total),
+            **estimate_line_dict(line),
             "estimate_total": float(estimate.total),
         }
     }

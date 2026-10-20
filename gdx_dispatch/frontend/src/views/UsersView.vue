@@ -384,6 +384,20 @@
               Blank = the shop default from Settings → Time off and holidays. 0 = no vacation hours.
             </p>
           </div>
+          <div class="form-field">
+            <label for="edit-hire-date">Hire date</label>
+            <InputText
+              id="edit-hire-date"
+              v-model="editForm.hire_date"
+              type="date"
+              class="w-full"
+              data-testid="users-edit-hire-date"
+            />
+            <p class="form-hint">
+              When Settings → Time off and holidays counts vacation from each hire
+              anniversary, this person's year starts on this date. Blank = the calendar year.
+            </p>
+          </div>
           <div v-if="editError" class="inline-error" data-testid="users-edit-error">
             {{ editError }}
           </div>
@@ -558,7 +572,7 @@
           <div class="lockout-info-row">
             <span class="lockout-info-label">Reason</span>
             <span class="lockout-info-value" data-testid="users-lockout-info-reason">
-              {{ formatReason(lockoutInfo.reason) }}
+              {{ lockoutInfo.reason_label || formatReason(lockoutInfo.reason) }}
             </span>
           </div>
           <div v-if="lockoutInfo.notes" class="lockout-info-row">
@@ -602,7 +616,6 @@
         </div>
       </Dialog>
 
-      <Toast data-testid="users-toast" />
     </section>
 </template>
 
@@ -620,7 +633,6 @@ import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
-import Toast from 'primevue/toast';
 import Toolbar from 'primevue/toolbar';
 import Password from 'primevue/password';
 import PhoneInput from '../components/PhoneInput.vue';
@@ -720,8 +732,18 @@ const ACTOR_LOCK_ROLES = new Set(['admin', 'owner']);
 const currentUserRole = computed(() => (auth.user?.role || auth.user?.user_role || '').toLowerCase());
 const canActOnLockouts = computed(() => ACTOR_LOCK_ROLES.has(currentUserRole.value));
 
-function isLocked(user) {
+function isInactive(user) {
   return !(user.active ?? user.is_active ?? true);
+}
+
+// Too many failed passwords (GDXA-1995): the backend sends locked_until only
+// while the lock is live. Unlock lifts it; it also lapses on its own.
+function isLoginLocked(user) {
+  return Boolean(user.locked_until) && Date.parse(user.locked_until) > Date.now();
+}
+
+function isLocked(user) {
+  return isInactive(user) || isLoginLocked(user);
 }
 
 function isOwner(user) {
@@ -734,7 +756,7 @@ function isSelf(user) {
 }
 
 function canLockOut(user) {
-  return canActOnLockouts.value && !isLocked(user) && !isOwner(user) && !isSelf(user);
+  return canActOnLockouts.value && !isInactive(user) && !isOwner(user) && !isSelf(user);
 }
 
 function canUnlock(user) {
@@ -760,6 +782,7 @@ function emptyEditForm() {
   return {
     name: '', email: '', phone: '', route_start_address: '', certifications: '',
     shift_start: '', shift_end: '', workdays: null, vacation_allowance_hours: null,
+    hire_date: '',
   };
 }
 
@@ -909,6 +932,7 @@ async function submitUnlock() {
     const next = result?.active ?? true;
     unlockTarget.value.active = next;
     unlockTarget.value.is_active = next;
+    unlockTarget.value.locked_until = result?.locked_until ?? null;
     showUnlockDialog.value = false;
   } catch {
     // useApiWithToast handles error display
@@ -918,6 +942,17 @@ async function submitUnlock() {
 }
 
 async function openLockoutInfo(user) {
+  if (!isInactive(user) && isLoginLocked(user)) {
+    // No admin lockout row to fetch: the lock came from failed sign-ins.
+    lockoutInfo.value = {
+      reason_label: 'Too many failed sign-ins',
+      notes: `Signs in again on its own at ${formatDateTime(user.locked_until)}, or Unlock now.`,
+      locked_at: null,
+    };
+    lockoutInfoLoading.value = false;
+    showLockoutInfoDialog.value = true;
+    return;
+  }
   lockoutInfo.value = null;
   lockoutInfoLoading.value = true;
   showLockoutInfoDialog.value = true;
@@ -1008,6 +1043,7 @@ function openEditDialog(user) {
     shift_end: user.shift_end || '',
     workdays: Number.isInteger(user.workdays) ? user.workdays : null,
     vacation_allowance_hours: user.vacation_allowance_hours == null ? null : Number(user.vacation_allowance_hours),
+    hire_date: user.hire_date || '',
   };
   editError.value = '';
   showEditDialog.value = true;
@@ -1032,6 +1068,8 @@ async function submitEdit() {
       workdays: editForm.value.workdays,
       // null = inherit the shop's vacation allowance.
       vacation_allowance_hours: editForm.value.vacation_allowance_hours ?? null,
+      // 'YYYY-MM-DD' from the date input; blank clears it.
+      hire_date: editForm.value.hire_date || null,
     };
     if (payload.shift_start && payload.shift_end && payload.shift_end <= payload.shift_start) {
       throw new Error('Shift end must be after shift start.');

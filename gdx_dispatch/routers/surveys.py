@@ -26,8 +26,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
@@ -72,6 +72,7 @@ _KIND_SCALE = {
 
 from gdx_dispatch.models.tenant_models import (  # noqa: E402
     AppSettings,
+    Customer,
     SurveyResponse,
     SurveySend,
     SurveyTemplate,
@@ -83,6 +84,11 @@ from gdx_dispatch.models.tenant_models import (  # noqa: E402
 
 
 class SurveyTemplateIn(BaseModel):
+    # An unknown key is a 422, not a silent drop: SurveysView once posted
+    # template_type/send_channel/message, and the PATCH answered 200 while
+    # changing nothing (GDXA-1676).
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     kind: str = Field(default="nps", pattern=r"^(nps|csat|custom)$")
     question: str = Field(min_length=1, max_length=500)
@@ -91,6 +97,8 @@ class SurveyTemplateIn(BaseModel):
 
 
 class SurveyTemplatePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=200)
     kind: str | None = Field(default=None, pattern=r"^(nps|csat|custom)$")
     question: str | None = Field(default=None, min_length=1, max_length=500)
@@ -99,6 +107,8 @@ class SurveyTemplatePatch(BaseModel):
 
 
 class SurveySendIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     template_id: str = Field(min_length=1, max_length=64)
     customer_id: str | None = Field(default=None, max_length=64)
     job_id: str | None = Field(default=None, max_length=64)
@@ -108,6 +118,8 @@ class SurveySendIn(BaseModel):
 
 
 class PublicSurveyResponseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     score: int = Field(ge=0, le=10)
     comment: str | None = Field(default=None, max_length=5000)
 
@@ -253,7 +265,24 @@ def list_templates(
         )
         .order_by(SurveyTemplate.created_at.desc())
     ).scalars().all()
-    return [_serialize_template(r) for r in rows]
+    # Last link minted per template, one grouped query for the page; the
+    # "Last Link" column read this field before the router ever sent it.
+    last_sent: dict[UUID, datetime] = {}
+    if rows:
+        last_sent = dict(
+            db.execute(
+                select(SurveySend.template_id, func.max(SurveySend.sent_at))
+                .where(SurveySend.template_id.in_([r.id for r in rows]))
+                .group_by(SurveySend.template_id)
+            ).all()
+        )
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        data = _serialize_template(r)
+        sent_at = last_sent.get(r.id)
+        data["last_sent_at"] = sent_at.isoformat() if sent_at else None
+        out.append(data)
+    return out
 
 
 @admin_router.post("/api/surveys/templates", response_model=None, status_code=201)
@@ -311,8 +340,28 @@ def update_template(
     if not tpl:
         raise HTTPException(status_code=404, detail="Survey template not found")
     data = payload.model_dump(exclude_unset=True)
-    for key, value in data.items():
-        setattr(tpl, key, value)
+    changes = {
+        key: {"old": getattr(tpl, key), "new": value}
+        for key, value in data.items()
+        if getattr(tpl, key) != value
+    }
+    # Responses carry no kind of their own: metrics score each one by its
+    # template's current kind, so re-typing a template that has answers would
+    # re-score them (0-10 NPS answers averaged as 1-5 CSAT).
+    if "kind" in changes:
+        answered = db.execute(
+            select(SurveyResponse.id)
+            .where(SurveyResponse.template_id == tpl.id)
+            .limit(1)
+        ).first()
+        if answered is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This template already has responses, so its type cannot change. "
+                "Create a new template for the new type.",
+            )
+    for key, change in changes.items():
+        setattr(tpl, key, change["new"])
     tpl.updated_at = utcnow()
     db.commit()
     db.refresh(tpl)
@@ -323,7 +372,7 @@ def update_template(
         action="survey_template_updated",
         entity_type="survey_template",
         entity_id=str(tpl.id),
-        details={"fields": list(data.keys())},
+        details={"fields": list(changes.keys()), "changes": changes},
         request=request,
     )
     return _serialize_template(tpl)
@@ -460,6 +509,24 @@ def list_responses(
     rows = db.execute(
         stmt.order_by(SurveyResponse.created_at.desc()).limit(limit).offset(offset)
     ).scalars().all()
+    # Respondent: the send's customer name, else the address the link was
+    # minted for. One query each for the page's sends and customers.
+    sends_by_id: dict[UUID, SurveySend] = {}
+    if rows:
+        sends_by_id = {
+            s.id: s
+            for s in db.execute(
+                select(SurveySend).where(SurveySend.id.in_({r.send_id for r in rows}))
+            ).scalars().all()
+        }
+    customer_ids = {s.customer_id for s in sends_by_id.values() if s.customer_id}
+    name_by_customer: dict[UUID, str] = {}
+    if customer_ids:
+        name_by_customer = dict(
+            db.execute(
+                select(Customer.id, Customer.name).where(Customer.id.in_(customer_ids))
+            ).all()
+        )
     # Enrich with template kind when available for easier UI rendering.
     tpl_cache: dict[UUID, SurveyTemplate] = {}
     out: list[dict[str, Any]] = []
@@ -478,6 +545,15 @@ def list_responses(
         if tpl is not None:
             data["template_kind"] = tpl.kind
             data["template_name"] = tpl.name
+        send = sends_by_id.get(r.send_id)
+        data["respondent_name"] = None
+        if send is not None:
+            data["respondent_name"] = (
+                name_by_customer.get(send.customer_id)
+                or send.recipient_email
+                or send.recipient_phone
+                or None
+            )
         out.append(data)
     return out
 

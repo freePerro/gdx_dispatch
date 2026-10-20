@@ -40,6 +40,7 @@ from gdx_dispatch.core.pay_periods import (
     pay_date,
     resolve_zone,
     settings_config,
+    shop_tz_name,
 )
 from gdx_dispatch.core.timesheet_export import (
     build_csv,
@@ -327,7 +328,7 @@ def send_period_timesheet(
     from gdx_dispatch.core.email_layout import email_branding
 
     branding = email_branding(db)
-    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    tz_name = shop_tz_name(settings)
     prepared = (
         datetime.now(UTC).astimezone(resolve_zone(tz_name)).strftime("%b %-d, %Y %-I:%M %p")
     )

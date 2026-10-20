@@ -58,6 +58,8 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.tasks.timeclock_sweep",
             # D14 — stops job timers left running past shift end.
             "gdx_dispatch.tasks.job_timer_sweep",
+            # GDXA-1723 — delivers queued win-back campaign sends.
+            "gdx_dispatch.tasks.winback_drain",
         ],
     )
     app.conf.update(
@@ -148,6 +150,7 @@ from gdx_dispatch.tasks import estimate_expiry as _estimate_expiry_tasks  # noqa
 from gdx_dispatch.tasks import job_timer_sweep as _job_timer_sweep_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import tech_locations_prune as _tech_locations_prune_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import timeclock_sweep as _timeclock_sweep_tasks  # noqa: E402,F401
+from gdx_dispatch.tasks import winback_drain as _winback_drain_tasks  # noqa: E402,F401
 
 
 @worker_process_init.connect

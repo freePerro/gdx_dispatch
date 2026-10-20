@@ -65,7 +65,7 @@ The spine shipped v1.10.0 (#112, `1584f2d`) and the autodraft v1.43.0.
 | Already built | Where |
 |---|---|
 | `job_parts_needed.unit_price` + `source` columns | `models/tenant_models.py:2290-2293` |
-| Parts spine — closeout / mobile / van write source-tagged rows | `routers/jobs.py`, `mobile.py`, `van_inventory.py` |
+| Parts spine — closeout / mobile / van write source-tagged rows | `routers/jobs.py`, `mobile.py`, `van_inventory.py` <!-- link-ok: routers/van_inventory.py retired 2026-10-19 (GDXA-1826) --> |
 | Office catalog-add that stores the **sell price** on the job | `JobDetailView.vue:2543` → `parts_needed.py:160` |
 | Autodraft that lines priced parts + a labor line | `core/closeout_billing.py` |
 | Labor lanes — flat install price, or hourly from **attested** hours | `core/billing_lanes.py` |
@@ -236,7 +236,7 @@ the A1 rule against forking a pricing implementation.
 **Van rows need no special case.** Per D2, the van is a location, not a pricing
 lane — a part is worth its catalog price wherever it physically sat, so van
 rows run the same tiers as everything else. This deletes, rather than extends,
-the "Van items carry no sell price" branch at `van_inventory.py:182-194`.
+the "Van items carry no sell price" branch at `van_inventory.py:182-194`. <!-- link-ok: routers/van_inventory.py retired 2026-10-19 (GDXA-1826) -->
 
 Tier 1 does **not** violate AUDIT-R1: that ruling forbade merging or
 overwriting capture rows because it undercounts. Copying a price overwrites
@@ -315,7 +315,7 @@ Nothing is inferred from the name, and the catalog is not touched.
 price as the catalog price, it is just inventory tracking."* Van is a
 **location, not a pricing lane** — the part is worth what the catalog says
 wherever it physically sat. So van rows resolve through the same resolver with
-no van-specific tier, and `van_inventory.py:182-194`'s "Van items carry no sell
+no van-specific tier, and `van_inventory.py:182-194`'s "Van items carry no sell <!-- link-ok: routers/van_inventory.py retired 2026-10-19 (GDXA-1826) -->
 price" is the defect, not the policy: it treated a storage location as a
 pricing decision. The only van-specific behavior that stays is the inventory
 decrement.

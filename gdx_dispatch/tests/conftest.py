@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from functools import reduce
 from operator import or_
 
-# gdx_dispatch/routers/auth.py refuses to import without a JWT signing key configured.
+# gdx_dispatch/routers/auth/core.py refuses to import without a JWT signing key configured.
 # For tests we give it a deterministic HS256 secret (≥32 bytes) BEFORE any
 # test module imports auth. Production must set RS_PRIVATE_KEY+RS_PUBLIC_KEY
 # or a real JWT_SECRET — this fallback is test-only.

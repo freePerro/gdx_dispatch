@@ -190,6 +190,75 @@ def test_analytics_structure(order_db):
     assert analytic.distributor_tenant_id == DIST_A
 
 
+@pytest.fixture
+def dealer_client(order_db):
+    """The real dealer_router over HTTP, as DEALER_A with the admin role."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.modules.distributor import order_portal
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def inject_principal(request, call_next):
+        request.state.tenant = {"id": DEALER_A}
+        request.state.current_user = {"sub": "dealer-user", "role": "admin"}
+        return await call_next(request)
+
+    app.include_router(order_portal.dealer_router)
+    app.dependency_overrides[order_portal.get_db] = lambda: order_db
+    yield TestClient(app, raise_server_exceptions=False)
+    app.dependency_overrides.clear()
+
+
+def test_place_order_with_po_number_and_ship_to_round_trips_meta(dealer_client):
+    """GDXA-1737: an order carrying dealer_po_number/shipping_address was wrapped in a
+    {"items", "_meta"} envelope that create_dealer_order iterated as a list, so every
+    such order 500'd. It must be created, totalled from the items, and keep its meta."""
+    ship_to = {"line1": "1 Main St", "city": "Springfield", "zip": "00000"}
+    resp = dealer_client.post(
+        "/api/dealer/orders",
+        json={
+            "distributor_tenant_id": DIST_A,
+            "items": SAMPLE_ITEMS,
+            "dealer_po_number": "PO-7731",
+            "shipping_address": ship_to,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["total_amount"] == pytest.approx(90.0)
+    assert body["line_items"]["items"] == SAMPLE_ITEMS
+    assert body["line_items"]["_meta"] == {"dealer_po_number": "PO-7731", "shipping_address": ship_to}
+
+    # The stored row reads back the same through the detail endpoint.
+    detail = dealer_client.get(f"/api/dealer/orders/{body['id']}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["line_items"]["_meta"]["dealer_po_number"] == "PO-7731"
+    assert detail.json()["line_items"]["_meta"]["shipping_address"] == ship_to
+
+
+def test_place_order_without_meta_keeps_bare_list(dealer_client):
+    """Control: with neither field the items are stored as the bare list, as before."""
+    resp = dealer_client.post(
+        "/api/dealer/orders",
+        json={"distributor_tenant_id": DIST_A, "items": SAMPLE_ITEMS},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["total_amount"] == pytest.approx(90.0)
+    assert body["line_items"] == SAMPLE_ITEMS
+
+
+def test_create_dealer_order_envelope_without_items_totals_zero(order_db):
+    """An envelope with no items key is a zero-total order, not a crash on '_meta'."""
+    from gdx_dispatch.modules.distributor.service import create_dealer_order
+
+    order = create_dealer_order(DEALER_A, DIST_A, {"_meta": {"dealer_po_number": "PO-1"}}, None, order_db)
+    assert float(order.total_amount) == 0.0
+
+
 def test_pending_orders_list(order_db):
     """Query for pending orders returns only orders with status 'pending'."""
     from gdx_dispatch.modules.distributor.models import DealerOrder

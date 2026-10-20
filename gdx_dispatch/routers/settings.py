@@ -6,7 +6,7 @@ import re
 import zoneinfo
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
@@ -35,8 +35,10 @@ from gdx_dispatch.core.time_off import (
 from gdx_dispatch.core.time_off import (
     MAX_MINUTES_PER_DAY,
     MIN_MINUTES_PER_DAY,
+    VACATION_YEAR_POLICIES,
     holiday_calendar,
     normalize_holiday_calendar,
+    vacation_year_policy_out,
 )
 from gdx_dispatch.models.tenant_models import AppSettings, CompanyModuleGrant
 
@@ -94,6 +96,12 @@ MAX_VACATION_ALLOWANCE_HOURS = Decimal("8784")
 def allowance_hours_out(value: Decimal | None) -> float | None:
     """A stored allowance as JSON: hours as a number, or null when unset."""
     return None if value is None else float(value)
+
+
+# Which year a vacation allowance counts over (GDXA-1827, Doug 2026-10-19):
+# each company chooses. The policies, their fallback and the year's first day
+# live in core/time_off, which every balance reader uses (GDXA-1855/1856).
+VacationYearPolicy = Literal["calendar_year", "hire_anniversary"]
 
 
 class SettingsPatchIn(BaseModel):
@@ -156,6 +164,16 @@ class SettingsPatchIn(BaseModel):
     vacation_allowance_hours: Decimal | None = Field(
         default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
     )
+    # GDXA-1827: the year that allowance counts over. Not nullable: the column
+    # always holds a policy, so an explicit null is refused, not stored.
+    vacation_year_policy: VacationYearPolicy | None = None
+
+    @field_validator("vacation_year_policy")
+    @classmethod
+    def _vacation_year_policy(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError(f"vacation_year_policy must be one of: {', '.join(VACATION_YEAR_POLICIES)}")
+        return value
 
     @field_validator("google_review_url")
     @classmethod
@@ -296,6 +314,9 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "vacation_allowance_hours": allowance_hours_out(
             getattr(row, "vacation_allowance_hours", None)
         ),
+        "vacation_year_policy": vacation_year_policy_out(
+            getattr(row, "vacation_year_policy", None)
+        ),
     }
 
 
@@ -433,6 +454,10 @@ def patch_settings(
         )
         if previous != audit_updates["vacation_allowance_hours"]:
             audit_updates["vacation_allowance_hours_previous"] = previous
+    if "vacation_year_policy" in updates:
+        previous = vacation_year_policy_out(row.vacation_year_policy)
+        if previous != updates["vacation_year_policy"]:
+            audit_updates["vacation_year_policy_previous"] = previous
     for key in (
         "company_name", "address", "phone", "email", "logo", "timezone",
         "primary_color", "secondary_color", "google_review_url",
@@ -446,6 +471,7 @@ def patch_settings(
         "payroll_autosend_enabled", "payroll_autosend_hour",
         "holiday_calendar", "time_off_default_minutes",
         "time_off_counts_toward_overtime", "vacation_allowance_hours",
+        "vacation_year_policy",
     ):
         if key in updates:
             setattr(row, key, updates[key])

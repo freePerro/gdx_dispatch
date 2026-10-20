@@ -261,6 +261,16 @@ class TestJobDetail:
         assert body["site_address_missing"] is True
         assert body["navigation_link"] is None
 
+    def test_detail_carries_lifecycle_stage(self, app_and_db):
+        """The phone's pill and no-date nudge read the stage (GDXA-1942)."""
+        client, db = app_and_db
+        c = _seed(db)
+        j = _job(db, c.id)
+        j.lifecycle_stage = "completed"
+        db.commit()
+        body = client.get(f"/api/mobile/job/{j.id.hex}").json()["job"]
+        assert body["lifecycle_stage"] == "completed"
+
 
 # ── /api/mobile/jobs list ─────────────────────────────────────────────
 

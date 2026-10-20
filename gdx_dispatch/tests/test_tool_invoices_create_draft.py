@@ -11,7 +11,15 @@ import pytest
 
 import gdx_dispatch.core.mcp_tools.invoices_create_draft  # noqa: F401
 from gdx_dispatch.core.mcp_invoke import invoke_tool
-from gdx_dispatch.core.mcp_registry import get_tool
+from gdx_dispatch.core.mcp_registry import get_tool, repopulate_from_cache
+
+
+@pytest.fixture(autouse=True)
+def _registered():
+    # The tool registers only at import, and some sibling files (test_mcp_invoke
+    # among them) clear the registry on teardown; any ordering that runs one of
+    # them first leaves every invoke_tool call here at tool_not_found.
+    repopulate_from_cache()
 
 
 @dataclass
@@ -72,6 +80,9 @@ async def test_confirm_call_proceeds_to_handler():
         {"job_id": jid},
         principal=p, db=db, approval_ref="tok_abc",
     )
-    # On confirm: handler ran. Result may be ok or fail-with-different-error
-    # (e.g. mock db can't fully simulate insert). Contract: NOT approval_required.
-    assert r.error_type != "approval_required"
+    # On confirm the handler runs and REFUSES (GDXA-1849): nothing backs this
+    # tool yet, so it must not come back looking like a success.
+    assert r.ok is False
+    assert r.error_type == "execution_error"
+    assert "not wired" in r.audit_row["error_detail"]
+    assert not db.commit.called

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import time
+from datetime import date, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -38,6 +38,7 @@ from gdx_dispatch.routers.auth.core import (
     PASSWORD_RESET_NOT_SENT_MESSAGES,
     PasswordResetEmailNotSent,
     allowed_while_password_change_required,
+    login_lock_until,
     send_password_reset_link,
 )
 from gdx_dispatch.routers.settings import MAX_VACATION_ALLOWANCE_HOURS, allowance_hours_out
@@ -92,6 +93,18 @@ class UserPatchIn(BaseModel):
     vacation_allowance_hours: Decimal | None = Field(
         default=None, ge=0, le=MAX_VACATION_ALLOWANCE_HOURS, decimal_places=2
     )
+    # GDXA-1827: the column existed with no writer. The anniversary vacation
+    # year counts from it (core/time_off.vacation_year_start). Null clears.
+    hire_date: date | None = None
+
+    @field_validator("hire_date")
+    @classmethod
+    def _hire_date(cls, value: date | None) -> date | None:
+        # A hire date up to a year ahead covers an offer already accepted; a
+        # typed year beyond that, or before 1900, is a typo, not a hire.
+        if value is not None and not date(1900, 1, 1) <= value <= date.today() + timedelta(days=366):
+            raise ValueError("hire_date must be between 1900-01-01 and one year from today")
+        return value
 
 
 class SelfPatchIn(BaseModel):
@@ -190,6 +203,10 @@ def _serialize(u: User) -> dict[str, Any]:
         "certifications": u.certifications or "",
         # NULL = inherit AppSettings.vacation_allowance_hours.
         "vacation_allowance_hours": allowance_hours_out(u.vacation_allowance_hours),
+        "hire_date": u.hire_date.isoformat() if u.hire_date else None,
+        # Live login lockout (GDXA-1995) — the Users page shows it as Locked
+        # and its Unlock clears it; null once it has lapsed.
+        "locked_until": lock.isoformat() if (lock := login_lock_until(u)) else None,
     }
 
 
@@ -374,7 +391,9 @@ def update_user(user_id: str, payload: UserPatchIn, request: Request, user: dict
     u = _get_user_or_404(db, tid, user_id)
     data = payload.model_dump(exclude_unset=True)
     updates = _requested_updates(
-        data, ("phone", "route_start_address", "shift_start", "shift_end", "workdays", "vacation_allowance_hours")
+        data,
+        ("phone", "route_start_address", "shift_start", "shift_end", "workdays",
+         "vacation_allowance_hours", "hire_date"),
     )
     if "email" in data and data["email"]:
         updates["email"] = ("email", data["email"].lower().strip())
@@ -401,7 +420,7 @@ def _audit_value(value: Any) -> Any:
     """A column value in the JSON shape the audit trail stores."""
     if isinstance(value, Decimal):
         return allowance_hours_out(value)
-    if isinstance(value, time):
+    if isinstance(value, (time, date)):
         return value.isoformat()
     return value
 
@@ -687,7 +706,8 @@ def lockout_user(user_id: str, payload: LockoutIn, request: Request, user: dict 
 
 @router.post("/{user_id}/unlock", response_model=None, dependencies=[Depends(require_permission("users.write"))])
 def unlock_user(user_id: str, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Reverse a prior lockout. Sets active=true and writes a `user_unlocked`
+    """Reverse a prior lockout. Sets active=true, lifts a live login lockout
+    (too many failed passwords, GDXA-1995) and writes a `user_unlocked`
     audit row. The currently-revoked refresh family stays revoked (the
     user will sign in fresh on next login) — that's intentional.
     Authorization: admin or owner only (same gate as `/lockout`).
@@ -695,15 +715,19 @@ def unlock_user(user_id: str, request: Request, user: dict = Depends(get_current
     _require_lockout_actor(user)
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
-    if u.active is True:
+    login_lock = login_lock_until(u)
+    if u.active is True and login_lock is None:
         raise HTTPException(status_code=409, detail="User is already active")
     u.active = True
+    u.failed_login_count = 0
+    u.locked_until = None
     u.updated_at = utcnow()
     db.commit()
     _audit(
         db, request=request, user=user, action="user_unlocked",
         entity_id=str(u.id),
-        details={"unlocked_by": _user_id(user)},
+        details={"unlocked_by": _user_id(user),
+                 "login_lock_cleared": login_lock.isoformat() if login_lock else None},
     )
     return _serialize(u)
 

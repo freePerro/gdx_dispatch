@@ -40,8 +40,11 @@ on. Anything not listed here is internal and may change.
 8. **Close out** — Phase 2.2: tap "Close out" → financial summary +
    "Generate & email invoice" sends the invoice straight from the
    truck. Office reconciles payment.
-9. **End of day** — Phase 4.2: today view's last card flips to
-   "Day wrap" — jobs done, hours, parts requested, callbacks scheduled.
+9. **End of day** — Phase 4.2: the Day summary button (bar-chart icon)
+   in the Today's Route header opens `/mobile/summary` — jobs done, hours,
+   parts requested, invoiced, tomorrow's first stop, with a date picker to
+   look back. (The wrap card that used to flip in on Today went in #396,
+   2026-08-22; GDXA-1726 restored the way in.)
 
 ## Routes
 
@@ -64,7 +67,9 @@ SQL.
 - `POST /api/mobile/today/reorder` — drag-reorder
 - `POST /api/mobile/jobs/{id}/en-route` — advance state
 - `POST /api/mobile/jobs/{id}/arrived` — geo-tagged arrival
-- `POST /api/mobile/jobs/{id}/complete` — completion (with signature)
+- Completion is `POST /api/jobs/{id}/closeout` (the closeout sheet). The old
+  `POST /api/mobile/jobs/{id}/complete` was deleted 2026-10-19 (GDXA-1937): it
+  set `dispatch_status='done'` without moving `lifecycle_stage`.
 
 ### Notes / photos / signatures (per-tech attribution)
 - `POST /api/mobile/jobs/{id}/notes`
@@ -158,9 +163,7 @@ override → catalog default. The admin UI at
 `/admin/feature-settings/tech-mobile` renders the catalog form.
 
 Settings used by mobile (non-exhaustive):
-- `tech_mobile.signature_required_completion`
 - `tech_mobile.signature_required_quote`
-- `tech_mobile.signature_surface` (`phone_handoff` / `customer_link`)
 - `tech_mobile.drag_reorder_authority`
 - `tech_mobile.estimate_validity_days`
 - `tech_mobile.quote_decline_reasons` (list[string])
@@ -177,7 +180,10 @@ is `push_fallback_mode`), `quote_tax_shape`, `offline_mode_enabled`,
 settings are `gps_arrival_distance_m` and `gps_arrival_dwell_seconds`),
 `callback_compensation`, `callback_window_days` (callback detection in
 `routers/jobs.py` uses a fixed 90 days), `diagnosis_required`, `hazard_photo_required`,
-`receipt_photo_required`, `break_tracking`.
+`receipt_photo_required`, `break_tracking`. Deleted under GDXA-1937 with the
+only route that read them: `signature_required_completion` and
+`signature_surface`; the closeout's signature gate is the workflow flag
+`require_signature_on_complete`.
 
 ## Offline sync contract (Phase 3.1)
 

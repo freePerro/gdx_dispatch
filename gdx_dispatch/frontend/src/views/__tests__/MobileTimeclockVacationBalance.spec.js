@@ -1,13 +1,15 @@
 /**
- * MobileTimeclockView — "Vacation <year>" above the phone's Time off section
- * (GDXA-703, part 4 of GDXA-576). Techs reach the clock on their phone
+ * MobileTimeclockView — "Vacation <window>" above the phone's Time off section
+ * (GDXA-703, part 4 of GDXA-576), through the shared MyVacationLine (GDXA-1903;
+ * its own spec pins the label rules). Techs reach the clock on their phone
  * (/timeclock redirects to /mobile/timeclock), so this is where they see it.
  *
  * Pins: my own balance is read (no technician named); left / used / still
  * ahead render; "no allowance set" is words, not 0h left; an overdrawn
  * balance is a danger tag; a failed read says so; a 403 (viewer: no vacation
  * of their own) hides the line instead (GDXA-760); "still ahead" reads as part
- * of "used", not added to it (GDXA-760); a request change re-reads.
+ * of "used", not added to it (GDXA-760); a request change re-reads; an
+ * anniversary year is labelled by its window, not its start year (GDXA-1903).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -52,6 +54,7 @@ const MINE = {
   technician_id: 'me', technician_name: 'Me', year: 2026, as_of: '2026-05-20',
   allowance_hours: 40, allowance_source: 'person', used_hours: 16, taken_hours: 8,
   scheduled_hours: 8, remaining_hours: 24, overdrawn: false,
+  window_start: '2026-01-01', window_end: '2026-12-31',
 };
 
 function mockApi({ balance = MINE, fail = false, status = 503 } = {}) {
@@ -87,48 +90,61 @@ describe('MobileTimeclockView — my vacation balance', () => {
   it('reads my own balance and shows used, still ahead and left', async () => {
     const w = await mountView();
     expect(apiGet).toHaveBeenCalledWith('/api/timeclock/time-off/balances', { suppressErrorToast: true });
-    const line = w.find('[data-test="mt-vacation-balance"]').text();
+    const line = w.find('[data-testid="my-vacation-balance"]').text();
     expect(line).toContain('Vacation 2026');
     expect(line).toContain('16h used');
     expect(line).toContain('(8h of it still ahead)');
     expect(line).toContain('of 40h');
-    const left = w.find('[data-test="mt-vacation-remaining"]');
+    const left = w.find('[data-testid="my-vacation-remaining"]');
     expect(left.text()).toBe('24h left');
     expect(left.attributes('data-severity')).toBe('success');
+  });
+
+  it('labels an anniversary year by its window, not the year it starts in', async () => {
+    const w = await mountView({ balance: { ...MINE, year: 2025, window_start: '2025-06-03', window_end: '2026-06-02' } });
+    const line = w.find('[data-testid="my-vacation-balance"]').text();
+    expect(line).toContain('Vacation Jun 3 2025 – Jun 2 2026:');
+    expect(line).not.toContain('Vacation 2025');
+  });
+
+  it('carries the phone layout classes onto the shared line', async () => {
+    const w = await mountView();
+    const cls = w.find('[data-testid="my-vacation-balance"]').classes();
+    expect(cls).toEqual(expect.arrayContaining(['vacation-line', 'entries-section', 'mobile-vacation']));
   });
 
   it('sits above the Time off panel', async () => {
     const w = await mountView();
     const html = w.html();
-    expect(html.indexOf('mt-vacation-balance')).toBeGreaterThan(-1);
-    expect(html.indexOf('mt-vacation-balance')).toBeLessThan(html.indexOf('class="panel'));
+    expect(html.indexOf('my-vacation-balance')).toBeGreaterThan(-1);
+    expect(html.indexOf('my-vacation-balance')).toBeLessThan(html.indexOf('class="panel'));
   });
 
   it('says "no allowance set" rather than 0h left', async () => {
     const w = await mountView({ balance: { ...MINE, allowance_hours: null, remaining_hours: null, scheduled_hours: 0 } });
-    const line = w.find('[data-test="mt-vacation-balance"]').text();
+    const line = w.find('[data-testid="my-vacation-balance"]').text();
     expect(line).toContain('no allowance set');
     expect(line).not.toContain('still ahead');
-    expect(w.find('[data-test="mt-vacation-remaining"]').exists()).toBe(false);
+    expect(w.find('[data-testid="my-vacation-remaining"]').exists()).toBe(false);
   });
 
   it('shows an overdrawn balance as negative, in danger', async () => {
     const w = await mountView({ balance: { ...MINE, used_hours: 48, remaining_hours: -8, overdrawn: true } });
-    const left = w.find('[data-test="mt-vacation-remaining"]');
+    const left = w.find('[data-testid="my-vacation-remaining"]');
     expect(left.text()).toBe('-8h left');
     expect(left.attributes('data-severity')).toBe('danger');
   });
 
   it('says the read failed instead of showing a balance', async () => {
     const w = await mountView({ fail: true });
-    expect(w.find('[data-test="mt-vacation-error"]').exists()).toBe(true);
-    expect(w.find('[data-test="mt-vacation-balance"]').exists()).toBe(false);
+    expect(w.find('[data-testid="my-vacation-error"]').exists()).toBe(true);
+    expect(w.find('[data-testid="my-vacation-balance"]').exists()).toBe(false);
   });
 
   it('hides the line on a 403 rather than saying the read failed', async () => {
     const w = await mountView({ fail: true, status: 403 });
-    expect(w.find('[data-test="mt-vacation-error"]').exists()).toBe(false);
-    expect(w.find('[data-test="mt-vacation-balance"]').exists()).toBe(false);
+    expect(w.find('[data-testid="my-vacation-error"]').exists()).toBe(false);
+    expect(w.find('[data-testid="my-vacation-balance"]').exists()).toBe(false);
   });
 
   it('re-reads the balance when a time-off request changes', async () => {

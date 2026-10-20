@@ -40,9 +40,11 @@ from gdx_dispatch.core.pay_periods import (
     settings_config,
     shop_day_of,
     shop_today,
+    shop_tz_name,
     shop_tz_name_from_settings,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.timeclock_policy import AUTO_CLOSE_NOTE
 from gdx_dispatch.core.timesheet_delivery import BLOCKED_UNREADABLE, SendOutcome, send_period_timesheet
 from gdx_dispatch.core.timesheet_export import (
     build_csv,
@@ -71,11 +73,13 @@ log = logging.getLogger(__name__)
 # The /status response surfaces both to the mobile UI so the warning text
 # tracks whatever we set here. Kept as floats (hours).
 #
-# Defined in core/timesheet_hours.py and imported at the top of this module
+# Defined in core/timeclock_policy.py and imported at the top of this module
 # (so `from ...routers.timeclock import MAX_SHIFT_HOURS` still resolves): the
 # export and the emailed timesheet apply the same ceiling, and two copies of
 # "how long is a possible shift" is how a row flagged on screen sails through
-# the file unflagged.
+# the file unflagged. AUTO_CLOSE_NOTE lives there too. The celery sweep must
+# not import this router: celery_app loads it during model import, and the
+# cycle through this module once nulled the webhook tasks (GDXA-1888).
 
 # D2 (tech weekly timesheet, 2026-08-13): how far back a tech may correct or
 # add their OWN shifts. Dispatch/admin are exempt — the office corrects
@@ -286,8 +290,6 @@ def _enforce_self_service_duration(current_user: Any, minutes: int | None) -> No
             ),
         )
 
-
-AUTO_CLOSE_NOTE = "Auto-closed — end time unknown, needs office review"
 
 
 def _append_note(existing: str | None, addition: str) -> str:
@@ -1061,7 +1063,7 @@ def pay_periods(
     """
     _ = _tenant_id(request)
     row = db.query(AppSettings).first()
-    tz_name = (row.timezone if row and row.timezone else "America/New_York")
+    tz_name = shop_tz_name(row)
     cfg = settings_config(row)
     today = shop_today(tz_name)
 
@@ -1134,7 +1136,7 @@ def _export_context(
         raise HTTPException(status_code=422, detail="end must be on or after start")
     tenant_id = _tenant_id(request)
     row = db.query(AppSettings).first()
-    tz_name = (row.timezone if row and row.timezone else "America/New_York")
+    tz_name = shop_tz_name(row)
     cfg = settings_config(row)
     period = PayPeriod(start, end)
 
@@ -1902,39 +1904,10 @@ def _tech_names(db: Session, tenant_id: str, ids: set[str]) -> dict[str, str]:
     """
     if not ids:
         return {}
-    try:
-        # SAVEPOINT: this function swallows its own failure, which is exactly
-        # the shape that strands a caller on Postgres — `_export_context` goes
-        # on to build the whole timesheet on this session. Containing it here
-        # rather than at the call site is deliberate; see rule 5 there.
-        #
-        # DUPLICATE-BLOCK BLESSING, recorded here because two hex strings in
-        # `.duplicate_block_baseline` are not a reviewable diff. Adding the
-        # `with contained_read(db):` line made this block byte-identical to two
-        # siblings that were already near-clones of it — the same
-        # `SELECT id::text, COALESCE(NULLIF(full_name,''), ...) FROM users`
-        # label lookup in `timeclock_roster` below and in
-        # `tasks/payroll_timesheet.py::_names`. GDXA-164 blessed the two
-        # resulting hashes (`fb2a4ce0e4a46e98`, 3 copies;
-        # `c35a60d213d7afd1`, 2 copies) with `--baseline --allow-new` rather
-        # than extracting a shared `_user_labels()`: the three have three
-        # different WHERE clauses and live in two routers and a task, so that
-        # is a refactor with its own test surface, not a containment change.
-        # The duplication predates this commit; only the hashes are new.
-        with contained_read(db):
-            rows = db.execute(
-                text(
-                    "SELECT id::text AS id, "
-                    "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
-                    "FROM users WHERE company_id = :tenant_id AND id::text = ANY(:ids)"
-                ),
-                {"tenant_id": tenant_id, "ids": list(ids)},
-            ).mappings().all()
-    except SQLAlchemyError:
-        # Never fail the card over a cosmetic label (SQLite has no ANY()).
-        log.exception("labor_exception_names_failed", extra={"tenant_id": tenant_id})
-        return {}
-    return {str(r["id"]): r["label"] for r in rows if r["label"]}
+    # `user_labels` holds its own SAVEPOINT and swallows its own failure: never
+    # fail the card over a cosmetic label, and never strand `_export_context`,
+    # which goes on to build the whole timesheet on this session (rule 5).
+    return time_off_rules.user_labels(db, tenant_id, ids, log_event="labor_exception_names_failed")
 
 
 class TimeclockRosterItem(BaseModel):
@@ -1988,31 +1961,14 @@ def timeclock_roster(
         raise HTTPException(status_code=500, detail="Roster lookup failed") from None
 
     # Active staff, so a person with no entries yet is still pickable.
-    active: dict[str, str] = {}
-    try:
-        # SAVEPOINT (GDXA-164 sibling sweep): `_tech_names` reads this same
-        # session immediately after the swallow, and `contained_read` cannot
-        # rescue a caller that is ALREADY poisoned — so without containment
-        # here the roster loses BOTH label sources on Postgres, not the one
-        # this handler is willing to lose.
-        with contained_read(db):
-            rows = db.execute(
-                text(
-                    "SELECT id::text AS id, "
-                    "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
-                    # COALESCE, not `active = true`: NULL means active everywhere
-                    # else in this codebase (users._serialize reads NULL as True),
-                    # and `= true` would silently make those people unpickable.
-                    "FROM users WHERE company_id = :tenant_id AND deleted_at IS NULL "
-                    "AND COALESCE(active, true) = true"
-                ),
-                {"tenant_id": tenant_id},
-            ).mappings().all()
-        active = {str(r["id"]): r["label"] for r in rows if r["label"]}
-    except SQLAlchemyError:
-        # Cosmetic-only degradation, same rule as _tech_names: ids still resolve
-        # to rows, they just carry no label.
-        log.exception("timeclock_roster_active_failed", extra={"tenant_id": tenant_id})
+    # Contained inside `user_labels` (GDXA-164 sibling sweep): `_tech_names`
+    # reads this same session right after, and `contained_read` cannot rescue
+    # a caller that is ALREADY poisoned. A failure degrades to no labels; ids
+    # still resolve to rows. `active_only` reads a NULL `active` as active, as
+    # `users._serialize` does, so those people stay pickable.
+    active = time_off_rules.user_labels(
+        db, tenant_id, active_only=True, log_event="timeclock_roster_active_failed"
+    )
 
     names = _tech_names(db, tenant_id, clocked_ids)
     items = [

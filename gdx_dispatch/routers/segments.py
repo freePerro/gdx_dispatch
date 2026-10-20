@@ -53,7 +53,7 @@ BUILTIN_BY_ID = {segment["id"]: segment for segment in BUILTIN_SEGMENTS}
 
 
 class SegmentCreateIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     name: str = Field(..., min_length=1, max_length=120)
     rules: dict[str, Any]
@@ -70,7 +70,7 @@ class SegmentPatch(BaseModel):
     ``rules``. See #455.
     """
 
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
     rules: dict[str, Any] | None = None

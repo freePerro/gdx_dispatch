@@ -28,7 +28,7 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import Technician, TechUnavailability, User
+from gdx_dispatch.models.tenant_models import Technician, User
 from gdx_dispatch.routers import technicians as technicians_mod
 from gdx_dispatch.routers.auth.core import _issue
 
@@ -98,8 +98,6 @@ def _writes(tech_id: str) -> list[tuple[str, str, dict]]:
         ("POST", "/api/technicians", {"user_id": "u1", "name": "Intruder"}),
         ("PATCH", f"/api/technicians/{tech_id}", {"hourly_rate": 999.0}),
         ("POST", f"/api/technicians/{tech_id}/skills", {"skill": "injected"}),
-        ("POST", f"/api/technicians/{tech_id}/unavailability",
-         {"start_at": "2026-10-20T08:00:00Z", "end_at": "2026-10-20T17:00:00Z"}),
         ("DELETE", f"/api/technicians/{tech_id}", {}),
     ]
 
@@ -111,12 +109,11 @@ def _state(SessionLocal) -> tuple:
             (t.id, t.name, t.skills, float(t.hourly_rate or 0), t.deleted_at is None)
             for t in db.execute(select(Technician)).scalars()
         )
-        unavail = db.execute(select(TechUnavailability)).scalars().all()
         audits = db.execute(select(AuditLog)).scalars().all()
-        return techs, len(unavail), len(audits)
+        return techs, len(audits)
 
 
-@pytest.mark.parametrize("index", range(5), ids=["create", "patch", "skill", "unavailability", "delete"])
+@pytest.mark.parametrize("index", range(4), ids=["create", "patch", "skill", "delete"])
 def test_a_write_with_no_token_is_401_and_changes_nothing(env, index):
     method, path, body = _writes(env["existing_id"])[index]
     before = _state(env["db"])
@@ -125,7 +122,7 @@ def test_a_write_with_no_token_is_401_and_changes_nothing(env, index):
     assert _state(env["db"]) == before
 
 
-@pytest.mark.parametrize("index", range(5), ids=["create", "patch", "skill", "unavailability", "delete"])
+@pytest.mark.parametrize("index", range(4), ids=["create", "patch", "skill", "delete"])
 def test_a_write_by_a_technician_is_403_and_changes_nothing(env, index):
     method, path, body = _writes(env["existing_id"])[index]
     before = _state(env["db"])
@@ -141,7 +138,7 @@ def test_an_admin_can_write_and_every_audit_row_names_the_admin(env):
     created = client.post("/api/technicians", json={"user_id": env["admin_id"], "name": "New Tech"}, headers=hdr)
     assert created.status_code == 201, created.text
     tech_id = created.json()["id"]
-    expected = [201, 200, 200, 201, 200]
+    expected = [201, 200, 200, 200]
     for (method, path, body), code in zip(_writes(tech_id)[1:], expected[1:], strict=True):
         resp = client.request(method, path, json=body, headers=hdr)
         assert resp.status_code == code, (method, path, resp.status_code, resp.text)
@@ -150,14 +147,25 @@ def test_an_admin_can_write_and_every_audit_row_names_the_admin(env):
         rows = db.execute(select(AuditLog.action, AuditLog.user_id)).all()
     actions = {a for a, _ in rows}
     assert {"technician_created", "technician_updated", "add_technician_skill",
-            "add_technician_unavailability", "delete_technician"} <= actions
+            "delete_technician"} <= actions
     assert {str(u) for _, u in rows} == {env["admin_id"]}, rows
 
 
 @pytest.mark.parametrize("path", ["/api/technicians", "/api/technicians/skills", "/api/technicians/{id}",
-                                  "/api/technicians/{id}/skills", "/api/technicians/{id}/availability"])
+                                  "/api/technicians/{id}/skills"])
 def test_a_read_needs_a_user_and_any_user_may_read(env, path):
     path = path.replace("{id}", env["existing_id"])
     assert env["client"].get(path).status_code == 401
     # Mobile and dispatch screens list technicians for the field tier.
     assert env["client"].get(path, headers=env["tech"]).status_code == 200
+
+
+def test_the_duplicate_unavailability_routes_are_gone(env):
+    """GDXA-1828: time off is one record, `TimeOffRequest`. The technicians
+    router's own unavailability read and write are removed, not re-gated."""
+    tid = env["existing_id"]
+    client, hdr = env["client"], env["admin"]
+    assert client.get(f"/api/technicians/{tid}/availability", headers=hdr).status_code in (404, 405)
+    resp = client.post(f"/api/technicians/{tid}/unavailability", headers=hdr,
+                       json={"start_at": "2026-10-20T08:00:00Z", "end_at": "2026-10-20T17:00:00Z"})
+    assert resp.status_code in (404, 405)

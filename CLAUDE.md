@@ -226,7 +226,11 @@ buttons wired to stubs. Before calling anything done:
 - QuickBooks is being phased out: never schedule new QB syncs; backfills go
   into this system, not QB.
   QB API reads are metered, writes are free.
-- **Commission is plugin-bound and out of core** — never fix it in core.
+- **Commission is leaving core** (not yet a plugin; plan
+  `commission-as-a-plugin-plan` under `docs/design/`). The commission code
+  still in core — `routers/commission.py` and payroll's commission-rates
+  endpoints — is frozen: do not compute, repair or extend it. Never fix
+  commission in core.
 - The Midland operator/parts multiplier is an open question with the
   distributor; do not invent one.
 
@@ -262,6 +266,19 @@ was evaporating between sessions. Each entry carries the date observed, the
 file, and why it matters; entries are dated observations, so re-verify against
 the code before acting on one. When Doug rules, the entry moves to that file's
 "Ruled / closed" section with the decision.
+
+**Every entry says who hits it** (Doug, 2026-10-19): a `Who hits it:` line
+naming who would actually run into the problem (a customer, a tech, the
+office, the owner, or "nobody today") and how. For example: "Who hits it: a
+tech on a phone, when they tap Complete with the quick-capture button over
+it." An entry without that line is not fed to the agents. The 2026-10-19
+review found 329 open entries, 16 of them worth doing now. Most of the rest
+were "nobody today" written as if it were a defect.
+
+**Tooling notes go to `TOOLING_NOTES.md`, not the ledger.** <!-- untracked by design, like FOUND_NOT_FILED.md; link-ok --> That covers CI, the test
+matrix, Paperclip agents, skills, hooks and the local environment. It is
+git-ignored the same way and uses the same entry format. The ledger is for
+things in the product.
 
 ## Close every work turn with
 

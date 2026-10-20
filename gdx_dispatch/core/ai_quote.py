@@ -18,7 +18,7 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Column, DateTime, Integer, Numeric, String, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.types import Uuid
@@ -487,7 +487,9 @@ class QuoteRequest(BaseModel):
 
 
 class LearnFromJobRequest(BaseModel):
-    job_type: str
+    # QuoteTemplate.job_type is String(100): unbounded, an over-long value
+    # failed the commit and answered 500 instead of 422 (GDXA-1808 sweep).
+    job_type: str = Field(min_length=1, max_length=100)
     parts_cost: float
     labor_hours: float
     final_price: float

@@ -64,10 +64,10 @@
             <InputText v-model="form.tech_user_id" />
           </div>
           <div class="form-field"><label>Period start</label>
-            <Calendar v-model="form.period_start" showTime hourFormat="12" />
+            <DatePicker v-model="form.period_start" showTime hourFormat="12" />
           </div>
           <div class="form-field"><label>Period end</label>
-            <Calendar v-model="form.period_end" showTime hourFormat="12" />
+            <DatePicker v-model="form.period_end" showTime hourFormat="12" />
           </div>
           <div class="form-field"><label>Hours paid</label>
             <InputNumber v-model="form.hours_paid" :minFractionDigits="2" :maxFractionDigits="2" :min="0" />
@@ -93,7 +93,7 @@ import { useApiWithToast as useApi } from "../../composables/useApiWithToast";
 import { useDestructiveConfirm } from "../../composables/useDestructiveConfirm";
 import { formatDate as fmtDate, formatMoney } from "../../composables/useFormatters";
 import Button from "primevue/button";
-import Calendar from "primevue/calendar";
+import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";

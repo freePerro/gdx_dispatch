@@ -52,8 +52,9 @@ Live list: `python -m gdx_dispatch.tools.agent_ownership_scan --owner plugins-ho
   (`test_plugin_registry_delete_truthful`); a plugin cannot escape its
   permissions (`test_plugin_permissions`) or its filename guard
   (`test_admin_plugins_filename_guard`).
-- **Commission lives here as a plugin, not in core**
-  (plan `commission-as-a-plugin-plan` under `docs/design/`).
+- **Commission is to be rebuilt here as a plugin; no commission plugin exists
+  yet** (plan `commission-as-a-plugin-plan` under `docs/design/`, PLAN). Until
+  it does, the commission code still in core is frozen, not extended.
 - The decisions: ADR-013 (in-app install, registry) and ADR-014 (browser
   stream) under `gdx_dispatch/docs/decisions/`;
   `gdx_dispatch/docs/plugin_file_install.md`,

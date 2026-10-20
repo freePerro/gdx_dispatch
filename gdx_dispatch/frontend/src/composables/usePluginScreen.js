@@ -26,6 +26,57 @@ export function cellValue(row, field) {
   return field.split('.').reduce((acc, part) => (acc == null ? acc : acc[part]), row);
 }
 
+// Tab text per screen type when the manifest omits `title` (it is optional:
+// the eventlog and cellcomms help screens ship without one).
+const _TYPE_LABELS = {
+  list: 'List', settings: 'Settings', upload: 'Upload', help: 'Help', browser: 'Workspace',
+};
+
+/**
+ * Tab label for a manifest screen. A missing or blank `title` used to render
+ * an empty tab nobody could find; fall back to the screen's type, then to its
+ * position.
+ *
+ * Exported for the unit spec.
+ */
+export function screenLabel(screen, index = 0) {
+  const title = typeof screen?.title === 'string' ? screen.title.trim() : '';
+  if (title) return title;
+  return _TYPE_LABELS[screen?.type] || `Screen ${index + 1}`;
+}
+
+/**
+ * Text to show beside a form for a refused request. A 403 with no reason of
+ * its own (a plugin's bare `HTTPException(403)` arrives as `Forbidden`) gets
+ * the same plain sentence the api layer's toast uses. A FastAPI validation
+ * 422 arrives as its stringified `detail` list (the proxy passes the plugin's
+ * body through), so each entry becomes "field: msg" instead of raw JSON. Any
+ * other refusal shows the server's own reason.
+ *
+ * Exported for PluginScreen/BrowserStream and the unit spec.
+ */
+export function refusalText(e, fallback) {
+  const msg = typeof e?.message === 'string' ? e.message.trim() : '';
+  const jsonish = /^[[{]/.test(msg);
+  if (e?.status === 403 && (!msg || msg === 'Forbidden' || jsonish
+      || /^Request failed \(403\)$/.test(msg))) {
+    return "You don't have permission to do that.";
+  }
+  if (jsonish) {
+    let parsed;
+    try { parsed = JSON.parse(msg); } catch { return fallback; }
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    const lines = items
+      .filter((d) => d && typeof d.msg === 'string')
+      .map((d) => {
+        const field = Array.isArray(d.loc) ? d.loc[d.loc.length - 1] : '';
+        return field && field !== 'body' ? `${field}: ${d.msg}` : d.msg;
+      });
+    return lines.length ? lines.join('; ') : fallback;
+  }
+  return msg || fallback;
+}
+
 export function usePluginScreen(pluginKey, api) {
   const screens = ref([]);
   // Rows PER list screen, keyed by the screen's endpoint — a plugin may declare
@@ -143,17 +194,33 @@ export function usePluginScreen(pluginKey, api) {
 
   // Create against a SPECIFIC screen's create endpoint (defaults to the first
   // list for back-compat), then refresh just that screen's rows.
+  //
+  // Never throws: a refused POST (422 validation, 403 permission) used to reject
+  // through the form's submit handler into the ErrorBoundary and replace the
+  // whole page with "We hit an error" (GDXA-1873). Returns `{ ok, message }` so
+  // the form keeps what the user typed and says why on failure. The api layer
+  // has already toasted the refusal.
   async function create(values, screen) {
     const target = screen && screen.type === 'list' ? screen : _lists()[0];
     const endpoint = target?.create?.endpoint;
-    if (!endpoint) return;
-    await api.post(endpoint, values);
-    if (target?.endpoint) {
-      rowsByEndpoint.value = {
-        ...rowsByEndpoint.value,
-        [target.endpoint]: (await api.get(target.endpoint)) || [],
-      };
+    if (!endpoint) return { ok: false, message: 'This form has no create endpoint.' };
+    try {
+      await api.post(endpoint, values);
+    } catch (e) {
+      return { ok: false, message: refusalText(e, 'Not saved.') };
     }
+    // The row is saved; a failed refresh must not report the save as failed.
+    if (target?.endpoint) {
+      try {
+        rowsByEndpoint.value = {
+          ...rowsByEndpoint.value,
+          [target.endpoint]: (await api.get(target.endpoint)) || [],
+        };
+      } catch (e) {
+        error.value = e?.message || 'refresh failed';
+      }
+    }
+    return { ok: true };
   }
 
   // Upload one file to an `upload` screen's endpoint as multipart FormData

@@ -195,7 +195,6 @@ gdx_dispatch/core/unified_principal.py                       platform-core
 gdx_dispatch/core/user_display.py                            platform-core
 gdx_dispatch/core/validation.py                              platform-core
 gdx_dispatch/core/webhook_auth.py                            platform-core
-gdx_dispatch/core/webhook_delivery.py                        platform-core
 gdx_dispatch/core/webhook_logger.py                          platform-core
 gdx_dispatch/core/well_known_manifest.py                     platform-core
 gdx_dispatch/core/app_version.py                             platform-core
@@ -337,6 +336,7 @@ gdx_dispatch/core/invoice_invariants.py                      money-billing
 gdx_dispatch/core/invoice_paid.py                            money-billing
 gdx_dispatch/core/invoice_net_billed.py                      money-billing
 gdx_dispatch/core/invoice_tax.py                             money-billing
+gdx_dispatch/core/invoice_void.py                            money-billing
 gdx_dispatch/core/billing_lanes.py                           money-billing
 gdx_dispatch/core/billing_predicates.py                      money-billing
 gdx_dispatch/core/closeout_billing.py                        money-billing
@@ -397,7 +397,6 @@ gdx_dispatch/routers/service_agreements.py                   jobs-dispatch
 gdx_dispatch/routers/holding_areas.py                        jobs-dispatch
 gdx_dispatch/core/holding_areas.py                           jobs-dispatch
 gdx_dispatch/routers/checklists.py                           jobs-dispatch
-gdx_dispatch/routers/safety_checklist.py                     jobs-dispatch
 gdx_dispatch/routers/install_sheet.py                        jobs-dispatch
 gdx_dispatch/routers/maintenance.py                          jobs-dispatch
 gdx_dispatch/routers/notes.py                                jobs-dispatch
@@ -455,6 +454,7 @@ gdx_dispatch/frontend/src/components/CrewChangeDialog.vue     jobs-dispatch
 gdx_dispatch/frontend/src/composables/useCrewChange.js       jobs-dispatch
 gdx_dispatch/frontend/src/components/ScheduleDropDialog.vue   jobs-dispatch
 gdx_dispatch/frontend/src/composables/useScheduleDrop.js      jobs-dispatch
+gdx_dispatch/frontend/src/composables/useServerSearchSelect.js jobs-dispatch
 gdx_dispatch/frontend/src/components/DayOverflowDialog.vue    jobs-dispatch
 gdx_dispatch/frontend/src/utils/dayClose.js                  jobs-dispatch
 # The e2e suite's dispatch/jobs checks, so a fix to them routes here
@@ -549,6 +549,7 @@ gdx_dispatch/modules/reseller/*                              customers-crm
 gdx_dispatch/modules/locations/*                             customers-crm
 gdx_dispatch/services/customer_rolling_volume.py             customers-crm
 gdx_dispatch/tasks/customer_volume_refresh.py                customers-crm
+gdx_dispatch/tasks/winback_drain.py                          customers-crm
 gdx_dispatch/frontend/src/views/CustomersView.vue            customers-crm
 gdx_dispatch/frontend/src/views/CustomerDetailView.vue       customers-crm
 gdx_dispatch/frontend/src/views/CustomerDuplicatesView.vue   customers-crm
@@ -699,6 +700,7 @@ gdx_dispatch/core/time_off.py                                people-time
 gdx_dispatch/core/timesheet_delivery.py                      people-time
 gdx_dispatch/core/timesheet_export.py                        people-time
 gdx_dispatch/core/timesheet_hours.py                         people-time
+gdx_dispatch/core/timeclock_policy.py                        people-time
 gdx_dispatch/modules/timeclock/*                             people-time
 gdx_dispatch/modules/payroll/*                               people-time
 gdx_dispatch/tasks/payroll_timesheet.py                      people-time
@@ -715,10 +717,12 @@ gdx_dispatch/frontend/src/views/UserProfileView.vue          people-time
 gdx_dispatch/frontend/src/components/TimeEntryDialog.vue     people-time
 gdx_dispatch/frontend/src/components/TimeOffRequestDialog.vue people-time
 gdx_dispatch/frontend/src/components/TimeOffRequestPanel.vue people-time
+gdx_dispatch/frontend/src/components/MyVacationLine.vue      people-time
 gdx_dispatch/frontend/src/components/HolidayPostDialog.vue   people-time
 gdx_dispatch/frontend/src/components/TechEfficiencyPanel.vue people-time
 gdx_dispatch/frontend/src/composables/useWeeklyTimesheet.js  people-time
 gdx_dispatch/frontend/src/utils/hours.js                     people-time
+gdx_dispatch/frontend/src/utils/vacationWindow.js            people-time
 
 ## ---------------------------------------------------------------------------
 ## mobile-tech — the technician's phone: /api/mobile/* routers, every
@@ -749,11 +753,11 @@ gdx_dispatch/frontend/src/composables/useMobileTour.js       mobile-tech
 gdx_dispatch/frontend/src/composables/useOfficeAlertsKeeper.js mobile-tech
 gdx_dispatch/frontend/src/lib/offlineDb.js                   mobile-tech
 gdx_dispatch/frontend/src/lib/keyboardInset.js               mobile-tech
+gdx_dispatch/frontend/src/lib/jobStage.js                    mobile-tech
 gdx_dispatch/frontend/src/lib/serverConfig.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeBridge.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeCamera.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeGps.js                   mobile-tech
-gdx_dispatch/frontend/src/lib/nativePush.js                  mobile-tech
 gdx_dispatch/frontend/src/lib/officeAlerts.js                mobile-tech
 gdx_dispatch/frontend/src/components/OfficeAlertsToggle.vue  mobile-tech
 gdx_dispatch/frontend/src/lib/nativeBarcode.js               mobile-tech
@@ -773,7 +777,6 @@ gdx_dispatch/frontend/src/views/MobileSmsView.vue            comms-email-phone
 ## orders, vendor master, vendor on-order tracking, distributor ordering.
 ## ---------------------------------------------------------------------------
 gdx_dispatch/routers/inventory.py                            inventory-purchasing
-gdx_dispatch/routers/van_inventory.py                        inventory-purchasing
 gdx_dispatch/routers/parts_needed.py                         inventory-purchasing
 gdx_dispatch/routers/purchase_orders.py                      inventory-purchasing
 gdx_dispatch/routers/vendors.py                              inventory-purchasing
@@ -865,7 +868,7 @@ gdx_dispatch/core/mcp_protocol_adapter.py                    ai-mcp
 gdx_dispatch/core/mcp_registry.py                            ai-mcp
 gdx_dispatch/core/mcp_tool_descriptor.py                     ai-mcp
 gdx_dispatch/core/openapi_to_capabilities.py                 ai-mcp
-gdx_dispatch/core/recommendation_routes.py                   ai-mcp
+gdx_dispatch/core/next_action_routes.py                      ai-mcp
 gdx_dispatch/core/next_action.py                             ai-mcp
 gdx_dispatch/frontend/src/views/AIAssistantView.vue          ai-mcp
 gdx_dispatch/frontend/src/components/AIAssistantPanel.vue    ai-mcp

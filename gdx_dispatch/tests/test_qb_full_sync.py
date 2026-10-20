@@ -1668,7 +1668,7 @@ def test_s122_15_sync_all_customers_continues_on_permanent_error(db_session, mon
     async def fake_get_client(*a, **kw):
         return _StubQB()
 
-    monkeypatch.setattr(qb_tasks, "push_customer", fake_push)
+    monkeypatch.setattr(qb_tasks._sync, "push_customer", fake_push)
     monkeypatch.setattr(qb_tasks, "get_qb_client", fake_get_client)
     monkeypatch.setattr(qb_tasks, "_tenant_session", lambda tid: _NoopCtx(db_session))
 
@@ -1886,7 +1886,7 @@ def test_s122_17_sync_all_customers_only_pushes_dirty(db_session, monkeypatch):
 
     async def fake_get_client(*a, **kw): return _StubQB()  # noqa: E704
 
-    monkeypatch.setattr(qb_tasks, "push_customer", fake_push)
+    monkeypatch.setattr(qb_tasks._sync, "push_customer", fake_push)
     monkeypatch.setattr(qb_tasks, "get_qb_client", fake_get_client)
     monkeypatch.setattr(qb_tasks, "_tenant_session", lambda tid: _NoopCtx(db_session))
 
@@ -1944,7 +1944,7 @@ def test_s122_16_sync_all_customers_uses_single_qbclient_across_loop(db_session,
         return {"customer_id": customer_id, "qb_customer_id": "fake"}
 
     monkeypatch.setattr(qb_tasks, "get_qb_client", fake_get_client)
-    monkeypatch.setattr(qb_tasks, "push_customer", fake_push)
+    monkeypatch.setattr(qb_tasks._sync, "push_customer", fake_push)
     monkeypatch.setattr(qb_tasks, "_tenant_session", lambda tid: _NoopCtx(db_session))
 
     result = qb_tasks.sync_all_customers_task.run("tenant-s16")
@@ -2471,7 +2471,7 @@ def test_pull_invoices_adoption_imports_lines(db_session: Session, qb_connection
     assert out["adopted"] == 1
     lines = db_session.execute(select(IL).where(IL.invoice_id == inv.id)).scalars().all()
     assert len(lines) == 2, "adoption must import QB lines"
-    assert sum(l.line_total for l in lines) == Decimal("250")
+    assert sum(line.line_total for line in lines) == Decimal("250")
 
 
 def test_pull_invoices_update_branch_resyncs_lines(db_session: Session, qb_connection, mock_qb):
@@ -2498,7 +2498,7 @@ def test_pull_invoices_update_branch_resyncs_lines(db_session: Session, qb_conne
     asyncio.run(sync.pull_invoices("tenant-1", db_session, mock_qb))
     lines = db_session.execute(select(IL).where(IL.invoice_id == invoice.id)).scalars().all()
     assert len(lines) == 2
-    assert sorted(l.description for l in lines) == ["QB-edited line A", "QB-edited line B"]
+    assert sorted(line.description for line in lines) == ["QB-edited line A", "QB-edited line B"]
 
 
 def test_pull_invoices_skips_subtotal_and_group_lines(db_session: Session, qb_connection, mock_qb):
@@ -2529,8 +2529,8 @@ def test_pull_invoices_skips_subtotal_and_group_lines(db_session: Session, qb_co
     }])
     asyncio.run(sync.pull_invoices("tenant-1", db_session, mock_qb))
     lines = db_session.execute(select(IL).where(IL.invoice_id == invoice.id)).scalars().all()
-    assert len(lines) == 2, f"expected 2 item lines, got {len(lines)}: {[l.description for l in lines]}"
-    assert sum(float(l.line_total) for l in lines) == 600.0
+    assert len(lines) == 2, f"expected 2 item lines, got {len(lines)}: {[line.description for line in lines]}"
+    assert sum(float(line.line_total) for line in lines) == 600.0
 
 
 def test_qb_client_query_paginates(monkeypatch):

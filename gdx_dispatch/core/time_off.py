@@ -27,6 +27,7 @@ and reported, never doubled.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -34,13 +35,19 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, true
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import contained_read
-from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of
-from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry, User
+from gdx_dispatch.core.pay_periods import resolve_zone, shop_day_of, shop_tz_name
+from gdx_dispatch.models.tenant_models import (
+    AppSettings,
+    Technician,
+    TimeclockEntry,
+    TimeOffRequest,
+    User,
+)
 
 log = logging.getLogger(__name__)
 
@@ -256,6 +263,63 @@ def user_names(db: Session, user_ids: set[str]) -> dict[str, str]:
     return out
 
 
+def user_labels(
+    db: Session,
+    tenant_id: str,
+    ids: set[str] | None = None,
+    *,
+    active_only: bool = False,
+    log_event: str = "user_labels_failed",
+) -> dict[str, str]:
+    """id → display label for one tenant's users, best effort.
+
+    The one label lookup behind the timesheet exception card and export
+    (`routers/timeclock._tech_names`), the roster's active staff and the
+    pay-period send (`tasks/payroll_timesheet._names`). Those were three raw
+    `id::text = ANY(:ids)` queries that failed on SQLite and were swallowed,
+    so no SQLite test could see a name (GDXA-1793).
+
+    `ids=None` means every user of the tenant; an empty set means none. Ids
+    compare as UUIDs, never text (SQLite stores a `Uuid` dashless), and each
+    key is returned as the caller spelled it. Without `ids` a key is the
+    dashed lowercase form, which is what Postgres' `id::text` produced.
+    `active_only` drops soft-deleted users and treats a NULL `active` as
+    active, as `users._serialize` does.
+
+    Only the label columns are selected, so a `users` table behind the ORM
+    elsewhere cannot fail this read. A database error is contained and
+    swallowed: a missing label must not cost the caller its session.
+    """
+    parsed: dict[UUID, str] | None = None
+    if ids is not None:
+        parsed = _parse_user_ids(ids)
+        if not parsed:
+            return {}
+    stmt = select(User.id, User.full_name, User.name, User.username, User.email).where(
+        User.company_id == tenant_id
+    )
+    if parsed is not None:
+        stmt = stmt.where(User.id.in_(list(parsed)))
+    if active_only:
+        stmt = stmt.where(
+            User.deleted_at.is_(None),
+            func.coalesce(User.active, true()) == true(),
+        )
+    try:
+        with contained_read(db):
+            rows = db.execute(stmt).all()
+    except SQLAlchemyError:  # noqa: SILENTFAIL1 — no labels: ids show bare, roster drops staff with no entries; logged
+        log.exception(log_event, extra={"tenant_id": tenant_id})
+        return {}
+    out: dict[str, str] = {}
+    for r in rows:
+        label = r.full_name or r.name or r.username or r.email
+        if label:
+            key = parsed.get(r.id, str(r.id)) if parsed is not None else str(r.id)
+            out[key] = str(label)
+    return out
+
+
 def time_off_stamps(day: date, shift_start: time, minutes: int, tz_name: Any) -> tuple[str, str]:
     """(clock_in_iso, clock_out_iso) in UTC for `minutes` of paid time
     starting at `shift_start` on shop-local `day`."""
@@ -320,7 +384,7 @@ def create_time_off_entries(
     kind = str(entry_type or "").strip().lower()
     if kind not in TIME_OFF_TYPES:
         raise ValueError(f"not a time-off type: {entry_type!r}")
-    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    tz_name = shop_tz_name(settings)
     schedule = person_schedule(db, settings, technician_id)
     taken = existing_time_off_days(db, technician_id, days, tz_name)
     now = datetime.now(UTC).isoformat()
@@ -345,6 +409,89 @@ def create_time_off_entries(
         db.add(entry)
         result.created.append(entry)
     return result
+
+
+# ── Approved time off, for the schedule ──────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ApprovedTimeOff:
+    """One approved request as the schedule reads it. ``technician_id`` is a
+    `technicians.id`; ``user_id`` is the request's own key (a `users.id`)."""
+
+    technician_id: str
+    user_id: str
+    request_id: str
+    entry_type: str
+    start_date: date
+    end_date: date
+
+    def covers(self, day: date) -> bool:
+        return self.start_date <= day <= self.end_date
+
+
+def _user_key(raw: Any) -> str:
+    """A user id in one spelling. `time_off_requests.technician_id` and
+    `technicians.user_id` are both text and either may hold the dashed or
+    dashless form; dropping the dashes and the case makes them compare equal.
+    Both sides go through this one function, so a text id that is not a UUID
+    still matches only its own spelling."""
+    return str(raw or "").strip().replace("-", "").lower()
+
+
+def approved_time_off_for_range(
+    db: Session, start: date, end: date, *, technician_ids: set[str] | None = None
+) -> dict[str, list[ApprovedTimeOff]]:
+    """technician id → the approved, live time-off requests whose days overlap
+    [start, end], inclusive, ordered by start date.
+
+    The one lookup behind the schedule's view of time off (GDXA-1775): a
+    `TimeOffRequest` keyed by its USER id, mapped here to every live
+    `Technician` row linked to that user. Only ``approved`` counts; pending,
+    denied, cancelled and revoked requests block nothing, and a request whose
+    user has no live technician row is dropped (nobody on the board to block).
+    ``technician_ids`` narrows the result to those technicians.
+
+    Database errors propagate: a schedule that silently reads "nobody is
+    off" would book a job onto someone's vacation.
+    """
+    if end < start or (technician_ids is not None and not technician_ids):
+        return {}
+    tech_stmt = select(Technician.id, Technician.user_id).where(
+        Technician.deleted_at.is_(None), Technician.user_id.is_not(None)
+    )
+    if technician_ids is not None:
+        tech_stmt = tech_stmt.where(Technician.id.in_(sorted(str(t) for t in technician_ids)))
+    techs_of_user: dict[str, list[str]] = {}
+    for tech_id, user_id in db.execute(tech_stmt).all():
+        techs_of_user.setdefault(_user_key(user_id), []).append(str(tech_id))
+    if not techs_of_user:
+        return {}
+
+    requests = db.execute(
+        select(TimeOffRequest)
+        .where(
+            TimeOffRequest.deleted_at.is_(None),
+            TimeOffRequest.status == STATUS_APPROVED,
+            TimeOffRequest.start_date <= end,
+            TimeOffRequest.end_date >= start,
+        )
+        .order_by(TimeOffRequest.start_date.asc(), TimeOffRequest.id.asc())
+    ).scalars().all()
+    out: dict[str, list[ApprovedTimeOff]] = {}
+    for req in requests:
+        for tech_id in techs_of_user.get(_user_key(req.technician_id), ()):
+            out.setdefault(tech_id, []).append(
+                ApprovedTimeOff(
+                    technician_id=tech_id,
+                    user_id=str(req.technician_id),
+                    request_id=str(req.id),
+                    entry_type=str(req.entry_type),
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                )
+            )
+    return out
 
 
 # ── Holiday calendar ─────────────────────────────────────────────────────────
@@ -433,7 +580,7 @@ def unposted_holidays(
     rows = holidays_between(settings, start, end)
     if not rows:
         return []
-    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    tz_name = shop_tz_name(settings)
     posted = posted_holiday_counts(db, [date.fromisoformat(h["date"]) for h in rows], tz_name)
     return [h for h in rows if not posted.get(date.fromisoformat(h["date"]), 0)]
 
@@ -489,6 +636,8 @@ def _hours(minutes: int) -> float:
 @dataclass(frozen=True)
 class VacationBalance:
     technician_id: str
+    #: The year the person's vacation year starts in (``window[0].year``):
+    #: the calendar year under ``calendar_year``.
     year: int
     as_of: date
     allowance_hours: Decimal | None
@@ -496,6 +645,8 @@ class VacationBalance:
     allowance_source: str | None
     used_minutes: int = 0
     scheduled_minutes: int = 0
+    #: First and last shop day of the vacation year counted (both inclusive).
+    window: tuple[date, date] | None = None
 
     @property
     def used_hours(self) -> float:
@@ -543,24 +694,104 @@ class VacationBalance:
             "remaining_hours": self.remaining_hours,
             "remaining_at_as_of_hours": self.remaining_at_as_of_hours,
             "overdrawn": self.overdrawn,
+            "window_start": self.window[0].isoformat() if self.window else None,
+            "window_end": self.window[1].isoformat() if self.window else None,
         }
 
 
-def vacation_minutes_by_person(
-    db: Session, year: int, tz_name: Any, *, as_of: date, technician_ids: set[str] | None = None
-) -> dict[str, tuple[int, int]]:
-    """technician_id → (used minutes, of which after ``as_of``) for ``year``.
+# Which year a vacation allowance counts over (GDXA-1827, Doug 2026-10-19):
+# each company chooses (AppSettings.vacation_year_policy). Calendar year is
+# the default, and the anniversary policy falls back to the calendar year for
+# anyone with no hire date. Every balance reader goes through
+# `vacation_window` (GDXA-1855).
+VACATION_YEAR_CALENDAR = "calendar_year"
+VACATION_YEAR_ANNIVERSARY = "hire_anniversary"
+VACATION_YEAR_POLICIES = (VACATION_YEAR_CALENDAR, VACATION_YEAR_ANNIVERSARY)
 
-    The window is widened a day each side and the exact year decided in shop
-    time, because ``clock_in_at`` is UTC text. Raises on a database error: a
-    balance that silently reads zero used would tell someone they have hours
-    they have already spent.
+
+def vacation_year_policy_out(value: str | None) -> str:
+    """The stored policy, or the calendar year for a missing or unknown value."""
+    return value if value in VACATION_YEAR_POLICIES else VACATION_YEAR_CALENDAR
+
+
+def _anniversary(hire_date: date, year: int) -> date:
+    """The hire date's anniversary in ``year``; 29 February is 28 February
+    in a year without one."""
+    if hire_date.month == 2 and hire_date.day == 29 and not calendar.isleap(year):
+        return date(year, 2, 28)
+    return hire_date.replace(year=year)
+
+
+def vacation_year_start(policy: str | None, hire_date: date | None, on: date) -> date:
+    """First day of the vacation year that contains ``on`` for one person.
+
+    ``hire_anniversary`` counts from the most recent anniversary of the hire
+    date on or before ``on`` (a 29 February hire date falls on 28 February in
+    other years). With no hire date, or one after ``on``, it is the calendar
+    year, as is every other policy.
     """
-    lo = date(year - 1, 12, 31).isoformat()
-    hi = date(year + 1, 1, 2).isoformat()
-    stmt = select(
-        TimeclockEntry.technician_id, TimeclockEntry.clock_in_at, TimeclockEntry.minutes
-    ).where(
+    if not _counts_from_anniversary(policy, hire_date, on):
+        return date(on.year, 1, 1)
+    start = _anniversary(hire_date, on.year)
+    return start if start <= on else _anniversary(hire_date, on.year - 1)
+
+
+def _counts_from_anniversary(policy: str | None, hire_date: date | None, on: date) -> bool:
+    return (
+        vacation_year_policy_out(policy) == VACATION_YEAR_ANNIVERSARY
+        and hire_date is not None
+        and hire_date <= on
+    )
+
+
+def vacation_window(policy: str | None, hire_date: date | None, on: date) -> tuple[date, date]:
+    """(first day, last day) of the vacation year that contains ``on``.
+
+    The last day is the day before the next year starts: Dec 31 for a
+    calendar year, the day before the next anniversary otherwise. A hire date
+    after ``on`` means no anniversary has passed, so ``on`` is counted in the
+    calendar year (the same fallback as no hire date) until the day before
+    the hire date when that falls in the same year: the first anniversary
+    year starts on the hire date, and a day in both would count twice
+    (GDXA-1927)."""
+    start = vacation_year_start(policy, hire_date, on)
+    if not _counts_from_anniversary(policy, hire_date, on):
+        end = date(on.year, 12, 31)
+        if (
+            vacation_year_policy_out(policy) == VACATION_YEAR_ANNIVERSARY
+            and hire_date is not None
+            and hire_date.year == on.year
+        ):
+            end = hire_date - timedelta(days=1)
+        return start, end
+    return start, _anniversary(hire_date, start.year + 1) - timedelta(days=1)
+
+
+def vacation_windows(
+    db: Session, settings: AppSettings | None, technician_ids: set[str], *, on: date
+) -> dict[str, tuple[date, date]]:
+    """technician_id → the vacation year containing ``on`` for that person,
+    under the shop's policy and the person's ``hire_date``. Soft-deleted users
+    are read too, as `allowance_overrides` does. An id with no user row gets
+    the calendar year. Database errors propagate."""
+    policy = vacation_year_policy_out(getattr(settings, "vacation_year_policy", None))
+    hires: dict[str, date | None] = {}
+    if policy == VACATION_YEAR_ANNIVERSARY:
+        parsed = _parse_user_ids(technician_ids)
+        if parsed:
+            rows = db.execute(
+                select(User.id, User.hire_date).where(
+                    User.id.in_(list(parsed)), User.hire_date.is_not(None)
+                )
+            ).all()
+            hires = {parsed.get(uid, str(uid)): hired for uid, hired in rows}
+    return {tid: vacation_window(policy, hires.get(tid), on) for tid in technician_ids}
+
+
+def _paid_vacation_between(lo: str, hi: str) -> tuple[Any, ...]:
+    """Live, closed vacation entries whose ``clock_in_at`` (UTC text) is in
+    [lo, hi): the coarse filter; callers decide the shop day themselves."""
+    return (
         TimeclockEntry.deleted_at.is_(None),
         TimeclockEntry.entry_type == VACATION_TYPE,
         TimeclockEntry.clock_out_at.is_not(None),
@@ -568,19 +799,56 @@ def vacation_minutes_by_person(
         TimeclockEntry.clock_in_at >= lo,
         TimeclockEntry.clock_in_at < hi,
     )
-    if technician_ids is not None:
-        if not technician_ids:
-            return {}
-        stmt = stmt.where(TimeclockEntry.technician_id.in_(sorted(technician_ids)))
+
+
+def vacation_minutes_by_person(
+    db: Session,
+    windows: dict[str, tuple[date, date]],
+    tz_name: Any,
+    *,
+    as_of: date,
+) -> dict[str, tuple[int, int]]:
+    """technician_id → (used minutes, of which after ``as_of``), each person
+    counted over their own vacation year (``windows``, from `vacation_windows`).
+
+    The query is widened a day each side and the exact window decided in shop
+    time, because ``clock_in_at`` is UTC text. Only people with a vacation
+    entry inside their window are returned. Raises on a database error: a
+    balance that silently reads zero used would tell someone they have hours
+    they have already spent.
+    """
+    windows = {str(t): w for t, w in windows.items() if t}
+    if not windows:
+        return {}
+    lo = (min(w[0] for w in windows.values()) - timedelta(days=1)).isoformat()
+    hi = (max(w[1] for w in windows.values()) + timedelta(days=2)).isoformat()
+    stmt = select(
+        TimeclockEntry.technician_id, TimeclockEntry.clock_in_at, TimeclockEntry.minutes
+    ).where(
+        *_paid_vacation_between(lo, hi),
+        TimeclockEntry.technician_id.in_(sorted(windows)),
+    )
     out: dict[str, tuple[int, int]] = {}
     for tech, clock_in, minutes in db.execute(stmt).all():
         day = shop_day_of(clock_in, tz_name)
-        if day is None or day.year != year or not tech:
+        window = windows.get(str(tech)) if tech else None
+        if day is None or window is None or not window[0] <= day <= window[1]:
             continue
         paid = max(0, int(minutes))
         used, ahead = out.get(str(tech), (0, 0))
         out[str(tech)] = (used + paid, ahead + (paid if day > as_of else 0))
     return out
+
+
+def vacation_takers(db: Session, *, on: date) -> set[str]:
+    """Everyone with a closed, live vacation entry within a year either side
+    of ``on``: the candidates whose vacation year containing ``on`` may hold
+    one (any such year lies inside that span). Callers narrow it with
+    `vacation_minutes_by_person`. Database errors propagate."""
+    lo = (on - timedelta(days=367)).isoformat()
+    hi = (on + timedelta(days=368)).isoformat()
+    stmt = select(TimeclockEntry.technician_id).distinct().where(*_paid_vacation_between(lo, hi))
+    return {str(t) for t in db.execute(stmt).scalars().all() if t}
 
 
 def allowance_overrides(db: Session, technician_ids: set[str]) -> dict[str, Decimal]:
@@ -604,10 +872,13 @@ def vacation_balances(
     settings: AppSettings | None,
     technician_ids: set[str],
     *,
-    year: int,
+    on: date,
     as_of: date,
 ) -> dict[str, VacationBalance]:
-    """One `VacationBalance` per id in ``technician_ids`` for ``year``.
+    """One `VacationBalance` per id in ``technician_ids``, each over that
+    person's vacation year containing ``on`` (`vacation_windows`: the
+    calendar year, or the year from their hire anniversary under
+    ``hire_anniversary``). Allowance, used and scheduled all follow it.
 
     The single computation behind the read endpoint, the Timesheets card,
     the pay-period CSV and the PDF context (via
@@ -616,10 +887,11 @@ def vacation_balances(
     ids = {str(t) for t in technician_ids if t}
     if not ids:
         return {}
-    tz_name = getattr(settings, "timezone", None) or "America/New_York"
+    tz_name = shop_tz_name(settings)
     shop_default = getattr(settings, "vacation_allowance_hours", None)
     overrides = allowance_overrides(db, ids)
-    minutes = vacation_minutes_by_person(db, year, tz_name, as_of=as_of, technician_ids=ids)
+    windows = vacation_windows(db, settings, ids, on=on)
+    minutes = vacation_minutes_by_person(db, windows, tz_name, as_of=as_of)
     out: dict[str, VacationBalance] = {}
     for tid in ids:
         if tid in overrides:
@@ -631,11 +903,12 @@ def vacation_balances(
         used, ahead = minutes.get(tid, (0, 0))
         out[tid] = VacationBalance(
             technician_id=tid,
-            year=year,
+            year=windows[tid][0].year,
             as_of=as_of,
             allowance_hours=allowance,
             allowance_source=source,
             used_minutes=used,
             scheduled_minutes=ahead,
+            window=windows[tid],
         )
     return out

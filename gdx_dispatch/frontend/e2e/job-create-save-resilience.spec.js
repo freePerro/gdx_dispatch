@@ -156,7 +156,8 @@ test.describe('job create — a saved job never looks unsaved', () => {
 
     // Read the toast FIRST — it auto-dismisses, well before the longer
     // dialog/table waits below would finish.
-    const jobsToast = page.locator('[data-testid="jobs-toast"]');
+    // App.vue's <Toast> is the only outlet (GDXA-1787).
+    const jobsToast = page.locator('.p-toast-message', { hasText: /appointment/i }).first();
     await expect(jobsToast).toContainText(/appointment/i, { timeout: 15000 });
     const tt = await jobsToast.innerText();
     expect(tt).toMatch(/on the calendar/i);
@@ -243,7 +244,7 @@ test.describe('job create — a saved job never looks unsaved', () => {
     // Toast names the job — proof that survives any filter/search state.
     // (Auto-waiting assert first: reading innerText immediately races the
     // toast's render.)
-    await expect(page.locator('[data-testid="jobs-toast"]')).toContainText(/JOB-/, {
+    await expect(page.locator('.p-toast-message', { hasText: /JOB-/ }).first()).toBeVisible({
       timeout: 15000,
     });
 

@@ -85,6 +85,8 @@ def _resolve_tier(points: int, db: Session) -> dict[str, Any] | None:
 
 
 class TierCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=100)
     min_spend: Decimal = Field(ge=0)
     discount_pct: Decimal = Field(ge=0, le=100)
@@ -99,6 +101,8 @@ class TierPatch(BaseModel):
 
 
 class PointsAward(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     amount: int = Field(le=10_000_000)
     reason: str = Field(min_length=1, max_length=200)
 
@@ -111,6 +115,8 @@ class PointsAward(BaseModel):
 
 
 class ReferralCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     referrer_id: str = Field(min_length=1, max_length=64)
     referee_name: str = Field(min_length=1, max_length=100)
     referee_phone: str = Field(min_length=1, max_length=30)

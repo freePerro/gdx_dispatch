@@ -201,7 +201,6 @@ DELETE /api/segments/{segment_id}
 DELETE /api/surveys/templates/{template_id}
 DELETE /api/tags/{tag_id}
 DELETE /api/tasks/{task_id}
-DELETE /api/tech-unavailability/{unavail_id}
 DELETE /api/vehicle-inspections/{inspection_id}
 DELETE /api/vendors/{vendor_id}
 DELETE /api/warranties/{warranty_id}
@@ -365,7 +364,6 @@ POST /api/mobile/jobs/{job_id}/chat
 POST /api/mobile/jobs/{job_id}/claim
 POST /api/mobile/jobs/{job_id}/clock-in
 POST /api/mobile/jobs/{job_id}/clock-out
-POST /api/mobile/jobs/{job_id}/complete
 POST /api/mobile/jobs/{job_id}/en-route
 POST /api/mobile/jobs/{job_id}/invoice
 POST /api/mobile/jobs/{job_id}/notes
@@ -444,7 +442,6 @@ POST /api/qb/sync/transfers
 POST /api/quickbooks/sync/recurring-transactions
 POST /api/referrals
 POST /api/reviews
-POST /api/safety/complete
 POST /api/segments
 POST /api/service-calls
 POST /api/service-triggers
@@ -461,7 +458,6 @@ POST /api/tags
 POST /api/tasks
 POST /api/tasks/{task_id}/complete
 POST /api/tasks/{task_id}/reopen
-POST /api/tech-unavailability
 POST /api/timeclock/break/end
 POST /api/timeclock/break/start
 POST /api/timeclock/clock-in
@@ -475,8 +471,6 @@ POST /api/v1/customers
 POST /api/v1/jobs
 POST /api/v1/landing-leads
 POST /api/v1/webhooks
-POST /api/van-inventory
-POST /api/van-inventory/use
 POST /api/vehicle-inspections
 POST /api/vendors
 POST /api/warranties

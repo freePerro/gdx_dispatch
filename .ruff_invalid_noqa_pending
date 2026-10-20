@@ -1,0 +1,13 @@
+# Sites carrying a `# noqa` code ruff rejects, or the legacy
+# `# noqa: silent-failure` marker (ruff does not warn on it after a valid
+# code), accepted while their owners convert them. Format: <count> <path>.
+# Read by gdx_dispatch/tools/ruff_noqa_guard.py (CI lint job), which fails on
+# any difference, so lower or delete a line in the PR that converts its site.
+# Every entry below is the legacy marker; the new code is SILENTFAIL1
+# (GDXA-1892). When this file is empty, drop the legacy spelling from
+# silent_failure_scanner.NOQA_MARKER_RE and drift_scanner.NOQA_MARKER_RE.
+1 gdx_dispatch/core/audit.py
+1 gdx_dispatch/core/modules.py
+2 gdx_dispatch/core/payments.py
+1 gdx_dispatch/routers/invoices.py
+1 gdx_dispatch/routers/mobile_invoicing.py

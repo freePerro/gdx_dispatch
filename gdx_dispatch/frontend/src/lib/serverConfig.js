@@ -24,8 +24,14 @@ import { Preferences } from '@capacitor/preferences';
 
 export const SERVER_STORAGE_KEY = 'gdx_server_url';
 
+// A shop that builds its own APK bakes its server in with
+// VITE_DEFAULT_SERVER_URL; unset, the app ships with no default and the tech
+// picks one in the server dialog. A saved choice always wins over it.
+export const DEFAULT_SERVER_URL = cleanServerUrl(import.meta.env.VITE_DEFAULT_SERVER_URL || '');
+
 // Default presets for quick configuration in dialog
 export const PRESETS = [
+  ...(DEFAULT_SERVER_URL ? [{ label: 'This shop', url: DEFAULT_SERVER_URL }] : []),
   { label: 'Public Demo', url: 'https://gdxdispatch.com' },
   { label: 'Local Dev (Emulator)', url: 'http://10.0.2.2:8001' },
 ];
@@ -57,7 +63,13 @@ export function getServerUrl() {
   if (!_cachedServerUrl && typeof localStorage !== 'undefined') {
     _cachedServerUrl = cleanServerUrl(localStorage.getItem(SERVER_STORAGE_KEY) || '');
   }
-  return _cachedServerUrl;
+  return _cachedServerUrl || _nativeDefault();
+}
+
+// The build-time default only reroutes the Android app; the web app is served
+// by the server it talks to (see initServerConfig).
+function _nativeDefault() {
+  return DEFAULT_SERVER_URL && Capacitor.isNativePlatform() ? DEFAULT_SERVER_URL : '';
 }
 
 /**
@@ -192,7 +204,7 @@ export function installFetchInterceptor() {
  * Initializes server configuration on application startup.
  */
 export async function initServerConfig() {
-  if (_initialized) return _cachedServerUrl;
+  if (_initialized) return getServerUrl();
   // The web app is served by the server it talks to. A saved address there
   // would send every /api and /auth request — the login password included —
   // somewhere else, so only the Android app reroutes.
@@ -221,5 +233,5 @@ export async function initServerConfig() {
   }
 
   _initialized = true;
-  return _cachedServerUrl;
+  return getServerUrl();
 }

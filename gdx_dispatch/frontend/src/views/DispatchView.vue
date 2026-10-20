@@ -615,7 +615,7 @@
             v-for="tech in technicianColumns"
             :key="tech.id"
             class="tech-column"
-            :class="{ 'drag-over': dragOverTechId === tech.id }"
+            :class="{ 'drag-over': dragOverTechId === tech.id && !tech.timeOff, 'tech-column--time-off': tech.timeOff }"
             :data-testid="`tech-column-${tech.id}`"
             @dragover.prevent="onDragOver(tech.id)"
             @dragleave="dragOverTechId = null"
@@ -639,7 +639,8 @@
                 :class="{ 'tech-capacity--over': tech.isOverCapacity, 'tech-capacity--off': tech.isOffToday }"
                 :data-testid="`tech-capacity-${tech.id}`"
               >
-                <span v-if="tech.isOffToday" class="tech-capacity-label">Off today</span>
+                <span v-if="tech.timeOff" class="tech-capacity-label">Time off</span>
+                <span v-else-if="tech.isOffToday" class="tech-capacity-label">Off today</span>
                 <span v-else class="tech-capacity-label">
                   {{ formatDurationHours(tech.scheduledKnownHours) }} of {{ formatDurationHours(tech.capacityHours) }}
                   <span v-if="tech.scheduledUnknownCount" class="tech-capacity-unknown">
@@ -655,6 +656,16 @@
               </div>
             </template>
             <template #content>
+              <div
+                v-if="tech.timeOff"
+                class="time-off-block"
+                role="note"
+                :data-testid="`tech-time-off-${tech.id}`"
+              >
+                <i class="pi pi-calendar-minus" aria-hidden="true" />
+                <span class="time-off-block-title">Time off · {{ tech.timeOff.label }}</span>
+                <span class="time-off-block-meta">{{ timeOffRange(tech.timeOff) }} · approved, takes no new work</span>
+              </div>
               <!-- Sprint dispatch-timeline (2026-05-21) — vertical hour-axis
                    layout. The TechTimelineColumn owns drops + tray + block
                    positioning. Card-wrapper @drop above is now a no-op for
@@ -718,14 +729,21 @@
                 :class="{
                   'is-today': cell.isToday,
                   'is-off': cell.isOff,
+                  'is-time-off': cell.timeOff,
                   'is-over': cell.isOver,
-                  'drag-over': dragOverTechId === `${row.id}|${cell.date}`,
+                  'drag-over': dragOverTechId === `${row.id}|${cell.date}` && !cell.timeOff,
                 }"
                 :data-testid="`week-cell-${row.id}-${cell.date}`"
                 @dragover.prevent="onDragOver(`${row.id}|${cell.date}`)"
                 @dragleave="onWeekCellLeave"
                 @drop.prevent="onWeekCellDrop($event, row.unassigned ? null : row.id, cell.date)"
               >
+                <span
+                  v-if="cell.timeOff"
+                  class="week-time-off"
+                  v-tooltip.bottom="`${cell.timeOff.label}, ${timeOffRange(cell.timeOff)} (approved)`"
+                  :data-testid="`week-time-off-${row.id}-${cell.date}`"
+                >Time off · {{ cell.timeOff.label }}</span>
                 <div
                   v-for="job in cell.jobs"
                   :key="job.card_key || job.id"
@@ -745,7 +763,7 @@
                   </span>
                   <span v-if="visitDayLabel(job)" class="week-chip-meta" :data-testid="`week-day-badge-${job.card_key}`">{{ visitDayLabel(job) }}</span>
                 </div>
-                <span v-if="cell.isOff && !cell.jobs.length" class="week-cell-note">off</span>
+                <span v-if="cell.isOff && !cell.timeOff && !cell.jobs.length" class="week-cell-note">off</span>
                 <span v-else-if="cell.hoursLabel" class="week-cell-note" :class="{ 'is-over': cell.isOver }">{{ cell.hoursLabel }}</span>
               </div>
             </template>
@@ -918,31 +936,6 @@
         </template>
       </Dialog>
 
-      <!-- Assignment Dialog -->
-      <Dialog
-        v-model:visible="assignDialogVisible"
-        header="Assign Job"
-        :modal="true"
-        :closable="true"
-        class="assign-dialog"
-        data-testid="assign-dialog"
-      >
-        <p>Assign <strong>{{ assignDialogJob?.customer_name }}</strong><span v-if="assignDialogJob?.title"> — {{ assignDialogJob.title }}</span> to a technician:</p>
-        <Select
-          v-model="assignDialogTechId"
-          :options="assignableTechnicians"
-          optionLabel="name"
-          optionValue="id"
-          placeholder="Select technician"
-          class="w-full"
-          data-testid="assign-dialog-dropdown"
-        />
-        <template #footer>
-          <Button label="Cancel" severity="secondary" @click="assignDialogVisible = false" />
-          <Button label="Assign" icon="pi pi-check" @click="confirmAssign" :disabled="!assignDialogTechId" />
-        </template>
-      </Dialog>
-
       <!-- Phase 2 / C4 — closeout sheet, opened by the drawer's Close out. -->
       <MobileJobCloseoutDialog
         v-model:visible="closeoutOpen"
@@ -984,7 +977,7 @@
           <p v-if="drawerJob.technician_id" class="job-drawer-line">
             <strong>Technician:</strong> {{ techName(drawerJob.technician_id) }}
           </p>
-          <p class="job-drawer-line"><strong>Scheduled:</strong> {{ drawerJob.scheduled_at || 'Not scheduled' }}</p>
+          <p class="job-drawer-line"><strong>Scheduled:</strong> {{ drawerJob.scheduled_at ? formatScheduled(drawerJob.scheduled_at) : 'Not scheduled' }}</p>
           <p v-if="visitDayLabel(drawerJob)" class="job-drawer-line" data-testid="dispatch-job-drawer-day">
             <strong>Visit:</strong> {{ visitDayLabel(drawerJob) }}
           </p>
@@ -1186,6 +1179,11 @@ watch(permissionsLoaded, (loaded) => { if (loaded) loadLateOpen({ keepOnError: t
 // server keeps the two lists disjoint (one predicate, partial_clause).
 const partialJobs = ref([]);
 const partialJobIds = computed(() => new Set(partialJobs.value.map((j) => String(j.id))));
+// Normalized like the day list, for the holding-area lanes and the drawer.
+const normalizedPartialJobs = computed(() => partialJobs.value.map(normalizeJob));
+// Reads in flight of the lists the drawer opens from (see repointDrawer).
+let drawerListReads = 0;
+let drawerCloseDeferred = false;
 
 // Returns whether the list was read: a kept list is not evidence of anything.
 async function loadPartialJobs({ keepOnError = false } = {}) {
@@ -1193,14 +1191,19 @@ async function loadPartialJobs({ keepOnError = false } = {}) {
     partialJobs.value = [];
     return false;
   }
+  let ok = false;
+  drawerListReads += 1;
   try {
     const res = await api.get('/api/dispatch/partial-jobs');
     partialJobs.value = Array.isArray(res?.items) ? res.items : [];
+    ok = true;
     return true;
   } catch (e) {
     console.warn('partial_jobs_failed', e);
     if (!keepOnError) partialJobs.value = [];
     return false;
+  } finally {
+    settleDrawerRead(ok);
   }
 }
 
@@ -1435,11 +1438,6 @@ const mapLocations = ref([]);
 const mapLoading = ref(false);
 const optimizerLoading = ref(false);
 
-// Assignment dialog
-const assignDialogVisible = ref(false);
-const assignDialogJob = ref(null);
-const assignDialogTechId = ref(null);
-
 // Sprint dispatch-capacity (2026-05-20) — when a card without an
 // estimated duration lands in a tech column, prompt the scheduler for
 // hours so the column total stops being a guess. Carrying both the
@@ -1581,6 +1579,40 @@ function normalizeJob(rawJob) {
 const boardVisits = ref([]);
 const visitJobIds = computed(() => new Set(boardVisits.value.map((v) => String(v.id))));
 
+// Approved time off in the window, from GET /api/dispatch/time-off
+// (GDXA-1829). The approved TimeOffRequest is the one record of it: a tech
+// who is off that day has no capacity, shows a "Time off" block in the day
+// column and the week cell, and takes no drop there. Pending, denied and
+// revoked requests never come back from the route.
+const boardTimeOff = ref([]);
+let timeOffUnread = false;
+
+function timeOffOn(techId, dateStr) {
+  if (!techId || !dateStr) return null;
+  return boardTimeOff.value.find((o) => String(o.technician_id) === String(techId)
+    && o.start_date <= dateStr && dateStr <= o.end_date) || null;
+}
+
+function timeOffRange(off) {
+  const fmt = (iso) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'numeric', day: 'numeric' });
+  };
+  return off.start_date === off.end_date ? fmt(off.start_date) : `${fmt(off.start_date)} – ${fmt(off.end_date)}`;
+}
+
+function refuseTimeOffDrop(techId, dayStr) {
+  const off = timeOffOn(techId, dayStr);
+  if (!off) return false;
+  toast.add({
+    severity: 'warn',
+    summary: 'Nothing was moved',
+    detail: `${techName(techId)} has approved time off (${off.label}) that day. Pick another tech or day, or revoke the time off first.`,
+    life: 6000,
+  });
+  return true;
+}
+
 function hoursBetween(startIso, endIso) {
   const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
   return Number.isFinite(ms) && ms > 0 ? Math.round((ms / 3_600_000) * 100) / 100 : null;
@@ -1645,6 +1677,7 @@ function parseHHMM(s) {
   return Number(m[1]) + Number(m[2]) / 60;
 }
 function techCapacityHours(tech, date) {
+  if (timeOffOn(tech.id, toDateStr(date instanceof Date ? date : new Date(date)))) return 0;
   if (!isShiftDay(tech, date)) return 0;
   const start = parseHHMM(tech.effective_shift_start);
   const end = parseHHMM(tech.effective_shift_end);
@@ -1850,6 +1883,7 @@ const technicianColumns = computed(() =>
       scheduledKnownHours: totals.known,
       scheduledUnknownCount: totals.unknown,
       isOffToday: off,
+      timeOff: timeOffOn(tech.id, selectedDateStr.value),
       capacityRatio: ratio,
       isOverCapacity: capacity > 0 && totals.known > capacity,
     };
@@ -1906,6 +1940,7 @@ const weekRows = computed(() => {
         isToday: day.isToday,
         jobs: cellJobs,
         isOff: capacity === 0,
+        timeOff: timeOffOn(tech.id, day.date),
         isOver: capacity > 0 && totals.known > capacity,
         hoursLabel: cellJobs.length
           ? `${formatDurationHours(totals.known)}${capacity > 0 ? ` / ${formatDurationHours(capacity)}` : ''}${totals.unknown ? ` +${totals.unknown}?` : ''}`
@@ -2044,12 +2079,6 @@ function openJobDrawer(job) {
 function closeJobDrawer() {
   jobDrawerVisible.value = false;
   drawerJob.value = null;
-}
-
-function openReassignDialog(job) {
-  assignDialogJob.value = job;
-  assignDialogTechId.value = job?.technician_id || null;
-  assignDialogVisible.value = true;
 }
 
 function toggleMap() {
@@ -2209,6 +2238,7 @@ async function sendVisitMove(card, techId, day, time) {
 // The New Jobs dropdown on an unassigned day: that day gets the tech, at its time.
 async function assignVisitTech(card, techId) {
   if (!techId) return;
+  if (refuseTimeOffDrop(techId, zonedDateKey(card.scheduled_at))) return;
   await moveVisitCard(card, techId, card.scheduled_at);
 }
 
@@ -2347,6 +2377,7 @@ async function onWeekCellDrop(event, techId, dayStr) {
   draggingJobId.value = null;
   const card = takeDraggedVisit(jobId);
   const from = takeDragOrigin();
+  if (techId && refuseTimeOffDrop(techId, dayStr)) return;
   const source = card
     || jobs.value.find((j) => String(j.id) === String(jobId))
     || partialJobs.value.find((j) => String(j.id) === String(jobId))
@@ -2396,14 +2427,21 @@ async function onWeekCellDrop(event, techId, dayStr) {
   const onCrew = techId ? crew.includes(String(techId)) : crew.length === 0;
   if (source && onCrew) {
     // An undated job dropped in a tech's row was booked above, hours asked
-    // there (GDXA-1261). What reaches here is a dated job's move, or the
-    // "No tech" row, which only dates: it has no capacity to count, as
-    // _needsDurationPrompt exempts techId=null.
+    // there (GDXA-1261). What reaches here is a dated job's move, which is
+    // checked against that tech's shift, or the "No tech" row, which only
+    // dates: it has no capacity to count, as _needsDurationPrompt exempts
+    // techId=null.
+    const crewNow = crewOf(source);
+    const fit = await fitDatedPlacement(source, techId, iso, crewNow, crewNow[0]);
+    if (!fit) return; // cancelled: nothing moves
     await withBoardWrite(async () => {
+      let moved = false;
       try {
         // The "No tech" row only dates: a parked job with no tech stays parked.
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso, ...(techId ? leaveLanePatch(source) : {}) });
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: iso, ...(techId ? leaveLanePatch(source) : {}), ...fit.patch });
+        moved = true;
       } catch { /* api composable already toasts */ }
+      if (moved && fit.booking) await bookLaterDays(jobId, source, fit.booking);
       await fetchJobs();
     });
     return;
@@ -2541,6 +2579,37 @@ async function fitBookingInDay(job, answer, techId, scheduledAt) {
   };
 }
 
+// A job that already has a date, put in a tech's day, gets the same check
+// (Doug, 2026-10-18): an 8 h block moved to 3:45 PM used to land "+6.75h
+// over" with nothing asked. `when` is the new start, else the job's own;
+// techIds and lead are the crew the write leaves, and hours any the caller
+// is about to write. Resolves { patch, booking } — what to add to the
+// caller's PATCH, and the split for bookLaterDays (null for one day) — or
+// null on Cancel, when the caller writes nothing. Day one's length goes as
+// visit_duration_minutes, which the server sets on the job's first-day
+// visits (E7): a moved visit otherwise keeps its old length. A job under
+// way keeps its crew and the dialog could change it, so it is not asked.
+async function fitDatedPlacement(job, techId, when, techIds, lead, hours = null) {
+  const none = { patch: {}, booking: null };
+  const start = when || job?.scheduled_at;
+  if (!job || !techId || !start || jobStage(job) === 'in_progress') return none;
+  const asked = { tech_ids: techIds.map(String), lead: String(lead ?? techIds[0]), hours };
+  const booking = await fitBookingInDay(job, asked, techId, start);
+  if (!booking) return null;
+  if (booking.answer === asked) return none; // it fits: nothing was asked
+  const { answer, days } = booking;
+  const patch = {};
+  if (answer.tech_ids.join() !== asked.tech_ids.join() || String(answer.lead) !== asked.lead) {
+    Object.assign(patch, crewPatch(answer));
+  }
+  if (answer.hours != null) patch.scheduled_duration_hours = answer.hours;
+  // A visit is 15 min to one day (the PATCH's bounds); hours kept on one
+  // day outside them leave the visit its own length rather than fail the save.
+  const firstDay = Math.round((days ? days[0].hours : answer.hours) * 60);
+  if (firstDay >= 15 && firstDay <= 24 * 60) patch.visit_duration_minutes = firstDay;
+  return { patch, booking: days ? booking : null };
+}
+
 // The days after the first of a split booking, through the job's Visits
 // route: each starts at shift start, for the whole crew. Days of the same
 // length go in one request. A refusal is the server's own sentence; the
@@ -2632,10 +2701,16 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
       if (hours === null) return true;
       if (hours > 0) datePatch.scheduled_duration_hours = hours;
     }
+    const fit = await fitDatedPlacement(job, techId, scheduledAt, crew, crew[0], datePatch.scheduled_duration_hours ?? null);
+    if (!fit) return true; // cancelled: nothing moves
+    Object.assign(datePatch, fit.patch);
     await withBoardWrite(async () => {
+      let moved = false;
       try {
         await api.patch(`/api/jobs/${jobId}`, datePatch);
+        moved = true;
       } catch { /* api composable already toasts */ }
+      if (moved && fit.booking) await bookLaterDays(jobId, job, fit.booking);
       await fetchJobs();
     });
     return true;
@@ -2653,10 +2728,18 @@ async function placeCrewJob(jobId, techId, scheduledAt, fromTechId, knownJob = n
     if (hours === null) return true;
     if (hours > 0) patch.scheduled_duration_hours = hours;
   }
+  const fit = await fitDatedPlacement(
+    job, techId, scheduledAt, choice.tech_ids, choice.lead, patch.scheduled_duration_hours ?? null,
+  );
+  if (!fit) return true; // cancelled: nothing moves
+  Object.assign(patch, fit.patch);
   await withBoardWrite(async () => {
+    let placed = false;
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
+      placed = true;
     } catch { /* api composable already toasts */ }
+    if (placed && fit.booking) await bookLaterDays(jobId, job, fit.booking);
     await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
   });
   return true;
@@ -2783,11 +2866,16 @@ async function confirmDurationPrompt(skip = false) {
   const hours = Number(durationPromptHours.value);
   durationPromptOpen.value = false;
   if (!jobId || !techId) return;
+  const picked = !skip && Number.isFinite(hours) && hours > 0;
+  // The hours just typed are measured against the tech's day before either
+  // PATCH, so Cancel on the overflow question writes nothing at all.
+  const fit = picked ? await fitOneTech(jobId, techId, scheduledAt, hours) : { patch: {}, booking: null };
+  if (!fit) return;
   // Skip = assign without recording a duration (card stays "?h"). Confirm =
   // PATCH duration first so the column total reflects it; the assignment
   // PATCH follows. Pass {skipPrompt:true} so we don't re-enter the prompt.
   await withBoardWrite(async () => {
-    if (!skip && Number.isFinite(hours) && hours > 0) {
+    if (picked) {
       try {
         await api.patch(`/api/jobs/${jobId}`, { scheduled_duration_hours: hours });
       } catch (_e) {
@@ -2796,7 +2884,7 @@ async function confirmDurationPrompt(skip = false) {
     }
     // _doAssignJob nests withBoardWrite (counter, so nesting is fine) — keeps
     // the veto held across the duration PATCH + the assign PATCH as one unit.
-    await _doAssignJob(jobId, techId, scheduledAt);
+    await _doAssignJob(jobId, techId, scheduledAt, fit);
   });
 }
 
@@ -2827,16 +2915,31 @@ async function assignJob(jobId, techId, scheduledAt = null) {
     prefillDurationFromEstimate(jobId, 1);
     return;
   }
-  await _doAssignJob(jobId, techId, scheduledAt);
+  const fit = await fitOneTech(jobId, techId, scheduledAt);
+  if (!fit) return; // cancelled: nothing moves
+  await _doAssignJob(jobId, techId, scheduledAt, fit);
 }
 
-async function _doAssignJob(jobId, techId, scheduledAt = null) {
+// The overflow check for a one-tech assignment of a dated job. A pick of
+// the tech it already has at the time it already has re-saves nothing, so
+// it is not asked; an undated job lands in the tray (the whole shift).
+async function fitOneTech(jobId, techId, scheduledAt, hours = null) {
+  const job = findBoardJob(jobId);
+  if (!job) return { patch: {}, booking: null };
+  const sameTech = String(job.technician_id ?? job.assigned_to ?? '') === String(techId);
+  if (sameTech && !scheduledAt && hours == null) return { patch: {}, booking: null };
+  return fitDatedPlacement(job, techId, scheduledAt || job.scheduled_at || boardDayStartIso(), [techId], techId, hours);
+}
+
+async function _doAssignJob(jobId, techId, scheduledAt = null, fit = null) {
   // Hold the poll veto for the entire optimistic-write + PATCH lifecycle so a
   // background refresh can't overwrite the move before the server confirms.
-  return withBoardWrite(() => _doAssignJobInner(jobId, techId, scheduledAt));
+  return withBoardWrite(() => _doAssignJobInner(jobId, techId, scheduledAt, fit));
 }
 
-async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
+// `fit` is fitDatedPlacement's answer: its fields join the PATCH, and a
+// split books its later days once the PATCH lands.
+async function _doAssignJobInner(jobId, techId, scheduledAt = null, fit = null) {
   const jobIndex = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   const sourceJob = jobIndex >= 0 ? jobs.value[jobIndex] : null;
   const laneJob = scheduledUnassigned.value.find((j) => String(j.id) === String(jobId));
@@ -2845,7 +2948,7 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
   //   (a) caller passed an explicit ISO (timeline drop on a specific slot)
   //       → use it verbatim. The block is now anchored to that time.
   //   (b) job already has a scheduled_at → leave it alone. A pure tech
-  //       reassignment (dropdown, Reassign dialog) shouldn't move time.
+  //       reassignment (the card's dropdown) shouldn't move time.
   //   (c) no scheduled_at on either source or lane → land it on midnight
   //       of the selected date so it shows up in this day's tray. The
   //       old hard-coded 9:00am fallback masked "this hasn't actually
@@ -2865,6 +2968,8 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
   if (techId && (patch.scheduled_at || String(laneSource?.technician_id ?? '') !== String(techId))) {
     Object.assign(patch, leaveLanePatch(laneSource));
   }
+  Object.assign(patch, fit?.patch || {});
+  const bookRest = fit?.booking ? () => bookLaterDays(jobId, laneSource, fit.booking) : null;
 
   // Job not in the per-day list (e.g., dragged from the lane which holds
   // any-date jobs) — PATCH and refresh both lists, then toast so the user
@@ -2873,6 +2978,7 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
     const techName = (technicians.value.find((t) => String(t.id) === String(techId)) || {}).name || 'tech';
     try {
       await api.patch(`/api/jobs/${jobId}`, patch);
+      if (bookRest) await bookRest();
       await Promise.all([fetchJobs(), fetchScheduledUnassigned()]);
       const when = patch.scheduled_at
         ? formatScheduled(patch.scheduled_at)
@@ -2899,9 +3005,10 @@ async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
 
   try {
     await api.patch(`/api/jobs/${jobId}`, { ...patch, technician_id: techId });
-    // Refresh if we wrote a date so the row's scheduled_at reflects it
-    // (and the timeline re-renders the block at the new position).
-    if (patch.scheduled_at) await fetchJobs();
+    if (bookRest) await bookRest();
+    // Refresh if we wrote a date or a crew so the row reflects it (and the
+    // timeline re-renders the block at the new position).
+    if (patch.scheduled_at || bookRest || patch.assigned_tech_ids) await fetchJobs();
   } catch {
     jobs.value[jobIndex] = {
       ...jobs.value[jobIndex],
@@ -2921,6 +3028,7 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
   if (!jobId || !techId || !startISO) return;
   const card = takeDraggedVisit(jobId);
   const from = takeDragOrigin();
+  if (refuseTimeOffDrop(techId, selectedDateStr.value)) return;
   if (card) {
     await moveVisitCard(card, techId, startISO);
     return;
@@ -2943,6 +3051,9 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     && (Number(job.scheduled_duration_hours) > 0
         || Number(job.effective_duration_hours) > 0);
   if (sameTech && hasDuration) {
+    // The move is measured against what is left of the tech's day first.
+    const fit = await fitDatedPlacement(job, techId, startISO, [techId], techId);
+    if (!fit) return; // cancelled: nothing moves
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     const prev = jobs.value[idx].scheduled_at;
     const prevArea = jobs.value[idx].holding_area_id;
@@ -2950,10 +3061,13 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
     await withBoardWrite(async () => {
       jobs.value[idx] = { ...jobs.value[idx], scheduled_at: startISO, ...lane };
       try {
-        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO, ...lane });
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO, ...lane, ...fit.patch });
       } catch {
         jobs.value[idx] = { ...jobs.value[idx], scheduled_at: prev, holding_area_id: prevArea };
+        return;
       }
+      if (fit.booking) await bookLaterDays(jobId, job, fit.booking);
+      if (fit.booking || Object.keys(fit.patch).length) await fetchJobs();
     });
     return;
   }
@@ -2964,6 +3078,7 @@ async function onTimelinePlaceTray({ jobId, techId }) {
   if (!jobId || !techId) return;
   const card = takeDraggedVisit(jobId);
   const from = takeDragOrigin();
+  if (refuseTimeOffDrop(techId, selectedDateStr.value)) return;
   if (card) {
     // The tray is the day with no time: shop midnight of the board day.
     await sendVisitMove(card, techId, selectedDateStr.value, '00:00');
@@ -2985,7 +3100,7 @@ async function onTimelinePlaceTray({ jobId, techId }) {
 
 const queuePickerKey = ref(0);
 
-// A tech picked from a dropdown (queue card or Assign dialog). An undated job
+// A tech picked from the queue card's dropdown. An undated job
 // is being booked onto the selected day, so it asks hours and crew like a
 // drop does; a dated crew job goes through placeCrewJob.
 async function assignFromPicker(jobId, techId) {
@@ -2998,6 +3113,8 @@ async function assignFromPicker(jobId, techId) {
   }
   try {
     if (refuseFinishedOrStartedDrop(job, techId)) return;
+    const dayStr = job?.scheduled_at ? zonedDateKey(job.scheduled_at) : selectedDateStr.value;
+    if (refuseTimeOffDrop(techId, dayStr)) return;
     if (day && !partialJobIds.value.has(String(jobId))
       && await scheduleUndatedDrop(jobId, techId, day, job)) return;
     if (await placeCrewJob(jobId, techId, day, null)) return;
@@ -3007,15 +3124,6 @@ async function assignFromPicker(jobId, techId) {
     // cancelled pick doesn't leave a tech's name on a card nobody has.
     queuePickerKey.value += 1;
   }
-}
-
-function confirmAssign() {
-  if (assignDialogJob.value && assignDialogTechId.value) {
-    assignFromPicker(assignDialogJob.value.id, assignDialogTechId.value);
-  }
-  assignDialogVisible.value = false;
-  assignDialogJob.value = null;
-  assignDialogTechId.value = null;
 }
 
 // --- API ---
@@ -3093,15 +3201,49 @@ function visitsReadable(query) {
   return span >= 0 && span < VISIT_WINDOW_MAX_DAYS;
 }
 
-async function fetchJobs({ keepOnError = false } = {}) {
+async function fetchJobs(opts) {
+  let ok = false;
+  drawerListReads += 1;
+  try {
+    ok = await readJobs(opts);
+  } finally {
+    settleDrawerRead(ok);
+  }
+}
+
+// Returns whether the jobs list was replaced.
+async function readJobs({ keepOnError = false } = {}) {
   const seq = ++fetchSeq;
   const query = jobsDateQuery();
   const settle = (p) => p.then((d) => ({ ok: true, d }), (e) => ({ ok: false, e }));
-  const [jobsRes, visitsRes] = await Promise.all([
+  const boardReadable = visitsReadable(query);
+  const [jobsRes, visitsRes, timeOffRes] = await Promise.all([
     settle(api.get(`/api/jobs?${query}`)),
-    visitsReadable(query) ? settle(api.get(`/api/dispatch/visits?${query}`)) : Promise.resolve(null),
+    boardReadable ? settle(api.get(`/api/dispatch/visits?${query}`)) : Promise.resolve(null),
+    boardReadable ? settle(api.get(`/api/dispatch/time-off?${query}`)) : Promise.resolve(null),
   ]);
-  if (seq !== fetchSeq) return;
+  if (seq !== fetchSeq) return false;
+  if (timeOffRes === null) {
+    boardTimeOff.value = [];
+    timeOffUnread = false;
+  } else if (timeOffRes.ok) {
+    boardTimeOff.value = Array.isArray(timeOffRes.d?.items) ? timeOffRes.d.items : [];
+    timeOffUnread = false;
+  } else {
+    console.warn('board_time_off_failed', timeOffRes.e);
+    if (!keepOnError) boardTimeOff.value = [];
+    // A board that silently shows nobody off would take a drop onto
+    // someone's vacation; say so once per outage, not on every poll.
+    if (!timeOffUnread) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Time off could not be loaded',
+        detail: 'The board may not show who is off. Check the time-off list before booking.',
+        life: 8000,
+      });
+    }
+    timeOffUnread = true;
+  }
   if (visitsRes === null) {
     boardVisits.value = [];
   } else if (visitsRes.ok) {
@@ -3112,30 +3254,43 @@ async function fetchJobs({ keepOnError = false } = {}) {
   }
   if (!jobsRes.ok) {
     if (!keepOnError) jobs.value = [];
-    return;
+    return false;
   }
-  {
-    const data = jobsRes.d;
-    const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
-    jobs.value = rows.map(normalizeJob);
-    // The drawer must describe the job as it IS, not as it was when opened.
-    // The board polls every 45 s and replaces jobs.value, but drawerJob
-    // pointed at the old object — so after the tech closed out from the
-    // truck, the drawer still said "In Progress" and still offered Close
-    // out, and a second closeout would supersede the tech's attestation
-    // (audit 2026-08-28, #526). Re-point it; if the job left the board,
-    // close the drawer rather than keep describing a ghost.
-    // A visit card is found by its card key first, so the drawer keeps
-    // describing the same day.
-    if (drawerJob.value) {
-      const cards = boardJobs.value;
-      const key = drawerJob.value.card_key;
-      const fresh = (key && cards.find((j) => j.card_key === key))
-        || cards.find((j) => String(j.id) === String(drawerJob.value.id));
-      if (fresh) drawerJob.value = fresh;
-      else closeJobDrawer();
-    }
-  }
+  const data = jobsRes.d;
+  const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
+  jobs.value = rows.map(normalizeJob);
+  return true;
+}
+
+// The drawer must describe the job as it IS, not as it was when opened.
+// The board polls every 45 s and replaces its lists, but drawerJob pointed at
+// the old object — so after the tech closed out from the truck, the drawer
+// still said "In Progress" and still offered Close out, and a second closeout
+// would supersede the tech's attestation (audit 2026-08-28, #526). Re-point
+// it; if the job left every list the drawer opens from, close the drawer
+// rather than keep describing a ghost. A visit card is found by its card key
+// first, so the drawer keeps describing the same day.
+// It runs after every read of any of those lists, not the jobs read alone
+// (GDXA-1989). A poll reads them all at once and they answer in any order, so
+// a job moving between lists (booked from the partial list onto the board) is
+// briefly on none: re-pointing is safe on partial evidence, closing is not, so
+// the close waits until no read is in flight. A failed read keeps the drawer
+// as it was, unless a close is waiting on it.
+function repointDrawer() {
+  if (!drawerJob.value) { drawerCloseDeferred = false; return; }
+  const cards = drawerSourceJobs();
+  const key = drawerJob.value.card_key;
+  const fresh = (key && cards.find((j) => j.card_key === key))
+    || cards.find((j) => String(j.id) === String(drawerJob.value.id));
+  drawerCloseDeferred = false;
+  if (fresh) drawerJob.value = fresh;
+  else if (drawerListReads > 0) drawerCloseDeferred = true;
+  else closeJobDrawer();
+}
+
+function settleDrawerRead(ok) {
+  drawerListReads -= 1;
+  if (ok || drawerCloseDeferred) repointDrawer();
 }
 
 // The visits read is gated on jobs.read_all, which may resolve after the
@@ -3161,10 +3316,17 @@ async function fetchScheduledUnassigned({ keepOnError = false } = {}) {
     scheduledUnassigned.value = [];
     return;
   }
+  let ok = false;
+  drawerListReads += 1;
   try {
     const res = await api.get("/api/dispatch/scheduled-unassigned");
     scheduledUnassigned.value = Array.isArray(res?.items) ? res.items : [];
-  } catch { if (!keepOnError) scheduledUnassigned.value = []; }
+    ok = true;
+  } catch {
+    if (!keepOnError) scheduledUnassigned.value = [];
+  } finally {
+    settleDrawerRead(ok);
+  }
 }
 
 function isOverdue(job) {
@@ -3230,10 +3392,19 @@ function getHoldingAreaJobs(areaId) {
   // Normalized like the day list, so the lane total and the drawer read
   // the same fields.
   const seen = new Set(here.map((j) => String(j.id)));
-  const parked = partialJobs.value.filter(
+  const parked = normalizedPartialJobs.value.filter(
     (j) => j.holding_area_id && String(j.holding_area_id) === String(areaId) && !seen.has(String(j.id)),
-  ).map(normalizeJob);
+  );
   return [...here, ...parked];
+}
+
+// Every list the drawer is opened from, board cards first, each normalized
+// like the day list. repointDrawer reads this; re-pointing from the board
+// alone closed a drawer opened on a parked partial job or a Scheduled — Not
+// Assigned card dated outside the board's window, neither of which the jobs
+// read loads (GDXA-1989).
+function drawerSourceJobs() {
+  return [...boardJobs.value, ...normalizedPartialJobs.value, ...scheduledUnassigned.value.map(normalizeJob)];
 }
 
 // Park or release a partial job: only the holding area changes (no crew or
@@ -3279,7 +3450,7 @@ async function moveToHoldingArea(event, areaId) {
 // Park a job in a holding area. A drop and the Move to… menu both land
 // here; the tech comes off, the date stays.
 function refuseOffScreenPark(job) {
-  const day = job.scheduled_at ? new Date(job.scheduled_at).toLocaleDateString() : 'another day';
+  const day = job.scheduled_at ? formatBoardDay(job.scheduled_at) : 'another day';
   toast.add({
     severity: 'warn',
     summary: 'Nothing was moved',
@@ -4071,6 +4242,21 @@ defineExpose({
 }
 .tech-capacity--over .tech-capacity-label { color: var(--p-red-500, #ef4444); }
 .tech-capacity--off { opacity: 0.55; }
+.time-off-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px dashed var(--p-orange-400, #fb923c);
+  border-radius: var(--p-border-radius);
+  background: color-mix(in srgb, var(--p-orange-400, #fb923c) 12%, transparent);
+  color: var(--p-text-color);
+  font-size: 0.8rem;
+}
+.time-off-block-title { font-weight: 600; }
+.time-off-block-meta { color: var(--p-text-muted-color); font-size: 0.74rem; }
 .job-duration { font-weight: 500; opacity: 0.85; }
 /* Job cards */
 .job-card {
@@ -4369,6 +4555,19 @@ defineExpose({
   transition: background 0.1s;
 }
 .week-cell.is-today { background: color-mix(in srgb, var(--p-primary-color) 6%, transparent); }
+.week-cell.is-off.is-time-off { background: color-mix(in srgb, var(--p-orange-400, #fb923c) 12%, transparent); }
+.week-time-off {
+  display: block;
+  padding: 0.1rem 0.35rem;
+  border: 1px dashed var(--p-orange-400, #fb923c);
+  border-radius: var(--p-border-radius);
+  color: var(--p-text-color);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .week-cell.is-off {
   background: repeating-linear-gradient(
     135deg, transparent, transparent 6px,
@@ -4415,10 +4614,6 @@ defineExpose({
   gap: 0.5rem;
 }
 .tech-columns-grid.is-compact :deep(.p-card-body) { padding: 0.6rem; gap: 0.4rem; }
-
-.assign-dialog {
-  width: 400px;
-}
 
 .add-area-form {
   display: flex;

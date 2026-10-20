@@ -128,8 +128,9 @@ describe('CustomerFormDialog', () => {
     const wrapper = mountDialog({ mode: 'edit', customer: baseCustomer });
     await nextTick();
 
-    // Edit just the email — confirms the PATCH carries the full payload not
-    // just deltas (the backend handler is full-record so this matters).
+    // Edit just the email: the PATCH is partial (the handler reads
+    // exclude_unset), so it carries the email and the always-sent name only
+    // (GDXA-1824; the field-by-field contract is in components/__tests__).
     await wrapper.get('[data-testid="customer-email-input"]').setValue('newops@acme.example');
     await wrapper.get('form').trigger('submit.prevent');
     await flushPromises();
@@ -137,9 +138,7 @@ describe('CustomerFormDialog', () => {
     expect(apiPatch).toHaveBeenCalledTimes(1);
     const [url, payload] = apiPatch.mock.calls[0];
     expect(url).toBe('/api/customers/cust-1');
-    expect(payload.email).toBe('newops@acme.example');
-    expect(payload.name).toBe('Acme Door Co');
-    expect(payload.phone).toBe('555-0142');
+    expect(payload).toEqual({ name: 'Acme Door Co', email: 'newops@acme.example' });
 
     // saved emitted; visible toggled false.
     expect(wrapper.emitted('saved')).toBeTruthy();

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
+import { useRouter } from 'vue-router'
 import { useGpsBreadcrumb } from '@/composables/useGpsBreadcrumb'
 import MobileJobCard from '../components/MobileJobCard.vue'
 import MobileReceiptCapture from '../components/MobileReceiptCapture.vue'
@@ -29,6 +30,7 @@ import { useMobileTour } from '../composables/useMobileTour'
 
 const api = useApi()
 const toast = useToast()
+const router = useRouter()
 
 // Phase 3 (S3-A5) — offline state surface for the banner.
 const { isOnline, pendingCount, syncing, syncNow } = useOfflineSync()
@@ -277,9 +279,9 @@ async function saveReorder() {
 // Closeout is not on this screen any more. PR B moved every job action to the
 // job detail screen; this view is the ROUTE — which stops, in what order, and
 // how far apart. The closeout history that used to be recorded here now lives
-// with the code that owns it, in MobileJobDetailView, and the guard that the
-// legacy /api/mobile/jobs/{id}/complete endpoint stays unreachable moved with
-// it (see MobileCloseoutOwnership.spec.js).
+// with the code that owns it, in MobileJobDetailView, and the guard that no
+// view calls the legacy /api/mobile/jobs/{id}/complete (deleted 2026-10-19,
+// GDXA-1937) moved with it (see MobileCloseoutOwnership.spec.js).
 // One closeout path, one rule: capture-or-default at submit time.
 const closeoutOpen = ref(false)
 const closeoutJob = ref(null)
@@ -743,7 +745,19 @@ function replayTour() {
 
       <header class="today-header">
         <div>
-          <h1 class="today-heading">Today's Route</h1>
+          <div class="today-title-row">
+            <h1 class="today-heading">Today's Route</h1>
+            <!-- The day summary's only way in since #396 removed the wrap card.
+                 Beside the title, not in .today-actions: that row is full at 360px. -->
+            <Button
+              v-tooltip="'Day summary'"
+              icon="pi pi-chart-bar"
+              text
+              aria-label="Day summary"
+              data-testid="today-day-summary"
+              @click="router.push('/mobile/summary')"
+            />
+          </div>
           <div v-if="date" class="today-sub">{{ date }} · {{ jobs.length }} stops</div>
         </div>
         <div class="today-actions">
@@ -950,9 +964,19 @@ function replayTour() {
   .today-header > div:first-child {
     text-align: left;
   }
-  .today-actions {
+  /* With Reorder showing, five controls overrun a 360px phone (measured on
+     the Pixel 8 AVD, GDXA-1726): tighter gap, and wrap rather than clip.
+     Two classes: the base .today-actions rule comes later in this file. */
+  .today-header .today-actions {
     justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 0.25rem;
   }
+}
+.today-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 .today-heading {
   margin: 0;

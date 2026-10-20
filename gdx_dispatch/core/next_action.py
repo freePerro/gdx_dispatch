@@ -17,7 +17,7 @@ from sqlalchemy import DateTime, Float, String, Text
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
 
-from gdx_dispatch.core.audit import TenantBase, utcnow
+from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import contained_read
 from gdx_dispatch.models.tenant_models import Invoice, Job
 
@@ -89,6 +89,204 @@ def _make_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _find(tenant_db: Session, tenant_id: str, action_id: str) -> NextAction | None:
+    """The live persisted action with this id, or None."""
+    return (
+        tenant_db.query(NextAction)
+        .filter(
+            NextAction.id == _to_uuid(action_id),
+            NextAction.tenant_id == tenant_id,
+            NextAction.deleted_at.is_(None),
+        )
+        .first()
+    )
+
+
+def _audit(
+    tenant_db: Session,
+    tenant_id: str,
+    verb: str,
+    action: NextAction,
+    details: dict,
+    request: Any,
+    user_id: str | None = None,
+) -> None:
+    """Flush an audit row into the caller's transaction, before its commit,
+    so a change and its trail land together or not at all (invariant #1;
+    GDXA-1808 found create, complete and snooze writing none). With no
+    ``user_id`` the actor is resolved from ``request``."""
+    log_audit_event_sync(
+        tenant_db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action=f"next_action.{verb}",
+        entity_type="next_action",
+        entity_id=str(action.id),
+        details=details,
+        request=request,
+    )
+
+
+def _add_audited(
+    tenant_db: Session, action: NextAction, details: dict, request: Any, user_id: str | None
+) -> NextAction:
+    """Insert ``action`` and flush its ``next_action.create`` audit row into
+    the same transaction; the caller commits."""
+    tenant_db.add(action)
+    tenant_db.flush()
+    _audit(tenant_db, action.tenant_id, "create", action, details, request, user_id=user_id)
+    return action
+
+
+# ---------------------------------------------------------------------------
+# Background writers (Celery beat tasks)
+# ---------------------------------------------------------------------------
+
+# The fields a background writer may set. Identity (tenant, type, reference)
+# is the lookup key and status is the helper's to manage, so neither can be
+# smuggled through ``fields``.
+_SYSTEM_FIELDS = frozenset(
+    {"title", "description", "priority", "action_url", "estimated_value"}
+)
+
+
+def _system_actor(actor: str) -> str:
+    # A bare "system" would be re-attributed from a request, and a person's id
+    # here would claim a beat task's write for them. 64 is AuditLog.user_id's
+    # width: Postgres refuses a longer one and rolls the whole tick back.
+    if not actor.startswith("system:") or actor == "system:" or len(actor) > 64:
+        raise ValueError(f"background actor must be 'system:<task>' (<=64 chars), got {actor!r}")
+    return actor
+
+
+def _live_system_actions(
+    tenant_db: Session, tenant_id: str, action_type: str, reference_id: str
+) -> list[NextAction]:
+    """Live rows for this key, newest first. The tenant_id clause is kept on
+    purpose although the scan calls it redundant: get_queue filters on it, so
+    a row under a drifted tenant string is invisible to the office, and the
+    three writers this replaces filter on it too."""
+    return (
+        tenant_db.query(NextAction)
+        .filter(
+            NextAction.tenant_id == tenant_id,
+            NextAction.action_type == action_type,
+            NextAction.reference_id == reference_id,
+            NextAction.status != "completed",
+            NextAction.deleted_at.is_(None),
+        )
+        .order_by(NextAction.created_at.desc())
+        .all()
+    )
+
+
+def upsert_system_action(
+    tenant_db: Session,
+    *,
+    tenant_id: str,
+    actor: str,
+    action_type: str,
+    reference_id: str,
+    fields: dict[str, Any],
+    wake: bool = True,
+) -> tuple[NextAction, str]:
+    """Create or refresh a beat task's self-maintained action, audited.
+
+    GDXA-1859: billing_followup, invoice_reminders_auto and outlook's sync
+    health check each added or mutated their NextAction directly and wrote no
+    audit row. The live (not completed, not deleted) row keyed by
+    ``(tenant_id, action_type, reference_id)`` is updated from ``fields``, or
+    a pending one is created. With ``wake`` an updated row returns to
+    ``pending`` unless it is under a live snooze, which the office set on
+    purpose. The audit row is flushed into the caller's transaction and
+    nothing is committed: the caller's commit lands row and trail together.
+
+    Returns ``(row, outcome)``, outcome one of ``"created"``, ``"updated"``
+    or ``"unchanged"``. An unchanged refresh writes nothing, so a daily tick
+    does not add a daily audit row for numbers that did not move.
+    """
+    actor = _system_actor(actor)
+    unknown = set(fields) - _SYSTEM_FIELDS
+    if unknown:
+        raise ValueError(f"upsert_system_action: unsupported fields {sorted(unknown)}")
+    if "estimated_value" in fields:
+        # The column is Float NOT NULL; a Decimal sum would never compare equal
+        # to the stored value and would audit an "update" on every tick, and
+        # None fails here rather than at flush.
+        fields = {**fields, "estimated_value": float(fields["estimated_value"])}
+
+    live = _live_system_actions(tenant_db, tenant_id, action_type, reference_id)
+    if len(live) > 1:
+        logger.warning(
+            "upsert_system_action: %d live %s/%s rows, refreshing the newest",
+            len(live), action_type, reference_id,
+        )
+    existing = live[0] if live else None
+    if existing is None:
+        action = NextAction(
+            tenant_id=tenant_id,
+            user_id=None,
+            action_type=action_type,
+            reference_id=reference_id,
+            status="pending",
+            **fields,
+        )
+        details = {"action_type": action_type, "reference_id": reference_id, **fields}
+        return _add_audited(tenant_db, action, details, None, actor), "created"
+
+    changed: dict[str, dict[str, Any]] = {}
+    for key, value in fields.items():
+        before = getattr(existing, key)
+        if before != value:
+            changed[key] = {"from": before, "to": value}
+            setattr(existing, key, value)
+    if wake and existing.status != "pending":
+        snoozed = (
+            existing.status == "snoozed"
+            and existing.snoozed_until is not None
+            and _make_aware(existing.snoozed_until) > _utcnow()
+        )
+        if not snoozed:
+            changed["status"] = {"from": existing.status, "to": "pending"}
+            existing.status = "pending"
+    if not changed:
+        return existing, "unchanged"
+    tenant_db.flush()
+    _audit(
+        tenant_db, tenant_id, "update", existing,
+        {"action_type": action_type, "reference_id": reference_id, "changed": changed},
+        None, user_id=actor,
+    )
+    return existing, "updated"
+
+
+def resolve_system_action(
+    tenant_db: Session,
+    *,
+    tenant_id: str,
+    actor: str,
+    action_type: str,
+    reference_id: str,
+) -> list[NextAction]:
+    """Complete every live action for this key when its condition has
+    cleared, each audited in the caller's transaction (no commit). Empty when
+    there was none, in which case nothing is written."""
+    actor = _system_actor(actor)
+    live = _live_system_actions(tenant_db, tenant_id, action_type, reference_id)
+    for existing in live:
+        previous = existing.status
+        existing.status = "completed"
+        existing.completed_at = _utcnow()
+        tenant_db.flush()
+        _audit(
+            tenant_db, tenant_id, "complete", existing,
+            {"action_type": action_type, "reference_id": reference_id,
+             "from": previous, "to": "completed"},
+            None, user_id=actor,
+        )
+    return live
 
 
 def _action_to_dict(action: NextAction) -> dict:
@@ -195,22 +393,17 @@ class NextActionQueue:
         tenant_id: str,
         action_id: str,
         tenant_db: Session,
+        request: Any = None,
     ) -> dict:
-        """Mark a persisted action as completed."""
+        """Mark a persisted action as completed, audited in the same commit."""
         try:
-            action = (
-                tenant_db.query(NextAction)
-                .filter(
-                    NextAction.id == _to_uuid(action_id),
-                    NextAction.tenant_id == tenant_id,
-                    NextAction.deleted_at.is_(None),
-                )
-                .first()
-            )
+            action = _find(tenant_db, tenant_id, action_id)
             if action is None:
                 return {"error": "Action not found", "id": action_id}
+            previous = action.status
             action.status = "completed"
             action.completed_at = _utcnow()
+            _audit(tenant_db, tenant_id, "complete", action, {"from": previous, "to": "completed"}, request)
             tenant_db.commit()
             return {"id": action_id, "status": "completed"}
         except Exception as exc:
@@ -228,22 +421,21 @@ class NextActionQueue:
         action_id: str,
         until_dt: datetime,
         tenant_db: Session,
+        request: Any = None,
     ) -> dict:
-        """Defer a persisted action until a future datetime."""
+        """Defer a persisted action until a future datetime, audited in the
+        same commit."""
         try:
-            action = (
-                tenant_db.query(NextAction)
-                .filter(
-                    NextAction.id == _to_uuid(action_id),
-                    NextAction.tenant_id == tenant_id,
-                    NextAction.deleted_at.is_(None),
-                )
-                .first()
-            )
+            action = _find(tenant_db, tenant_id, action_id)
             if action is None:
                 return {"error": "Action not found", "id": action_id}
+            previous = action.status
             action.status = "snoozed"
             action.snoozed_until = until_dt
+            _audit(
+                tenant_db, tenant_id, "snooze", action,
+                {"from": previous, "to": "snoozed", "until": until_dt.isoformat()}, request,
+            )
             tenant_db.commit()
             return {
                 "id": action_id,
@@ -271,8 +463,9 @@ class NextActionQueue:
         estimated_value: float,
         reference_id: str | None,
         tenant_db: Session,
+        request: Any = None,
     ) -> dict:
-        """Create and persist a new next action."""
+        """Create and persist a new next action, audited in the same commit."""
         try:
             action = NextAction(
                 tenant_id=tenant_id,
@@ -286,7 +479,17 @@ class NextActionQueue:
                 reference_id=reference_id,
                 status="pending",
             )
-            tenant_db.add(action)
+            _add_audited(
+                tenant_db, action,
+                {
+                    "action_type": action_type,
+                    "title": title,
+                    "priority": priority,
+                    "action_url": action_url,
+                    "reference_id": reference_id,
+                },
+                request, user_id,
+            )
             tenant_db.commit()
             tenant_db.refresh(action)
             return _action_to_dict(action)

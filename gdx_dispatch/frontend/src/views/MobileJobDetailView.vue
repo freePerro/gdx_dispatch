@@ -51,8 +51,8 @@
             >{{ customer.name }}</router-link>
             <span v-else>{{ customer?.name || '—' }}</span>
           </div>
-          <span :class="['status-pill', `status-${(job.dispatch_status || 'assigned').replace(' ', '_')}`]">
-            {{ statusLabel(job.dispatch_status) }}
+          <span :class="['status-pill', `status-${pillKey}`]" data-testid="mobile-job-detail-status">
+            {{ pillLabel }}
           </span>
         </div>
         <div v-if="job.title" class="detail-title">{{ job.title }}</div>
@@ -60,7 +60,7 @@
           <i class="pi pi-calendar" />
           {{ formatScheduled(job.scheduled_at) }}
         </div>
-        <div v-else class="detail-meta detail-meta-muted">
+        <div v-else-if="!closedStage" class="detail-meta detail-meta-muted" data-testid="mobile-job-detail-no-date">
           <i class="pi pi-calendar" />
           No date — do when in the area
         </div>
@@ -1048,6 +1048,7 @@ import MobileCustomerQuoteDialog from '../components/MobileCustomerQuoteDialog.v
 import MobileChangeOrderDialog from '../components/MobileChangeOrderDialog.vue'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
 import { isNativeCamera, captureNativePhoto } from '../lib/nativeCamera'
+import { JOB_STAGE_LABELS, normalizeJobStage } from '../lib/jobStage'
 
 const api = useApi()
 const toast = useToast()
@@ -2145,6 +2146,20 @@ function goBack() {
   else router.push('/mobile/jobs')
 }
 
+// GDXA-1942: a completed or cancelled job is over whatever dispatch_status
+// last said (a cancel does not touch it), so the pill names the stage and
+// the "do when in the area" nudge for an undated job goes away.
+const closedStage = computed(() => {
+  const s = normalizeJobStage(job.value?.lifecycle_stage)
+  return s === 'completed' || s === 'cancelled' ? s : ''
+})
+const pillKey = computed(
+  () => closedStage.value || String(job.value?.dispatch_status || 'assigned').replace(' ', '_'),
+)
+const pillLabel = computed(() =>
+  closedStage.value ? JOB_STAGE_LABELS[closedStage.value] : statusLabel(job.value?.dispatch_status),
+)
+
 function statusLabel(s) {
   return ({
     en_route: 'En route',
@@ -2347,7 +2362,8 @@ onBeforeUnmount(() => {
 .status-unassigned { background: #6b7280; color: #fff; }
 .status-en_route { background: #f59e0b; color: #1f2937; }
 .status-on_site { background: #2563eb; color: #fff; }
-.status-done { background: #15803d; color: #fff; }
+.status-done, .status-completed { background: #15803d; color: #fff; }
+.status-cancelled { background: #b91c1c; color: #fff; }
 .state-msg {
   text-align: center; padding: 2rem 1rem;
   color: var(--p-text-muted-color, #6b7280);
@@ -2435,7 +2451,7 @@ onBeforeUnmount(() => {
 }
 .chip-on {
   background: var(--p-primary-color);
-  border-color: var(--p-primary-color); color: #fff; font-weight: 600;
+  border-color: var(--p-primary-color); color: var(--text-on-p-primary); font-weight: 600;
 }
 .suggest-list {
   list-style: none; margin: 0; padding: 0;

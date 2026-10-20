@@ -1278,6 +1278,39 @@ def test_send_email_has_no_link_when_base_unset(client: TestClient, monkeypatch)
     assert "/proposals/" not in captured["html_body"]
 
 
+def _pdf_text(b64: str) -> str:
+    import base64
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(base64.b64decode(b64))).pages)
+
+
+def test_the_emailed_pdf_prints_the_expiry_the_send_sets(client: TestClient, monkeypatch):
+    """The PDF is rendered before the send stamps valid_until, so a draft's
+    attachment had no Valid-until line while the email body beside it printed
+    the real date. Composer preview and send both print the date the send
+    sets — the one stored afterwards."""
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+    assert estimate.get("valid_until") is None
+
+    compose = client.get(f"/api/estimates/{estimate['id']}/email-compose")
+    assert compose.status_code == 200, compose.text
+    assert "Valid until:" in _pdf_text(compose.json()["pdf"]["content_base64"])
+
+    assert client.post(f"/api/estimates/{estimate['id']}/send").status_code == 200
+    dep = client.app.dependency_overrides[get_db]
+    db = next(dep())
+    try:
+        stored = db.get(Estimate, UUID(estimate["id"])).valid_until
+    finally:
+        db.close()
+    pdf = next(a for a in captured["attachments"] if a["content_type"] == "application/pdf")
+    assert f"Valid until: {stored.date().isoformat()}" in _pdf_text(pdf["content_base64"])
+
+
 def test_email_compose_appends_approval_link(client: TestClient, monkeypatch):
     """The manual-composer path must carry the same link (invoice compose's
     'Pay online:' pattern). PDF rendering is stubbed — this asserts the body
@@ -1579,7 +1612,7 @@ def test_m25_explicit_zero_margin_override_sells_at_cost(client: TestClient):
     assert r.status_code == 200, r.text
     body = r.json()
     lines = body.get("lines") or body.get("line_items") or []
-    mine = next((l for l in lines if l.get("id") == line_id), body)
+    mine = next((line for line in lines if line.get("id") == line_id), body)
     got = float(mine.get("unit_price") or 0)
     assert got == 120.0, (
         f"0% override must sell at the new cost (120.00), got {got} — "

@@ -1244,7 +1244,6 @@
       </Dialog>
 
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 mounts one globally. -->
-      <Toast data-testid="estimate-view-toast" />
       <SmsLinkDialog
         v-if="isExisting"
         v-model:visible="showSmsDialog"
@@ -1301,7 +1300,6 @@ import InputText from "primevue/inputtext";
 import Select from "primevue/select";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
-import Toast from "primevue/toast";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { keepMountedThroughNextNavigation } from '../lib/viewRemount';

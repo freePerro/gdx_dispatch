@@ -1077,11 +1077,14 @@ def test_tenant_zoneinfo_failed_read_is_logged_not_silent(caplog):
     ]
 
 
-def test_tenant_zoneinfo_invalid_zone_name_is_logged_not_silent(caplog):
+def test_tenant_zoneinfo_invalid_zone_name_is_logged_not_silent(caplog, monkeypatch):
     """The sibling of the failed-read fallback: a bad zone NAME stored in
-    app_settings used to fall back to New York with no trace. Since GDXA-1620
-    it lands where the shared reader's ``resolve_zone`` lands every other
-    caller (UTC), and still leaves the warning."""
+    app_settings used to fall back to New York with no trace. It lands where
+    the shared reader lands every other caller (GDXA-1620): the shop default,
+    with the reader's own warning naming the bad zone (GDXA-1618)."""
+    from gdx_dispatch.core import pay_periods
+
+    monkeypatch.setattr(pay_periods, "_WARNED", set())
 
     class _Db(_SavepointCapableFake):
         def query(self, *_a, **_k):
@@ -1093,14 +1096,14 @@ def test_tenant_zoneinfo_invalid_zone_name_is_logged_not_silent(caplog):
                     return "Not/AZone"
             return _Q()
 
-    with caplog.at_level("WARNING", logger="gdx_dispatch.modules.bank_feeds.service"):
+    with caplog.at_level("WARNING", logger=pay_periods.__name__):
         tz = service.tenant_zoneinfo(_Db())
 
-    assert str(tz) == "UTC"  # the shared reader's bad-name fallback
+    assert str(tz) == pay_periods.DEFAULT_SHOP_TZ  # the shared reader's bad-name fallback
     assert any(
-        "bank_feeds_tenant_timezone_invalid" in r.message and "Not/AZone" in r.message
+        "shop_timezone_unset" in r.getMessage() and "Not/AZone" in r.getMessage()
         for r in caplog.records
-    ), [r.message for r in caplog.records]
+    ), [r.getMessage() for r in caplog.records]
 
 
 def test_tenant_zoneinfo_reads_through_the_shared_shop_zone_reader(tenant_db):

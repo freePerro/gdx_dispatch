@@ -2,7 +2,10 @@
 
 **Status:** Implemented 2026-06-24 (designed 2026-06-23 with Doug; reconstructed after a
 context-cleared session, then refined through the model A/B/C comparison below). See
-**Build status** at the end.
+**Build status** at the end. **Amended 2026-10-19 (Doug):** the scoped plugin DB role this
+ADR promises was never built. Plugins are trusted first-party code today, and the scoped
+role is a prerequisite before in-app or third-party install ships. See **Amendment
+(2026-10-19)** at the end.
 
 ## Context
 
@@ -79,6 +82,9 @@ matters a lot.
   `require_module(key)` using the forwarded context.
 - **Trust boundary** — `plugin-host` gets a **scoped DB role / API token**, NOT the core
   app's full access. A rogue or buggy plugin's blast radius is the plugin-host, not core.
+  *Amended 2026-10-19: this was the design, and it is **not in effect**. plugin-host
+  shares the app's `DATABASE_URL`, so a plugin's blast radius includes the whole
+  database. See Amendment (2026-10-19).*
 - **Migration split** — core app migrates core (unchanged single-migrator advisory lock).
   `plugin-host`, *after core is healthy*, runs each enabled plugin's Alembic branch against
   the shared DB under its **own** advisory lock, then mounts. Tables namespaced `plug_<key>_*`.
@@ -185,6 +191,9 @@ plugins no longer share the **core** process — a crash/leak is contained to `p
    by design — the escape hatch is contributing the capability to the host, not shipping JS.
 5. **Runtime install trust.** In-app install pulls + runs external code (in plugin-host).
    Owner-only, audited, scoped DB role; blast radius is plugin-host. Operator vets the package.
+   *Amended 2026-10-19: owner-only and audited hold; the scoped DB role does not exist,
+   so the blast radius is the shared database, not plugin-host. In-app and third-party
+   install must not ship until the role is built. See Amendment (2026-10-19).*
 
 ## Install ≠ enable
 
@@ -199,7 +208,8 @@ arbitrary uploader, and never executes plugin code inside the **core** app.
 ## Consequences
 
 - New `plugin-host` service in the compose stack (+ selfhost overlay), `/plugins` volume,
-  scoped DB role, internal-only network.
+  scoped DB role, internal-only network. *(Amended 2026-10-19: the scoped DB role was
+  not built; see Amendment (2026-10-19).)*
 - Core app gains a `/api/plugins/*` proxy with identity forwarding.
 - `update.sh`/entrypoint gain the core→plugins migration ordering.
 - We own and version `gdx.plugin_api` (incl. `PluginBase`), the UI-manifest schema, and a
@@ -328,7 +338,8 @@ obfuscation — reuse `bandit`/`pip-audit`/`semgrep`) is worth adding as a gate,
 most valuable on the **backend** package where the plugin actually executes Python.
 It is a **complement** to isolation, not a substitute: static analysis can't prove
 absence of malice (runtime fetch-and-exec defeats it), so it never replaces the
-no-browser-JS + scoped-DB-role + require_module model.
+no-browser-JS + scoped-DB-role + require_module model. *(Amended 2026-10-19: the
+scoped-DB-role leg of that model is not built; see Amendment (2026-10-19).)*
 
 **Where:** `frontend/src/composables/usePluginScreen.js`,
 `frontend/src/components/PluginScreen.vue`. First consumer: an internal estimator plugin (dependent dropdowns + a number field).
@@ -371,3 +382,48 @@ Per-plugin read-permission gating, the mobile "Desktop" pill, and the owner-only
 "Manage plugins" link are unchanged; the Plugins group simply may be absent when
 every installed plugin placed itself elsewhere (the manage link still forces it
 for owners). Reference use: `gdx-plugin-eventlog` declares `icon`.
+
+## Amendment (2026-10-19, Doug) — the scoped plugin DB role was never built
+
+**What this ADR promised.** The Trust boundary bullet (Architecture → How it works),
+hard problem 5 (Runtime install trust), the Consequences list and the 2026-06-30
+pre-install-scan note all describe plugin-host as running under a **scoped DB role**,
+so that a rogue or buggy plugin's blast radius stops at plugin-host. Those sentences
+are kept above as the design record; each carries a dated marker pointing here.
+
+**What is true today (checked 2026-10-19 against the code).** The promise is **not in
+effect**:
+
+- plugin-host's `environment` merges `<<: *app-env`, so it receives the core app's
+  `DATABASE_URL` (`gdx_dispatch/docker/docker-compose.yml`, which customers run as
+  is since the one layout; the demo stack does the same through `*demo-env`).
+- `plugin_api/context.py` `plugin_session()` and `get_plugin_db()` open the core
+  `SessionLocal()`, with no role, no schema restriction and no table allow-list.
+- A search for `plugin_role`, `PLUGIN_DATABASE_URL` or "scoped role" finds no
+  implementation, only this ADR.
+
+So a plugin can read and write every table in the tenant database, money tables
+included. The "blast radius is plugin-host, not core" claim holds for process faults
+(crash, leak, CPU) and not for data.
+
+**The boundary that actually holds.** Plugins are **trusted first-party code**. What
+stands between a plugin and the database is who may put code into plugin-host:
+installing is owner-only and audited (`routers/admin_plugins.py`), elevated plugin
+permissions need explicit owner consent (`core/plugin_consent.py`), and the plugins
+that run are ones we wrote or vetted. The "operator vets the package" line in
+Decision 2 is no longer one layer among several. It is the whole data-side
+boundary.
+
+**Required condition (Doug).** The scoped Postgres role is a **prerequisite before
+in-app or third-party plugin install ships.** Until it is built, do not offer in-app
+install of a package we did not write, and do not present third-party plugins as
+supported. The in-app install mechanism itself (Build status, step 5) exists in code.
+This condition governs shipping it to operators for outside code, not the mechanism.
+When the role is built, it has to cover both `plugin_session()` and `get_plugin_db()`,
+and also the plugin-schema migration phase, which today creates `plug_<key>_*` tables
+over the same connection.
+
+**Not decided here:** the role's shape (per-plugin roles, one shared plugin role,
+schema-per-plugin) and how plugins that legitimately read core tables (the catalog
+upsert in `plugin_api/catalog.py`, the event platform) reach them under it. Those
+belong in the build plan for the role.

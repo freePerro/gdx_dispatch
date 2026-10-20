@@ -85,7 +85,7 @@ def test_a_storefront_install_records_the_installer(db, monkeypatch):
     wheel = b"PK\x03\x04 wheel"
     entry = {
         "key": "n8n", "distribution": "gdx-plugin-n8n", "version": "0.1.0",
-        "name": "n8n", "permissions": ["events"],
+        "name": "n8n", "permissions": ["events"], "requires": "",
         "wheel_url": "https://github.com/o/r/gdx_plugin_n8n-0.1.0-py3-none-any.whl",
         "sha256": hashlib.sha256(wheel).hexdigest(),
     }

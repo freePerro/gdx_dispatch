@@ -284,7 +284,9 @@ def unlock_user(
         result = db.execute(
             _update(User)
             .where(User.id == uid)  # tenant isolation is the connection (B1); no company_id filter
-            .values(failed_login_count=0)
+            # Clears the login lockout too (GDXA-1995): zeroing the count
+            # alone left an account locked until locked_until lapsed.
+            .values(failed_login_count=0, locked_until=None)
         )
         db.commit()
     except Exception:

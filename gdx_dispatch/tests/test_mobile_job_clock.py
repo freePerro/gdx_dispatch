@@ -390,6 +390,72 @@ def test_clock_out_with_no_open_timer_is_404(session_factory):
         db.close()
 
 
+def test_stop_loses_the_race_to_the_shift_end_sweep(session_factory, monkeypatch):
+    """GDXA-1878: the sweep stops the row between Stop's SELECT and UPDATE.
+
+    Stop must not re-stamp the sweep's clock_out, append a second Stop note,
+    or audit a stop it did not make. Drop `AND clock_out IS NULL` from
+    _close_open_time_entry and this fails on the 200, then on clock_out.
+    """
+    from gdx_dispatch.tasks.job_timer_sweep import auto_stop_note
+
+    db = session_factory()
+    try:
+        mobile_router.mobile_clock_in(
+            job_id=_JOB_ID, request=_request(), current_user=_TEST_USER, db=db
+        )
+        _backdate_open_entry(db, 90)
+        swept_at = datetime.now(UTC) - timedelta(minutes=30)
+
+        real_find = mobile_router._todays_open_job_timer
+
+        def find_then_sweep(*args, **kwargs):
+            row = real_find(*args, **kwargs)
+            sweeper = session_factory()
+            try:
+                # The sweep's own guarded write (stop_open_job_timer) in raw
+                # SQL: on SQLite mobile clock-in stores a dashed id, which the
+                # ORM's hex-compared Uuid never matches.
+                stopped = sweeper.execute(
+                    text(
+                        "UPDATE time_entries SET clock_out = :co, duration_minutes = 0,"
+                        " notes = :note WHERE id = :id AND clock_out IS NULL"
+                    ),
+                    {"co": swept_at, "note": auto_stop_note(), "id": row["id"]},
+                )
+                assert stopped.rowcount == 1
+                sweeper.commit()
+            finally:
+                sweeper.close()
+            return row
+
+        monkeypatch.setattr(mobile_router, "_todays_open_job_timer", find_then_sweep)
+        audited: list[str] = []
+        monkeypatch.setattr(
+            mobile_router, "_audit_state_change",
+            lambda *a, **kw: audited.append(kw.get("event_type")),
+        )
+
+        r = mobile_router.mobile_clock_out(
+            job_id=_JOB_ID, request=_request(), current_user=_TEST_USER, db=db
+        )
+        assert r.status_code == 404, _as_json(r)
+        assert audited == [], "Stop audited a stop the sweep made"
+
+        db.rollback()
+        row = _open_entry(db)
+        stored = row["clock_out"]
+        if isinstance(stored, str):
+            stored = datetime.fromisoformat(stored)
+        if stored.tzinfo is None:
+            stored = stored.replace(tzinfo=UTC)
+        assert stored == swept_at, "Stop overwrote the sweep's clock_out"
+        assert row["notes"] == auto_stop_note(), f"second Stop note appended: {row['notes']!r}"
+        assert row["duration_minutes"] == 0
+    finally:
+        db.close()
+
+
 def test_soft_deleted_timer_is_not_open(session_factory):
     """Alignment with jobs.py::_open_job_timers, which filters deleted_at.
 

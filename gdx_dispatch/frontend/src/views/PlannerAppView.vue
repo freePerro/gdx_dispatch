@@ -144,7 +144,7 @@ function onCaptureSaved() {
   border: none;
   border-radius: 1.5rem;
   background: var(--p-primary-color);
-  color: var(--p-primary-contrast-color);
+  color: var(--text-on-p-primary);
   font: inherit;
   font-weight: 600;
   box-shadow: 0 4px 12px rgb(0 0 0 / 25%);

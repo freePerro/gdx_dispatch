@@ -27,6 +27,19 @@ GDX_AUDIENCE = f"{GDX_ISSUER}/mcp"
 ACME_ISSUER = "https://acme.example.com"
 ACME_AUDIENCE = f"{ACME_ISSUER}/mcp"
 
+# verify_mcp_bearer reads its key from the environment on every call, so the
+# file pins it: an ambient JWT_SECRET that happened to equal the "wrong" key
+# made the wrong-signature test accept a validly signed token (GDXA-1951).
+SECRET = "mcp-bearer-test-secret-at-least-32-bytes-long"
+WRONG_SECRET = SECRET + "-wrong"
+
+
+@pytest.fixture(autouse=True)
+def _pinned_secret(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+    monkeypatch.delenv("RS_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("RS_PUBLIC_KEY", raising=False)
+
 
 def _mint(tenant_id=GDX_UUID, issuer=GDX_ISSUER, audience=GDX_AUDIENCE, ttl=3600):
     return mint_mcp_access_token(
@@ -129,9 +142,6 @@ def test_expired_token_is_rejected():
 
 def test_missing_required_claim_is_rejected():
     """A token signed by us but lacking gdx_tid must be rejected."""
-    import os
-
-    secret = os.environ["JWT_SECRET"]
     bad_payload = {
         "iss": GDX_ISSUER,
         "aud": GDX_AUDIENCE,
@@ -141,7 +151,7 @@ def test_missing_required_claim_is_rejected():
         "exp": int(time.time()) + 3600,
         # no gdx_tid claim
     }
-    bad_token = jwt.encode(bad_payload, secret, algorithm="HS256")
+    bad_token = jwt.encode(bad_payload, SECRET, algorithm="HS256")
     with pytest.raises(BearerInvalid):
         verify_mcp_bearer(
             bad_token,
@@ -163,7 +173,7 @@ def test_wrong_signature_is_rejected():
         "iat": int(time.time()),
         "exp": int(time.time()) + 3600,
     }
-    bad_token = jwt.encode(bad_payload, "x" * 64, algorithm="HS256")  # wrong key
+    bad_token = jwt.encode(bad_payload, WRONG_SECRET, algorithm="HS256")
     with pytest.raises(BearerInvalid):
         verify_mcp_bearer(
             bad_token,

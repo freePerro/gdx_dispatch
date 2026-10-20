@@ -310,6 +310,66 @@ class LoginBody(BaseModel):
 def _unauth(msg: str = "Invalid credentials") -> HTTPException:
     return HTTPException(status_code=401, detail=msg)
 
+# GDXA-1995 — per-account lockout. The rate limiter's `auth-ip:` bucket
+# (core/rate_limiter.py) throttles one source IP; it cannot see a guess spread
+# across many IPs against one account, which is what this counts. The count is
+# users.failed_login_count, the column admin unlock (/api/admin/users/{id}/unlock)
+# already resets, so the two cannot drift onto separate counters. Locking
+# zeroes the count: after the lock lapses the account gets 10 more tries.
+LOGIN_LOCK_THRESHOLD = 10
+LOGIN_LOCK_SECONDS = 15 * 60
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """SQLite hands a DateTime(timezone=True) back naive; it was written UTC."""
+    if dt is None or dt.tzinfo is not None:
+        return dt
+    return dt.replace(tzinfo=UTC)
+
+def login_lock_until(user: Any) -> datetime | None:
+    """When a live login lockout on ``user`` lapses; None when there is none."""
+    until = getattr(user, "locked_until", None)
+    if not isinstance(until, datetime):
+        return None
+    until = cast(datetime, _as_utc(until))
+    return until if until > datetime.now(UTC) else None
+
+def _record_login_failure(db: Session, user_id: Any, email: str, tenant_id: str, request: Request) -> None:
+    """Count a wrong password against an existing account; lock it at the
+    threshold. The increment is one UPDATE so concurrent guesses cannot both
+    read the same count. Never raises: the caller's 401 must still go out."""
+    from sqlalchemy import func, update
+
+    from gdx_dispatch.models.tenant_models import User as _User
+    try:
+        db.execute(
+            update(_User).where(_User.id == user_id)
+            .values(failed_login_count=func.coalesce(_User.failed_login_count, 0) + 1)
+            .execution_options(synchronize_session=False)
+        )
+        count = db.execute(select(_User.failed_login_count).where(_User.id == user_id)).scalar() or 0
+        if count >= LOGIN_LOCK_THRESHOLD:
+            until = datetime.now(UTC) + timedelta(seconds=LOGIN_LOCK_SECONDS)
+            db.execute(
+                update(_User).where(_User.id == user_id)
+                .values(locked_until=until, failed_login_count=0)
+                .execution_options(synchronize_session=False)
+            )
+            log_audit_event_sync(
+                db,
+                tenant_id=tenant_id,
+                user_id=str(user_id),
+                action="login_locked",
+                entity_type="user",
+                entity_id=str(user_id),
+                details={"email": email, "failed_attempts": count,
+                         "locked_until": until.isoformat(), "lock_seconds": LOGIN_LOCK_SECONDS},
+                request=request,
+            )
+        db.commit()
+    except Exception:
+        log.exception("login_failure_count_error")
+        db.rollback()
+
 def _end_phone_alerts(db: Session, sub: str, reason: str) -> int | str:
     """A revoked session can mint a phone-alerts token that outlives it, so
     an admin-revoked refresh token, and an admin "revoke all sessions", end
@@ -353,10 +413,8 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> J
             block_reason = "user_deleted"
         elif getattr(_u, "active", True) is False:
             block_reason = "user_inactive"
-        else:
-            locked_until = getattr(_u, "locked_until", None)
-            if locked_until is not None and locked_until > datetime.now(UTC):
-                block_reason = "user_locked"
+        elif login_lock_until(_u) is not None:
+            block_reason = "user_locked"
     if block_reason:
         try:
             log_audit_event_sync(
@@ -405,6 +463,16 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> J
             db.commit()
         except Exception:
             log.exception("login_failed_audit_error")
+            # A failed commit leaves the session unusable; the count below
+            # must still land.
+            db.rollback()
+        # Same 401 whether or not the account exists: only a real account
+        # has a count to bump, and nothing about it reaches the response.
+        if _u is not None:
+            _record_login_failure(
+                db, _u.id, body.email,
+                str(getattr(request.state, "tenant", {}).get("id", "")), request,
+            )
         raise _unauth()
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
     sub, role = str(row["id"]), str(row.get("role") or "user")
@@ -415,21 +483,36 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> J
         _u.last_login_at = datetime.now(UTC)
     except Exception:
         log.exception("last_login_bookkeep_failed")
+    # A correct password clears the failure count and a lapsed lock (GDXA-1995);
+    # audited only when there was something to clear, not on every login. The
+    # clear, its row and login_success commit together or not at all.
+    audit_rows: list[tuple[str, str, dict[str, Any]]] = []
+    prior_failures = int(getattr(_u, "failed_login_count", 0) or 0)
+    prior_lock = _as_utc(getattr(_u, "locked_until", None))
+    if prior_failures or prior_lock is not None:
+        _u.failed_login_count = 0
+        _u.locked_until = None
+        audit_rows.append(("login_lockout_reset", "user", {
+            "email": body.email, "failed_attempts": prior_failures,
+            "locked_until": prior_lock.isoformat() if prior_lock else None,
+        }))
+    audit_rows.append(("login_success", "auth", {"email": body.email, "role": role}))
     access, _ = _issue(sub, tenant_id, role, ACCESS_TTL, "access")
     refresh, rjti = _issue(sub, tenant_id, role, REFRESH_TTL, "refresh")
     redis.sadd(f"refresh_family:{sub}", rjti); redis.expire(f"refresh_family:{sub}", REFRESH_TTL)  # noqa: E701,E702
     log.info("auth_login_success", extra={"tenant_id": tenant_id, "user_id": sub})
     try:
-        log_audit_event_sync(
-            db,
-            tenant_id=tenant_id,
-            user_id=sub,
-            action="login_success",
-            entity_type="auth",
-            entity_id=sub,
-            details={"email": body.email, "role": role},
-            request=request,
-        )
+        for action, entity_type, details in audit_rows:
+            log_audit_event_sync(
+                db,
+                tenant_id=tenant_id,
+                user_id=sub,
+                action=action,
+                entity_type=entity_type,
+                entity_id=sub,
+                details=details,
+                request=request,
+            )
         db.commit()
     except Exception:
         log.exception("login_success_audit_error")

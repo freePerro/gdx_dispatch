@@ -26,7 +26,14 @@ from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_site, resolve_job_sites
-from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
+from gdx_dispatch.core.job_taxonomy import (
+    RETURN_VISIT_CALLBACK,
+    RETURN_VISIT_CLOSEOUT,
+    RETURN_VISIT_FOLLOW_UP,
+    SERVICE_CALL,
+    canonical_job_type,
+    counts_as_callback,
+)
 from gdx_dispatch.core.link_sms import as_uuid
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.part_pricing import (
@@ -498,6 +505,7 @@ def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
         "updated_at": job.updated_at,
         "is_demo": job.is_demo,
         "is_return_visit": job.is_return_visit,
+        "return_visit_source": job.return_visit_source,
         "parent_job_id": job.parent_job_id,
         "source": job.source,
         "company_id": job.company_id,
@@ -734,7 +742,7 @@ def list_jobs(
         order_sql = "ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC "
     offset = (page - 1) * page_size
 
-    # Dynamic WHERE — kept as raw SQL because of ILIKE, CAST on PG enum, and
+    # Dynamic WHERE — kept as raw SQL because of CAST on PG enum and
     # conditional clauses that are hard to express portably with the ORM.
     where = ["j.company_id = :tenant_id", "j.deleted_at IS NULL"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
@@ -744,7 +752,11 @@ def list_jobs(
         # the identifier you can search by. Without it, a user reads
         # "JOB-2026-014" off the screen, types it into a job search, and gets
         # nothing.
-        where.append("(j.title ILIKE :search OR c.name ILIKE :search OR j.job_number ILIKE :search)")
+        # LOWER() LIKE LOWER(), not ILIKE: SQLite has no ILIKE.
+        where.append(
+            "(LOWER(j.title) LIKE LOWER(:search) OR LOWER(c.name) LIKE LOWER(:search) "
+            "OR LOWER(j.job_number) LIKE LOWER(:search))"
+        )
         params["search"] = f"%{search}%"
     if status:
         # Match against both normalized and raw forms (supports 'Scheduled' / 'scheduled' / lifecycle_stage)
@@ -1391,6 +1403,7 @@ def update_job(
                 db, job, updates.get("scheduled_duration_hours", UNSET),
             ),
             scheduled_at=updates.get("scheduled_at", UNSET),
+            first_day_minutes=data.get("visit_duration_minutes"),
             crew_after=tuple(desired_tech_ids) if apply_assignments else None,
             fields=visit_fields(
                 db, updates.get("title", job.title), updates.get("customer_id", job.customer_id),
@@ -1876,11 +1889,15 @@ def _earlier_day_open_refusal(
     }, 409)
 
 
-def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, user: Any) -> None:
-    """The completion write shared by /complete and /close-without-work: the
-    stage, the "Completed" spelling, completed_at, dispatch done, the job's
-    visits (F1), and the job.completed webhook staged before the caller's
-    commit."""
+def _mark_job_completed(
+    db: Session, job: Job, now: datetime, tenant_id: str, user: Any, *, emit: bool = True
+) -> None:
+    """The completion write shared by /complete, /close-without-work and
+    /closeout: the stage, the "Completed" spelling, completed_at, dispatch
+    done, the job's visits (F1), and the job.completed webhook staged before
+    the caller's commit. ``emit=False`` is for a closeout restatement: the job
+    was already completed, so a second job.completed would announce a
+    completion that did not happen (GDXA-1954)."""
     _finish_visits(db, job, now, user)
     job.lifecycle_stage = "completed"
     job.status = "Completed"
@@ -1888,7 +1905,8 @@ def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, us
     job.dispatch_status = "done"
     job.updated_at = now
     db.flush()
-    _emit_job_event(db, job, "job.completed", tenant_id)
+    if emit:
+        _emit_job_event(db, job, "job.completed", tenant_id)
 
 
 class JobCompletePayload(BaseModel):
@@ -3087,18 +3105,18 @@ def closeout_job(
 
         # 4) Flip the job to completed. Stamp signature for back-compat
         #    with the Phase 1 /complete reader path that checks job.signature_data.
-        #    Its visits first (F1).
+        #    The completion write is the shared one, so a first closeout stages
+        #    job.completed like /complete does; a restatement of an already
+        #    completed job stages none (GDXA-1954).
         stage_before = (job.lifecycle_stage, job.status)
-        _finish_visits(db, job, now, current_user)
-        job.lifecycle_stage = "completed"
-        job.status = "Completed"
-        job.completed_at = now
-        job.dispatch_status = "done"
         if payload.signature_data:
             job.signature_data = payload.signature_data
         if payload.notes:
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
-        job.updated_at = now
+        _mark_job_completed(
+            db, job, now, tenant_id, current_user,
+            emit=stage_before[0] != "completed",
+        )
 
         # 5) Parts the job still NEEDS (Doug 2026-08-04) — filed as the same
         #    row the job-screen Parts card creates (status='needed',
@@ -3239,6 +3257,7 @@ def closeout_job(
                     billing_status="unbilled",
                     priority=job.priority or "Normal",
                     is_return_visit=True,
+                    return_visit_source=RETURN_VISIT_CLOSEOUT,
                 )
                 db.add(child)
                 return_visit_job_id = str(child.id)
@@ -4736,7 +4755,9 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         d["lifecycle_stage"] = canon
         # S5-A4: callback detection. A job is a callback if it has a parent
         # job and that parent completed within the last 90 days. Different P&L
-        # treatment downstream (warranty cost vs new revenue).
+        # treatment downstream (warranty cost vs new revenue). GDXA-1946: a
+        # closeout's return-visit child is the same job continuing on another
+        # day, not a callback; the parent link alone cannot tell them apart.
         d["is_callback"] = False
         d["callback_window_days"] = 90
         # GDXA-227: a parent that is completed (lifecycle_stage, or a legacy
@@ -4744,7 +4765,7 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         # completed_at cannot be dated, so the 90-day test cannot run. Say so
         # rather than reporting "not a callback"; never invent the date.
         d["callback_undetermined"] = False
-        if job.parent_job_id:
+        if job.parent_job_id and counts_as_callback(job.return_visit_source):
             try:
                 parent_row = db.execute(
                     select(Job.completed_at, Job.lifecycle_stage, Job.status).where(
@@ -5270,6 +5291,7 @@ def create_follow_up_job(
             billing_status="unbilled",
             priority="Normal",
             is_return_visit=True,
+            return_visit_source=RETURN_VISIT_FOLLOW_UP,
         )
         db.add(follow_up)
         db.flush()
@@ -5392,6 +5414,7 @@ def spawn_return_visit(
             billing_status="unbilled",
             priority=original.priority or "Normal",
             is_return_visit=True,
+            return_visit_source=RETURN_VISIT_CALLBACK,
         )
         db.add(child)
         db.flush()
@@ -5457,23 +5480,31 @@ def _apply_reopen(
     db: Session, job: Job, plan: Any, payload: StateOverridePayload, user: Any,
 ) -> tuple[Job, dict[str, Any]]:
     """The re-open's writes after its status flip: the job's date and crew,
-    its visits (R0 and E4), and recompute. Returns the job and the crew
-    change for the caller's audit row ({} when the crew was not touched)."""
-    from gdx_dispatch.services.visit_sync import UNSET
+    its dispatch status, its visits (R0 and E4), and recompute. Returns the
+    job and the details for the caller's audit row: the crew change (absent
+    when the crew was not touched) and the dispatch_status from/to.
+
+    A re-opened job is live again, so dispatch starts over from the crew it
+    now has (GDXA-1929): left at "done", mobile refused every forward move
+    and the job dropped off the tech's list."""
+    from gdx_dispatch.services.visit_sync import UNSET, job_crew
 
     if plan.scheduled_at is not UNSET:
         job.scheduled_at = plan.scheduled_at
     db.flush()
-    crew_change: dict[str, Any] = {}
+    details: dict[str, Any] = {}
+    prior_dispatch = job.dispatch_status
     if payload.assigned_to:
-        crew_change = _set_job_assignments(
+        details = _set_job_assignments(
             db, job_id=str(job.id), tech_ids=[payload.assigned_to],
             lead_tech_id=payload.assigned_to, user_id=_user_id(user),
             prior_primary=str(job.assigned_to) if job.assigned_to else None,
         )
         job = db.get(Job, job.id)
+    job.dispatch_status = "assigned" if job_crew(db, job) else "unassigned"
+    details["dispatch_status"] = {"from": prior_dispatch, "to": job.dispatch_status}
     _apply_visits(db, job, plan, user, "job_reopened")
-    return job, crew_change
+    return job, details
 
 
 def _validate_reason(reason: str | None) -> str | None:
@@ -5530,12 +5561,12 @@ def uncomplete_job(
         job.status = "In Progress"
         job.completed_at = None
         job.updated_at = now
-        job, crew_change = _apply_reopen(db, job, plan, payload, current_user)
+        job, reopen_details = _apply_reopen(db, job, plan, payload, current_user)
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_uncompleted", entity_type="job", entity_id=str(job.id),
             details={
-                **crew_change,
+                **reopen_details,
                 "reason": cleaned,
                 **_stage_move(*prior, job),
                 "prior_completed_at": prior_completed_at.isoformat() if prior_completed_at else None,
@@ -5593,11 +5624,9 @@ def reactivate_job(
         prior = (job.lifecycle_stage, job.status)
         # Live first, so recompute sees a live job; the stage is picked below.
         job.lifecycle_stage = "service_call"
-        if payload.assigned_to:
-            job.dispatch_status = "assigned"
         job.updated_at = now
         prior_scheduled_at = job.scheduled_at
-        job, crew_change = _apply_reopen(db, job, plan, payload, current_user)
+        job, reopen_details = _apply_reopen(db, job, plan, payload, current_user)
         # Reactivate to "scheduled" only if the job has a date — read AFTER
         # recompute. Cancelling retired its visits, so a re-activate sent with
         # no date and no Current visit left has only the stale date: clear it
@@ -5643,7 +5672,7 @@ def reactivate_job(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_reactivated", entity_type="job", entity_id=str(job.id),
             details={
-                **crew_change,
+                **reopen_details,
                 "reason": cleaned,
                 **_stage_move(*prior, job),
                 "new_scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
@@ -5790,7 +5819,7 @@ def cancel_job(
         if stage == "cancelled":
             return jsonable_response({"detail": "this job is already cancelled"}, 409)
         if stage == "completed":
-            # LIFECYCLE_TRANSITIONS: completed goes nowhere. Re-open it first,
+            # A completed job is not cancelled directly. Re-open it first,
             # which records why the finished job is being moved.
             return jsonable_response({
                 "detail": "This job is completed. Use Re-open on the job page "

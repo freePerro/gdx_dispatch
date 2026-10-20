@@ -38,14 +38,19 @@ Moved here from `CLAUDE.md` on 2026-10-11 so it loads when a matching file is re
   adding lines above a recorded finding shifts it and reddens the scan even
   when nothing changed. Re-freeze with
   `gdx_dispatch/tools/tenant_plane_redundant_filter_scan.py`.
-- **`# noqa:` is shared with the repo's own scanners** (`RAWENC1`, `T6`,
-  `X1`). ruff ignores a code it doesn't know, but it parses every `noqa`
-  comment and accepts only uppercase letters followed by digits. A code
-  outside that grammar gets `Invalid # noqa directive` and voids every ruff
-  code listed *after* it. So does `noqa:` prose in a plain comment, unless a
-  valid `noqa` comes before it on the line. The scanner code was `RAW_ENC`
-  until GDXA-302 (2026-10-06), and it warned on every site. Check with
-  `ruff check --no-cache`, because cached files re-emit no warnings.
+- **`# noqa:` is shared with the repo's own scanners** (`RAWENC1`,
+  `SILENTFAIL1`, `T6`, `X1`). ruff ignores a code it doesn't know, but it
+  parses every `noqa` comment and accepts only uppercase letters followed by
+  digits. A code outside that grammar gets `Invalid # noqa directive` and
+  voids every ruff code listed *after* it. So does `noqa:` prose in a plain
+  comment, unless a valid `noqa` comes before it on the line. The scanner
+  codes were `RAW_ENC` until GDXA-302 (2026-10-06) and `silent-failure` until
+  GDXA-1892 (2026-10-19). ruff warns only when the bad code comes first, so
+  ruff's warnings are not a census: 6 of the 11 `silent-failure` sites sat
+  after `BLE001` or `E501` and drew no warning. CI's lint job fails on any
+  warned site, or legacy `silent-failure` comment, not listed in
+  `.ruff_invalid_noqa_pending` (`tools/ruff_noqa_guard.py`). Check by hand
+  with `ruff check --no-cache`, because cached files re-emit no warnings.
 - CodeQL's `py/path-injection` recognizes only `realpath`/`normpath`/`abspath`
   followed by `startswith`. `Path.resolve().is_relative_to()` and
   `commonpath` are genuinely safe and still flagged.

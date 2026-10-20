@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -10,8 +11,9 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase, utcnow
+from gdx_dispatch.core.audit import AuditLog, TenantBase, utcnow
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import Customer
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.surveys import (
     SurveySend,
@@ -301,3 +303,165 @@ def test_tenant_scope():
         c2.app.dependency_overrides.clear()
         c1._engine.dispose()  # type: ignore[attr-defined]
         c2._engine.dispose()  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# GDXA-1676 — the SurveysView payload is the schema's payload
+# ---------------------------------------------------------------------------
+
+# Exactly what SurveysView.saveTemplate sends; SurveysView.templateForm.spec.js
+# pins the same key set on the frontend side.
+_UI_CREATE = {
+    "name": "Post-Job CSAT",
+    "kind": "csat",
+    "question": "How satisfied were you with the repair?",
+    "follow_up_question": "Anything we could do better?",
+    "active": True,
+}
+
+
+def test_ui_create_payload_persists_kind_and_question(client: TestClient):
+    r = client.post("/api/surveys/templates", json=_UI_CREATE)
+    assert r.status_code == 201, r.text
+
+    row = client.get("/api/surveys/templates").json()[0]
+    assert row["kind"] == "csat"
+    assert row["question"] == "How satisfied were you with the repair?"
+    assert row["follow_up_question"] == "Anything we could do better?"
+    assert row["active"] is True
+
+
+def test_ui_edit_payload_changes_kind_and_question(client: TestClient):
+    tpl = client.post("/api/surveys/templates", json=_UI_CREATE).json()
+    r = client.patch(
+        f"/api/surveys/templates/{tpl['id']}",
+        json={
+            "name": "Post-Job NPS",
+            "kind": "nps",
+            "question": "How likely are you to recommend us?",
+            "follow_up_question": None,
+            "active": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    row = client.get("/api/surveys/templates").json()[0]
+    assert row["name"] == "Post-Job NPS"
+    assert row["kind"] == "nps"
+    assert row["question"] == "How likely are you to recommend us?"
+    assert row["follow_up_question"] is None
+    assert row["active"] is False
+
+
+def test_unknown_template_keys_are_refused_not_dropped(client: TestClient):
+    """The pre-GDXA-1676 form keys: create was a 422 for the missing
+    question, edit was a 200 that changed nothing. Both now refuse."""
+    old_form = {"name": "x", "template_type": "csat", "send_channel": "email", "message": "hi"}
+    assert client.post("/api/surveys/templates", json=old_form).status_code == 422
+
+    tpl = client.post("/api/surveys/templates", json=_UI_CREATE).json()
+    r = client.patch(f"/api/surveys/templates/{tpl['id']}", json=old_form)
+    assert r.status_code == 422, r.text
+    row = client.get("/api/surveys/templates").json()[0]
+    assert row["name"] == "Post-Job CSAT"
+    assert row["kind"] == "csat"
+
+
+def test_kind_change_refused_once_template_has_responses(client: TestClient):
+    """Metrics score a response by its template's current kind, so re-typing
+    an answered template would re-score 0-10 NPS answers as 1-5 CSAT."""
+    tpl = client.post("/api/surveys/templates", json={**_UI_CREATE, "kind": "nps"}).json()
+    send = client.post("/api/surveys/send", json={"template_id": tpl["id"]}).json()
+    assert client.post(f"/api/surveys/public/{send['token']}", json={"score": 10}).status_code == 201
+
+    r = client.patch(f"/api/surveys/templates/{tpl['id']}", json={**_UI_CREATE, "kind": "csat"})
+    assert r.status_code == 409, r.text
+    assert client.get("/api/surveys/templates").json()[0]["kind"] == "nps"
+    metrics = client.get("/api/surveys/metrics").json()
+    assert metrics["nps_score"] == 100.0
+    assert metrics["csat_avg"] is None
+
+    # The same full-form save with the kind unchanged still edits the rest.
+    r = client.patch(
+        f"/api/surveys/templates/{tpl['id']}",
+        json={**_UI_CREATE, "kind": "nps", "question": "Would you recommend us?"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["question"] == "Would you recommend us?"
+
+
+def test_kind_change_allowed_before_any_response(client: TestClient):
+    tpl = client.post("/api/surveys/templates", json=_UI_CREATE).json()
+    client.post("/api/surveys/send", json={"template_id": tpl["id"]})  # link, no answer
+    r = client.patch(f"/api/surveys/templates/{tpl['id']}", json={**_UI_CREATE, "kind": "nps"})
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == "nps"
+
+
+def test_update_audit_names_only_changed_fields_with_old_and_new(client: TestClient):
+    tpl = client.post("/api/surveys/templates", json=_UI_CREATE).json()
+    # The dialog always sends the whole form; only the question differs.
+    client.patch(
+        f"/api/surveys/templates/{tpl['id']}",
+        json={**_UI_CREATE, "question": "How was the repair?"},
+    )
+    Session = client._session  # type: ignore[attr-defined]
+    with Session() as s:
+        row = s.execute(
+            select(AuditLog).where(AuditLog.action == "survey_template_updated")
+        ).scalar_one()
+        details = row.details
+    assert details["fields"] == ["question"]
+    assert details["changes"] == {
+        "question": {"old": "How satisfied were you with the repair?", "new": "How was the repair?"}
+    }
+
+
+# ---------------------------------------------------------------------------
+# GDXA-1709 — list fields the SurveysView columns read
+# ---------------------------------------------------------------------------
+
+
+def _answer(client: TestClient, tpl_id: str, **send_fields) -> None:
+    send = client.post("/api/surveys/send", json={"template_id": tpl_id, **send_fields}).json()
+    r = client.post(f"/api/surveys/public/{send['token']}", json={"score": 9})
+    assert r.status_code == 201, r.text
+
+
+def test_responses_carry_respondent_name(client: TestClient):
+    cust_id = uuid4()
+    Session = client._session  # type: ignore[attr-defined]
+    with Session() as s:
+        s.add(Customer(id=cust_id, company_id="tenant-test", name="Pat Example"))
+        s.commit()
+
+    tpl = client.post(
+        "/api/surveys/templates", json={"name": "NPS", "kind": "nps", "question": "q"}
+    ).json()
+    _answer(client, tpl["id"], customer_id=str(cust_id), recipient_email="pat@example.com")
+    _answer(client, tpl["id"], recipient_email="walkin@example.com")
+    _answer(client, tpl["id"], recipient_phone="+15555550100")
+    _answer(client, tpl["id"])
+
+    names = sorted(
+        (row["respondent_name"] or "") for row in client.get("/api/surveys/responses").json()
+    )
+    # Customer name wins over the address; then email, then phone; else null.
+    assert names == ["", "+15555550100", "Pat Example", "walkin@example.com"]
+
+
+def test_templates_carry_last_sent_at(client: TestClient):
+    sent = client.post(
+        "/api/surveys/templates", json={"name": "Sent", "kind": "nps", "question": "q"}
+    ).json()
+    unsent = client.post(
+        "/api/surveys/templates", json={"name": "Unsent", "kind": "nps", "question": "q"}
+    ).json()
+    client.post("/api/surveys/send", json={"template_id": sent["id"]})
+    last = client.post("/api/surveys/send", json={"template_id": sent["id"]}).json()
+
+    by_id = {t["id"]: t for t in client.get("/api/surveys/templates").json()}
+    assert by_id[unsent["id"]]["last_sent_at"] is None
+    with client._session() as s:  # type: ignore[attr-defined]
+        newest = s.get(SurveySend, UUID(last["send_id"])).sent_at
+    assert by_id[sent["id"]]["last_sent_at"] == newest.isoformat()

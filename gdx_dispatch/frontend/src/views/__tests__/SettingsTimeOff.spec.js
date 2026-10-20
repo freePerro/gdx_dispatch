@@ -148,6 +148,7 @@ describe('Settings → Time off and holidays', () => {
       time_off_default_minutes: 480,
       time_off_counts_toward_overtime: true,
       vacation_allowance_hours: null,
+      vacation_year_policy: 'calendar_year',
       holiday_calendar: [
         { date: '2026-11-26', name: 'Thanksgiving', minutes: 480 },
         { date: '2026-12-25', name: 'Christmas Day', minutes: 240 },
@@ -176,6 +177,25 @@ describe('Settings → Time off and holidays', () => {
     await w.find('[data-testid="time-off-save"]').trigger('click');
     await flushPromises();
     expect(apiPatch.mock.calls[1][1].vacation_allowance_hours).toBe(null);
+  });
+
+  it('vacation year (GDXA-1827): a missing policy reads calendar year, the saved one round-trips', async () => {
+    mockGet();
+    apiPatch.mockImplementation((url, body) => Promise.resolve({ ...SETTINGS, ...body }));
+    const w = await mountSettings();
+    expect(w.vm.timeOff.vacation_year_policy).toBe('calendar_year');
+    expect(w.find('[data-testid="time-off-vacation-year"]').exists()).toBe(true);
+    const hint = w.find('[data-testid="time-off-vacation-year-hint"]').text();
+    expect(hint).toContain('calendar year');
+    // GDXA-1856: balances, timesheets, CSV and PDF read the policy now; the
+    // "still count the calendar year" caveat would be false.
+    expect(hint).not.toContain('until they read this setting');
+
+    w.vm.timeOff.vacation_year_policy = 'hire_anniversary';
+    await w.find('[data-testid="time-off-save"]').trigger('click');
+    await flushPromises();
+    expect(apiPatch.mock.calls[0][1].vacation_year_policy).toBe('hire_anniversary');
+    expect(w.vm.timeOff.vacation_year_policy).toBe('hire_anniversary');
   });
 
   it('refuses to save a row with no date or name, at the row, without a request', async () => {

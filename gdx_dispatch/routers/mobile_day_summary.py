@@ -5,9 +5,9 @@ calling user (their assigned jobs, their time entries, their parts
 requests, their invoices).
 
 Mirrors industry pattern (Housecall "Day at a glance", ServiceTitan
-Technician Performance) — informational, no clock-out modal, accessible
-both from /mobile/today's wrap card AND a dedicated /mobile/summary
-route.
+Technician Performance) — informational, no clock-out modal. Its one
+caller is the /mobile/summary screen, reached from the Day summary button
+in the Today's Route header (the wrap card on /mobile went in #396).
 """
 from __future__ import annotations
 

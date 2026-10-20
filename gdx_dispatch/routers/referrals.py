@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import LoyaltyReferral
+from gdx_dispatch.models.tenant_models import Customer, LoyaltyReferral
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ ALLOWED_STATUSES = {"pending", "converted", "rewarded"}
 
 
 class ReferralCreateIn(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     referrer_id: str = Field(min_length=1, max_length=64)
     referee_name: str = Field(min_length=1, max_length=120)
@@ -66,6 +66,32 @@ def _serialize_referral(ref: LoyaltyReferral) -> dict[str, Any]:
     }
 
 
+def _referrer_names(referrals: list[LoyaltyReferral], db: Session) -> dict[str, str]:
+    """referrer_id -> live customer name, in one query (GDXA-1693).
+
+    referrer_id is free text (the loyalty route stores any string), so ids
+    that are not UUIDs simply have no name. Binding UUID objects through the
+    ORM keeps the match right on SQLite's dashless storage too. The page used
+    to fetch GET /api/customers/{id} per referrer, which logs a data_accessed
+    audit row for every customer it touched.
+    """
+    ids: dict[UUID, str] = {}
+    for ref in referrals:
+        try:
+            ids[UUID(str(ref.referrer_id))] = str(ref.referrer_id)
+        except ValueError:
+            log.debug("referral %s: referrer_id %r is not a customer id; no name", ref.id, ref.referrer_id)
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(Customer.id, Customer.name).where(
+            Customer.id.in_(list(ids)),
+            Customer.deleted_at.is_(None),
+        )
+    ).all()
+    return {ids[cid]: name for cid, name in rows if cid in ids}
+
+
 def _get_referral_or_404(referral_id: str, db: Session) -> LoyaltyReferral:
     ref = db.execute(
         select(LoyaltyReferral).where(
@@ -89,7 +115,11 @@ def list_referrals(
             .where(LoyaltyReferral.deleted_at.is_(None))
             .order_by(LoyaltyReferral.created_at.desc())
         ).scalars().all()
-        return {"items": [_serialize_referral(r) for r in referrals]}
+        names = _referrer_names(referrals, db)
+        return {"items": [
+            {**_serialize_referral(r), "referrer_name": names.get(str(r.referrer_id))}
+            for r in referrals
+        ]}
     except Exception:
         log.exception("list_referrals_failed")
         raise HTTPException(status_code=500, detail="Failed to list referrals") from None

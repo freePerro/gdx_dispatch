@@ -213,6 +213,12 @@ class AppSettings(Base):
     # per calendar year, in hours. NULL = not set — no number is assumed.
     # `User.vacation_allowance_hours` overrides it per person.
     vacation_allowance_hours: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
+    # Which year that allowance counts over (GDXA-1827, migration 131):
+    # `calendar_year` or `hire_anniversary`, the latter falling back to the
+    # calendar year for a user with no `hire_date` (routers/settings.py).
+    vacation_year_policy: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="calendar_year", server_default="calendar_year"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -424,6 +430,10 @@ class Job(Base):
     assigned_to: Mapped[str] = mapped_column(String(50), nullable=True)
     source: Mapped[str] = mapped_column(String(50), nullable=True)
     is_return_visit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # GDXA-1946 (135): which path made this return visit — "closeout" (a
+    # day-2 continuation), "callback" (spawn-return-visit) or "follow_up".
+    # NULL on a child with no creation audit row reads as a callback.
+    return_visit_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     parent_job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
     # Plan §9 (audit round 2): the canonical service spelling. Constructors
     # that omit job_type inherit THIS — the old "Service" default was the leak
@@ -1601,27 +1611,6 @@ class Vendor(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-LIFECYCLE_TRANSITIONS = {"lead": {"estimate", "cancelled"}, "estimate": {"scheduled", "cancelled"}, "scheduled": {"in_progress", "cancelled"}, "in_progress": {"completed", "cancelled"}, "completed": set(), "cancelled": set()}
-DISPATCH_TRANSITIONS = {"unassigned": {"assigned", "en_route", "on_site", "done"}, "assigned": {"en_route", "on_site", "done"}, "en_route": {"on_site", "done"}, "on_site": {"done"}, "done": set()}
-BILLING_TRANSITIONS = {"unbilled": {"invoiced", "partial_paid", "paid", "overdue", "void"}, "invoiced": {"partial_paid", "paid", "overdue", "void"}, "partial_paid": {"paid", "overdue", "void"}, "paid": set(), "overdue": {"void"}, "void": set()}
-
-
-def validate_job_transition(job: Job, field: str, new_value: str) -> None:
-    mapping = {
-        "lifecycle_stage": LIFECYCLE_TRANSITIONS,
-        "dispatch_status": DISPATCH_TRANSITIONS,
-        "billing_status": BILLING_TRANSITIONS,
-    }
-    if field not in mapping:
-        raise ValueError(f"Unsupported transition field '{field}'.")
-    current = getattr(job, field)
-    if current == new_value:
-        return
-    allowed = mapping[field].get(current, set())
-    if new_value not in allowed:
-        raise ValueError(f"Invalid {field} transition: {current} -> {new_value}. Allowed: {sorted(allowed)}")
-
-
 # ---------------------------------------------------------------------------
 # Batch 2: collections, invoice_reminders, appointments, scheduling, leads,
 #           tasks, messages, signatures, onboarding
@@ -1730,22 +1719,6 @@ class Appointment(Base):
     scheduled_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     scheduled_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     technician_id: Mapped[str] = mapped_column(String(36), nullable=True)
-
-
-class TechUnavailability(Base):
-    __tablename__ = "tech_unavailability"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    tech_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    reason: Mapped[str] = mapped_column(String(200), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(200), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=utcnow
-    )
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class LandingLead(Base):
@@ -2336,20 +2309,6 @@ class Message(Base):
     job_id: Mapped[str] = mapped_column(String(36), nullable=True)
     customer_id: Mapped[str] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
-
-
-class SafetyChecklist(Base):
-    __tablename__ = "safety_checklists"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    technician_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    items: Mapped[str] = mapped_column(Text, nullable=False)
-    completed: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
-    photo_url: Mapped[str] = mapped_column(Text, nullable=True)
-    signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PdfTemplate(Base):
@@ -3017,32 +2976,6 @@ class TimeOffRequest(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class VanInventoryItem(Base):
-    __tablename__ = "van_inventory"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    truck_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    sku: Mapped[str] = mapped_column(String(100), nullable=True)
-    name: Mapped[str] = mapped_column(String(300), nullable=False)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    min_stock: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    category: Mapped[str] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class VanInventoryLog(Base):
-    __tablename__ = "van_inventory_log"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    van_inventory_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(36), nullable=True)
-    quantity_change: Mapped[int] = mapped_column(Integer, nullable=False)
-    reason: Mapped[str] = mapped_column(String(500), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class CustomerReview(Base):
     """A customer review record (rating + text), read by the Reviews page."""
     __tablename__ = "customer_reviews"
@@ -3167,8 +3100,6 @@ class User(Base):
     # -- columns from production schema not yet in ORM --
     # Contact
     address: Mapped[str] = mapped_column(Text, nullable=True)
-    auth_email: Mapped[str] = mapped_column(String(254), nullable=True)
-    google_email: Mapped[str] = mapped_column(String(254), nullable=True)
     google_id: Mapped[str] = mapped_column(String(200), nullable=True)
     # HR
     department: Mapped[str] = mapped_column(String(100), nullable=True)
@@ -3183,23 +3114,17 @@ class User(Base):
     field_territory: Mapped[str] = mapped_column(String(200), nullable=True)
     route_start_lat: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=True)
     route_start_lng: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=True)
-    availability_status: Mapped[str] = mapped_column(String(30), nullable=True)
     # Security
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
     locked_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=True)
-    mfa_secret: Mapped[str] = mapped_column(String(200), nullable=True)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     # Timeclock permissions
     tc_can_approve: Mapped[bool] = mapped_column(Boolean, nullable=True)
     tc_can_edit: Mapped[bool] = mapped_column(Boolean, nullable=True)
     tc_can_view_others: Mapped[bool] = mapped_column(Boolean, nullable=True)
-    tc_permissions: Mapped[str] = mapped_column(Text, nullable=True)
     # Emergency contact
     emergency_contact_name: Mapped[str] = mapped_column(String(200), nullable=True)
     emergency_contact_phone: Mapped[str] = mapped_column(String(50), nullable=True)
-    # Feature flags
-    mcp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=True)
     # Sprint dispatch-capacity (2026-05-20) — per-user shift override.
     # All three NULL = inherit AppSettings.default_shift_*. Set any one to
     # override only that field (e.g. an early-start tech keeps the tenant's
