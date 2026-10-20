@@ -5,9 +5,9 @@ Inputs (per-tenant):
     Bucketed by age relative to due_date (fall back to sent_at, then
     created_at). Each bucket multiplied by the tenant's collection-rate
     setting for that bucket.
-  - Scheduled jobs: lifecycle_stage in ('scheduled', 'estimate',
-    'service_call'), scheduled_at within window. Estimated value = SUM of
-    latest Estimate.total per job (joined). Multiplied by
+  - Scheduled jobs: lifecycle_stage in DATED_JOB_STAGES ('scheduled',
+    'service_call', 'in_progress'), scheduled_at within window. Estimated
+    value = SUM of the job's accepted, non-deleted Estimate.total. Multiplied by
     `scheduled_realization_rate`. (The old billing_status filter was removed
     in PR2-billing-capture; see _scheduled_jobs_projection for why.)
   - Recurring (optional): qb_recurring_transactions where active=true
@@ -23,7 +23,7 @@ inflows add to ``expected_total``; outflows are reported as
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from dateutil.relativedelta import relativedelta
@@ -236,6 +236,27 @@ def _open_ar_projection(db: Session, settings: ForecastSettings, today: date, wi
     }
 
 
+# Pre-completion stages a dated job can be in: the revenue forecast, the cash
+# calendar and the Dashboard's "on the board today" tile all count these, and
+# test_dated_job_stages_gdxa1939 pins that they share this one tuple. "estimate"
+# is deliberately not here: an estimate visit is a sales call, not money anyone
+# has agreed to pay.
+DATED_JOB_STAGES = ("scheduled", "service_call", "in_progress")
+
+
+def accepted_estimate_totals(db: Session, ids: list[Any]) -> dict[Any, Decimal]:
+    """Job id → total of its ACCEPTED, non-deleted estimates, to the cent. A
+    draft, sent or rejected estimate is not money anyone agreed to pay."""
+    return {
+        jid: Decimal(str(total or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        for jid, total in db.execute(
+            select(Estimate.job_id, func.sum(Estimate.total))
+            .where(Estimate.job_id.in_(ids), Estimate.status == "accepted", Estimate.deleted_at.is_(None))
+            .group_by(Estimate.job_id)
+        ).all()
+    }
+
+
 def _scheduled_jobs_projection(db: Session, settings: ForecastSettings, today: date, window_days: int) -> dict[str, Any]:
     window_end = today + timedelta(days=window_days)
     # PR2-billing-capture: the billing_status clause was safe to delete. The
@@ -243,7 +264,7 @@ def _scheduled_jobs_projection(db: Session, settings: ForecastSettings, today: d
     # seed still writes paid/invoiced fixtures) — but older prod rows hold a
     # stale "invoiced". Every live non-"unbilled" row seen on prod and demo
     # (2026-10-11) is a `completed` job, and this window selects only
-    # scheduled/estimate/service_call jobs, so the clause excluded nothing.
+    # pre-completion stages, so the clause excluded nothing.
     # That is observed data, not a guard; the test pins only that the
     # projection ignores the column. Do not restore it. Subtracting already-invoiced deposit/up-front
     # amounts from projected job revenue is a real improvement but a separate,
@@ -254,7 +275,7 @@ def _scheduled_jobs_projection(db: Session, settings: ForecastSettings, today: d
             Job.scheduled_at.is_not(None),
             Job.scheduled_at >= datetime.combine(today, datetime.min.time()),
             Job.scheduled_at <= datetime.combine(window_end, datetime.max.time()),
-            Job.lifecycle_stage.in_(("scheduled", "estimate", "service_call")),
+            Job.lifecycle_stage.in_(DATED_JOB_STAGES),
             Job.deleted_at.is_(None),
         )
     )
@@ -262,12 +283,8 @@ def _scheduled_jobs_projection(db: Session, settings: ForecastSettings, today: d
 
     estimated_value_by_job: dict[Any, float] = {}
     if jobs:
-        ids = [j.id for j in jobs]
-        rows = db.execute(
-            select(Estimate.job_id, func.sum(Estimate.total)).where(Estimate.job_id.in_(ids)).group_by(Estimate.job_id)
-        ).all()
-        for jid, total in rows:
-            estimated_value_by_job[jid] = float(total or 0)
+        for jid, total in accepted_estimate_totals(db, [j.id for j in jobs]).items():
+            estimated_value_by_job[jid] = float(total)
 
     rate = float(settings.scheduled_realization_rate)
     scheduled_total = 0.0

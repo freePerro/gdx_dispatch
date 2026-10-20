@@ -191,7 +191,7 @@ def _bad_auth(ctx: _Ctx) -> dict[str, str | None]:
         "non-customer role": f"Bearer {ctx.token(role='admin')}",
         "non-access typ": f"Bearer {ctx.token(typ='refresh')}",
         "no portal audience": f"Bearer {ctx.token(aud=None)}",
-        "wrong signing key": f"Bearer {ctx.token(key='another-secret-key-at-least-32-bytes-long')}",
+        "wrong signing key": f"Bearer {ctx.token(key=portal.SIGN_KEY + '-wrong')}",
         "deactivated customer user": f"Bearer {ctx.token(sub=ctx.revoked_user_id)}",
         "unknown customer user": f"Bearer {ctx.token(sub=str(uuid4()))}",
     }
