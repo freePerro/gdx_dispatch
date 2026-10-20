@@ -54,7 +54,7 @@ async function mountDialog(job, technicians = [{ id: "tech-mike", name: "Mike" }
           template: '<textarea v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
         },
         RouterLink: { props: ["to"], template: '<a :href="to" v-bind="$attrs"><slot /></a>' },
-        Calendar: true, InputText: true,
+        DatePicker: true, InputText: true,
       },
     },
   });
