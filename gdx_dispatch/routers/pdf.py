@@ -396,7 +396,11 @@ def _estimate_payload(
     deposit_pct: int = 0,
     hide_line_prices_default: bool = False,
     db: Session | None = None,
+    valid_until_override: Any = None,
 ) -> dict[str, Any]:
+    """``valid_until_override`` prints in place of the stored date without
+    touching the row: the staff preview's as-texted expiry
+    (modules/proposals/router.py `_as_texted`)."""
     from gdx_dispatch.modules.estimates_features import effective_hide_line_prices
     totals = compute_estimate_totals(estimate, db)
     pct = max(0, min(100, int(deposit_pct or 0)))
@@ -405,7 +409,7 @@ def _estimate_payload(
     hide_line_prices = effective_hide_line_prices(
         getattr(estimate, "hide_line_prices", None), hide_line_prices_default
     )
-    valid_until = getattr(estimate, "valid_until", None)
+    valid_until = valid_until_override or getattr(estimate, "valid_until", None)
     accepted_tier, tier_options = _estimate_tiers_for_pdf(estimate, db)
     if accepted_tier is not None:
         # The contract is the accepted tier: its lines, never estimate.lines
