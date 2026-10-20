@@ -26,7 +26,14 @@ from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_access import can_read_job, job_write_denial
 from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_site, resolve_job_sites
-from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
+from gdx_dispatch.core.job_taxonomy import (
+    RETURN_VISIT_CALLBACK,
+    RETURN_VISIT_CLOSEOUT,
+    RETURN_VISIT_FOLLOW_UP,
+    SERVICE_CALL,
+    canonical_job_type,
+    counts_as_callback,
+)
 from gdx_dispatch.core.link_sms import as_uuid
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.part_pricing import (
@@ -498,6 +505,7 @@ def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
         "updated_at": job.updated_at,
         "is_demo": job.is_demo,
         "is_return_visit": job.is_return_visit,
+        "return_visit_source": job.return_visit_source,
         "parent_job_id": job.parent_job_id,
         "source": job.source,
         "company_id": job.company_id,
@@ -3249,6 +3257,7 @@ def closeout_job(
                     billing_status="unbilled",
                     priority=job.priority or "Normal",
                     is_return_visit=True,
+                    return_visit_source=RETURN_VISIT_CLOSEOUT,
                 )
                 db.add(child)
                 return_visit_job_id = str(child.id)
@@ -4746,7 +4755,9 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         d["lifecycle_stage"] = canon
         # S5-A4: callback detection. A job is a callback if it has a parent
         # job and that parent completed within the last 90 days. Different P&L
-        # treatment downstream (warranty cost vs new revenue).
+        # treatment downstream (warranty cost vs new revenue). GDXA-1946: a
+        # closeout's return-visit child is the same job continuing on another
+        # day, not a callback; the parent link alone cannot tell them apart.
         d["is_callback"] = False
         d["callback_window_days"] = 90
         # GDXA-227: a parent that is completed (lifecycle_stage, or a legacy
@@ -4754,7 +4765,7 @@ def get_job(job_id: str, request: Request, current_user: Any = Depends(get_curre
         # completed_at cannot be dated, so the 90-day test cannot run. Say so
         # rather than reporting "not a callback"; never invent the date.
         d["callback_undetermined"] = False
-        if job.parent_job_id:
+        if job.parent_job_id and counts_as_callback(job.return_visit_source):
             try:
                 parent_row = db.execute(
                     select(Job.completed_at, Job.lifecycle_stage, Job.status).where(
@@ -5280,6 +5291,7 @@ def create_follow_up_job(
             billing_status="unbilled",
             priority="Normal",
             is_return_visit=True,
+            return_visit_source=RETURN_VISIT_FOLLOW_UP,
         )
         db.add(follow_up)
         db.flush()
@@ -5402,6 +5414,7 @@ def spawn_return_visit(
             billing_status="unbilled",
             priority=original.priority or "Normal",
             is_return_visit=True,
+            return_visit_source=RETURN_VISIT_CALLBACK,
         )
         db.add(child)
         db.flush()
