@@ -307,7 +307,7 @@ def _get_job(db: Session, tenant_id: str, job_id: str) -> dict[str, Any] | None:
         _text(
             """
             SELECT id, customer_id, location_id, title, description, dispatch_status,
-                   scheduled_at, arrived_at, completed_at, signature_data,
+                   lifecycle_stage, scheduled_at, arrived_at, completed_at, signature_data,
                    signed_by, signed_at, created_at,
                    job_type, priority, is_return_visit
             FROM jobs
@@ -2993,9 +2993,61 @@ def mobile_job_complete(
     # "optional" — accept whatever's sent (or not), no gating.
 
     now = datetime.now(UTC)
+    if signature_data and not _validate_signature_data(signature_data):
+        return jsonable_response({"detail": "Invalid signature_data base64 payload"}, 400)
+
+    # GDXA-1942: this door used to write dispatch "done" and completed_at and
+    # leave lifecycle_stage where it was, so the job read finished on the
+    # phone and open everywhere else. It now finishes through the shared
+    # completion write, behind the same doors as /api/jobs/{id}/complete
+    # (GDXA-599): never a cancelled or completed job, and never a first
+    # finish — this body attests no hours, so the work must already have a
+    # closeout.
+    from gdx_dispatch.routers.jobs import (  # noqa: PLC0415 — lazy: jobs imports mobile
+        _cancelled_refusal,
+        _closeout_required_refusal,
+        _completed_refusal,
+        _completion_requirements_missing,
+        _earlier_day_open_refusal,
+        _load_workflow_flags,
+        _locked_job,
+        _mark_job_completed,
+        _stage_move,
+    )
+
+    try:
+        _jid = _UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    flags = _load_workflow_flags(tenant_id)
+    # Before anything is staged: its first run per engine may commit.
+    ensure_audit_table(db)
+    _job_obj = _locked_job(db, _jid)
+    if _job_obj is None:
+        return jsonable_response({"detail": "job not found"}, 404)
+    refusal = (
+        _cancelled_refusal(_job_obj)
+        or _completed_refusal(_job_obj, starting=False)
+        or _closeout_required_refusal(db, _job_obj)
+        or _earlier_day_open_refusal(db, _job_obj, None, None, now=now)
+    )
+    if refusal is not None:
+        return refusal
+    # The tenant's completion requirements, as /complete applies them. This
+    # body carries no hours or parts figures, so those gates read the job.
+    missing = _completion_requirements_missing(
+        db, _job_obj, flags, parts_count=None, no_parts_used=False, hours=None,
+        signature_present=bool(signature_data or existing_signature),
+    )
+    if missing:
+        return jsonable_response(
+            {"detail": "completion requirements unmet", "missing": missing}, 422
+        )
+    # S1-B2 — Job.dispatch_status enum is (unassigned, assigned, en_route,
+    # on_site, done); the shared write sets "done".
+    _validate_forward_transition(_job_obj.dispatch_status, "done")
+
     if signature_data:
-        if not _validate_signature_data(signature_data):
-            return jsonable_response({"detail": "Invalid signature_data base64 payload"}, 400)
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
         db.execute(
             _text(
@@ -3016,28 +3068,8 @@ def mobile_job_complete(
             },
         )
 
-    try:
-        _jid = _UUID(job_id)
-    except (ValueError, AttributeError):
-        logging.getLogger(__name__).exception("mobile_job_complete caught exception")
-        _jid = None
-    if _jid is not None:
-        # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-        _job_obj = db.execute(
-            select(Job).where(
-                Job.id == _jid,
-                Job.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
-        if _job_obj is not None:
-            # S1-B2 — Job.dispatch_status enum is (unassigned, assigned,
-            # en_route, on_site, done). Earlier code wrote "completed"
-            # here, which is NOT a valid enum value and would raise on
-            # PG (loose on SQLite). Use "done"; capture completion in
-            # Job.completed_at for the timestamp axis.
-            _validate_forward_transition(_job_obj.dispatch_status, "done")
-            _job_obj.dispatch_status = "done"
-            _job_obj.completed_at = now
+    prior = (_job_obj.lifecycle_stage, _job_obj.status)
+    _mark_job_completed(db, _job_obj, now, tenant_id, current_user)
 
     # Phase 1.4 D2 — per-tech completed_at on JobAssignment so multi-tech
     # jobs preserve who finished (vs. who started or visited). No user-id
@@ -3066,6 +3098,16 @@ def mobile_job_complete(
         payload={"completion_notes": payload.completion_notes},
         request=request,
         actor_role=user.get("role"),
+    )
+    # The finish row day-close reads (services/day_close.FINISH_ACTIONS),
+    # committed with the completion or not at all, as /complete does.
+    from gdx_dispatch.core.audit import audit_or_rollback
+
+    audit_or_rollback(
+        db, tenant_id=tenant_id, actor={"user_id": user_id},
+        action="job_completed", entity_type="job", entity_id=str(_job_obj.id),
+        details={**_stage_move(*prior, _job_obj), "door": "mobile_complete", "flags_evaluated": flags},
+        request=request,
     )
     db.commit()
 
@@ -3096,6 +3138,7 @@ def mobile_job_complete(
             "ok": True,
             "job_id": job_id,
             "dispatch_status": "done",
+            "lifecycle_stage": _job_obj.lifecycle_stage,
             "completed_at": now.isoformat(),
         }
     )

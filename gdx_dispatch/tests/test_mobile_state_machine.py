@@ -20,7 +20,13 @@ from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import Appointment, Customer, Job, Technician
+from gdx_dispatch.models.tenant_models import (
+    Appointment,
+    Customer,
+    Job,
+    JobCloseout,
+    Technician,
+)
 from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tests.conftest import make_fresh_db
@@ -206,6 +212,12 @@ class TestStateMachineEndToEnd:
         assert r1.status_code == 200
         r2 = client.post(f"/api/mobile/jobs/{job.id.hex}/arrived")
         assert r2.status_code == 200
+        # /complete finishes only attested work (GDXA-1942): close it out first.
+        db.add(JobCloseout(
+            id=uuid4(), job_id=job.id, hours_worked=1, techs_on_site=1,
+            closed_by_user_id=USER, closed_at=_now(),
+        ))
+        db.commit()
         sig = "data:image/png;base64,c2lnbmF0dXJl"  # base64('signature')
         r3 = client.post(
             f"/api/mobile/jobs/{job.id.hex}/complete",

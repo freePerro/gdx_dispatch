@@ -264,6 +264,12 @@ def test_audit_logged(session_factory):
 def test_complete_with_signature_marks_complete(session_factory):
     db = session_factory()
     try:
+        # /complete finishes only attested work (GDXA-1942): close it out first.
+        db.add(tenant_models.JobCloseout(
+            id=uuid4(), job_id=_JOB_UUID, hours_worked=1, techs_on_site=1,
+            closed_by_user_id="user-1", closed_at=datetime.now(UTC),
+        ))
+        db.commit()
         signature_data = "data:image/png;base64," + base64.b64encode(b"signed").decode()
         r = mobile_router.mobile_job_complete(
             job_id=_JOB_ID,
