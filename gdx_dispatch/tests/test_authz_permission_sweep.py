@@ -73,7 +73,9 @@ BASELINE_PATH = Path(__file__).resolve().parents[2] / ".authz_unpermissioned_bas
 # 344 → 342 (2026-10-19): POST /api/van-inventory and POST
 # /api/van-inventory/use were deleted with the retired van inventory router
 # (GDXA-1826).
-BASELINE_SIZE = 342
+# 342 → 341 (2026-10-19): POST /api/mobile/jobs/{job_id}/complete was deleted
+# past its sunset; completion is /api/jobs/{id}/closeout (GDXA-1937).
+BASELINE_SIZE = 341
 
 
 def _baseline() -> set[str]:

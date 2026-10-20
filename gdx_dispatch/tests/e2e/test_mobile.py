@@ -151,12 +151,11 @@ class TestMobileJobTransitions:
     def test_mob_05_complete_job(self, api, scratch_job, console_tracker):
         """MOB-05: a tech completes a job through the CLOSEOUT sheet.
 
-        This used to POST `/api/mobile/jobs/{id}/complete`. That route still
-        exists but is `deprecated=True` and no UI calls it: PR B moved every
-        job action to the job detail screen, and `MobileTodayView.vue` records
-        that the legacy endpoint "stays unreachable", guarded by
-        `MobileCloseoutOwnership.spec.js`. So MOB-05 was verifying a path no
-        technician can take, and passing on its 400 "Signature is required".
+        This used to POST `/api/mobile/jobs/{id}/complete`, a deprecated route
+        no UI called (PR B moved every job action to the job detail screen),
+        so MOB-05 was verifying a path no technician could take, and passing
+        on its 400 "Signature is required". The route was deleted 2026-10-19
+        (GDXA-1937).
 
         The real path is `POST /api/jobs/{id}/closeout` — one transaction for
         parts + hours + signature that flips lifecycle to completed.

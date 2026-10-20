@@ -35,7 +35,8 @@ describe('closeout ownership', () => {
   });
 
   it('does NOT reach the legacy /api/mobile/jobs/{id}/complete endpoint', () => {
-    // The route still exists for back-compat; nothing in the app may call it.
+    // The route was deleted 2026-10-19 (GDXA-1937); a call would 404. Kept so
+    // nothing in the app reaches for it again.
     // Two spellings, per the 2026-05-10 auditor: template literal and string
     // concatenation.
     expect(DETAIL).not.toMatch(/['"`]\/api\/mobile\/jobs\/[^'"`]*\/complete/);

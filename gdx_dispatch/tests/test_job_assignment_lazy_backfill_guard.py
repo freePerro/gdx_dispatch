@@ -91,7 +91,6 @@ def _seed(db, *, assigned_to: str | None) -> Job:
 @pytest.mark.parametrize(("path", "body"), [
     ("en-route", {}),
     ("arrived", None),
-    ("complete", {"signature_data": "data:image/png;base64,iVBORw0KGgo=", "signed_by": "Pat"}),
 ])
 def test_manager_technician_tap_on_another_techs_job_writes_no_crew(db, path, body):
     """The defect: a dispatcher with a technician record taps a state button
