@@ -106,3 +106,21 @@ def pricing_lane(job_type: str | None) -> str:
     if canon == INSTALLATION:
         return "install"
     return "office"
+
+
+# GDXA-1946: which path made a return-visit child (``Job.return_visit_source``,
+# migration 135). Every writer sets ``is_return_visit`` True, so only this
+# says whether the child is a day-2 continuation or a callback.
+RETURN_VISIT_CLOSEOUT: Final = "closeout"  # the closeout's needs-return-visit child
+RETURN_VISIT_CALLBACK: Final = "callback"  # spawn-return-visit ("Add warranty / callback")
+RETURN_VISIT_FOLLOW_UP: Final = "follow_up"  # POST /jobs/{id}/follow-up
+
+
+def counts_as_callback(return_visit_source: str | None) -> bool:
+    """Whether a parent-linked child may be labelled a callback.
+
+    A closeout continuation is the same job finishing on another day, not the
+    customer calling back. NULL (no creation audit row to backfill from)
+    counts, as every child did before 135 (Doug, 2026-10-19).
+    """
+    return return_visit_source != RETURN_VISIT_CLOSEOUT
