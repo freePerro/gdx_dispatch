@@ -3100,8 +3100,6 @@ class User(Base):
     # -- columns from production schema not yet in ORM --
     # Contact
     address: Mapped[str] = mapped_column(Text, nullable=True)
-    auth_email: Mapped[str] = mapped_column(String(254), nullable=True)
-    google_email: Mapped[str] = mapped_column(String(254), nullable=True)
     google_id: Mapped[str] = mapped_column(String(200), nullable=True)
     # HR
     department: Mapped[str] = mapped_column(String(100), nullable=True)
@@ -3116,23 +3114,17 @@ class User(Base):
     field_territory: Mapped[str] = mapped_column(String(200), nullable=True)
     route_start_lat: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=True)
     route_start_lng: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=True)
-    availability_status: Mapped[str] = mapped_column(String(30), nullable=True)
     # Security
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
     locked_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=True)
-    mfa_secret: Mapped[str] = mapped_column(String(200), nullable=True)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     # Timeclock permissions
     tc_can_approve: Mapped[bool] = mapped_column(Boolean, nullable=True)
     tc_can_edit: Mapped[bool] = mapped_column(Boolean, nullable=True)
     tc_can_view_others: Mapped[bool] = mapped_column(Boolean, nullable=True)
-    tc_permissions: Mapped[str] = mapped_column(Text, nullable=True)
     # Emergency contact
     emergency_contact_name: Mapped[str] = mapped_column(String(200), nullable=True)
     emergency_contact_phone: Mapped[str] = mapped_column(String(50), nullable=True)
-    # Feature flags
-    mcp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=True)
     # Sprint dispatch-capacity (2026-05-20) — per-user shift override.
     # All three NULL = inherit AppSettings.default_shift_*. Set any one to
     # override only that field (e.g. an early-start tech keeps the tenant's
