@@ -21,7 +21,7 @@
               value="CALLBACK"
               severity="danger"
               data-testid="job-detail-callback"
-              v-tooltip.bottom="`Return visit within ${job.callback_window_days || 90} days — different P&L treatment`"
+              v-tooltip.bottom="`Callback on a job completed within ${job.callback_window_days || 90} days — different P&L treatment`"
             />
             <Tag
               v-else-if="job.callback_undetermined"

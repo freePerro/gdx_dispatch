@@ -2507,6 +2507,7 @@ CREATE TABLE public.jobs (
     assigned_to character varying(50),
     source character varying(50),
     is_return_visit boolean DEFAULT false NOT NULL,
+    return_visit_source character varying(20),
     parent_job_id uuid,
     job_type character varying(100),
     status character varying(50),
