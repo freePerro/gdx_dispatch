@@ -402,13 +402,18 @@ def test_tax_jurisdiction_delete_unknown_id_is_404(settings_client):
 
 
 def test_unlock_actually_resets_failed_login_count(settings_client):
-    user_id = _seed_user(settings_client.SessionLocal, failed_login_count=3)
+    user_id = _seed_user(
+        settings_client.SessionLocal, failed_login_count=3,
+        locked_until=datetime.now(UTC) + timedelta(minutes=15),
+    )
     r = settings_client.post(f"/api/admin/users/{user_id}/unlock")
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True}
     # The proof the ORM update matches on SQLite where raw dashed-uuid SQL
     # never could: the column really is 0 afterwards.
-    assert _get_user(settings_client.SessionLocal, user_id).failed_login_count == 0
+    after = _get_user(settings_client.SessionLocal, user_id)
+    assert after.failed_login_count == 0
+    assert after.locked_until is None, "unlock must lift the login lockout (GDXA-1995)"
     assert [a.entity_id for a in _audit_rows(settings_client.SessionLocal, "user_unlocked")] == [user_id]
 
 

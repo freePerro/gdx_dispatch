@@ -38,6 +38,7 @@ from gdx_dispatch.routers.auth.core import (
     PASSWORD_RESET_NOT_SENT_MESSAGES,
     PasswordResetEmailNotSent,
     allowed_while_password_change_required,
+    login_lock_until,
     send_password_reset_link,
 )
 from gdx_dispatch.routers.settings import MAX_VACATION_ALLOWANCE_HOURS, allowance_hours_out
@@ -203,6 +204,9 @@ def _serialize(u: User) -> dict[str, Any]:
         # NULL = inherit AppSettings.vacation_allowance_hours.
         "vacation_allowance_hours": allowance_hours_out(u.vacation_allowance_hours),
         "hire_date": u.hire_date.isoformat() if u.hire_date else None,
+        # Live login lockout (GDXA-1995) — the Users page shows it as Locked
+        # and its Unlock clears it; null once it has lapsed.
+        "locked_until": lock.isoformat() if (lock := login_lock_until(u)) else None,
     }
 
 
@@ -702,7 +706,8 @@ def lockout_user(user_id: str, payload: LockoutIn, request: Request, user: dict 
 
 @router.post("/{user_id}/unlock", response_model=None, dependencies=[Depends(require_permission("users.write"))])
 def unlock_user(user_id: str, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Reverse a prior lockout. Sets active=true and writes a `user_unlocked`
+    """Reverse a prior lockout. Sets active=true, lifts a live login lockout
+    (too many failed passwords, GDXA-1995) and writes a `user_unlocked`
     audit row. The currently-revoked refresh family stays revoked (the
     user will sign in fresh on next login) — that's intentional.
     Authorization: admin or owner only (same gate as `/lockout`).
@@ -710,15 +715,19 @@ def unlock_user(user_id: str, request: Request, user: dict = Depends(get_current
     _require_lockout_actor(user)
     tid = _tenant_id(request)
     u = _get_user_or_404(db, tid, user_id)
-    if u.active is True:
+    login_lock = login_lock_until(u)
+    if u.active is True and login_lock is None:
         raise HTTPException(status_code=409, detail="User is already active")
     u.active = True
+    u.failed_login_count = 0
+    u.locked_until = None
     u.updated_at = utcnow()
     db.commit()
     _audit(
         db, request=request, user=user, action="user_unlocked",
         entity_id=str(u.id),
-        details={"unlocked_by": _user_id(user)},
+        details={"unlocked_by": _user_id(user),
+                 "login_lock_cleared": login_lock.isoformat() if login_lock else None},
     )
     return _serialize(u)
 

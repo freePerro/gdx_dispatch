@@ -572,7 +572,7 @@
           <div class="lockout-info-row">
             <span class="lockout-info-label">Reason</span>
             <span class="lockout-info-value" data-testid="users-lockout-info-reason">
-              {{ formatReason(lockoutInfo.reason) }}
+              {{ lockoutInfo.reason_label || formatReason(lockoutInfo.reason) }}
             </span>
           </div>
           <div v-if="lockoutInfo.notes" class="lockout-info-row">
@@ -732,8 +732,18 @@ const ACTOR_LOCK_ROLES = new Set(['admin', 'owner']);
 const currentUserRole = computed(() => (auth.user?.role || auth.user?.user_role || '').toLowerCase());
 const canActOnLockouts = computed(() => ACTOR_LOCK_ROLES.has(currentUserRole.value));
 
-function isLocked(user) {
+function isInactive(user) {
   return !(user.active ?? user.is_active ?? true);
+}
+
+// Too many failed passwords (GDXA-1995): the backend sends locked_until only
+// while the lock is live. Unlock lifts it; it also lapses on its own.
+function isLoginLocked(user) {
+  return Boolean(user.locked_until) && Date.parse(user.locked_until) > Date.now();
+}
+
+function isLocked(user) {
+  return isInactive(user) || isLoginLocked(user);
 }
 
 function isOwner(user) {
@@ -746,7 +756,7 @@ function isSelf(user) {
 }
 
 function canLockOut(user) {
-  return canActOnLockouts.value && !isLocked(user) && !isOwner(user) && !isSelf(user);
+  return canActOnLockouts.value && !isInactive(user) && !isOwner(user) && !isSelf(user);
 }
 
 function canUnlock(user) {
@@ -922,6 +932,7 @@ async function submitUnlock() {
     const next = result?.active ?? true;
     unlockTarget.value.active = next;
     unlockTarget.value.is_active = next;
+    unlockTarget.value.locked_until = result?.locked_until ?? null;
     showUnlockDialog.value = false;
   } catch {
     // useApiWithToast handles error display
@@ -931,6 +942,17 @@ async function submitUnlock() {
 }
 
 async function openLockoutInfo(user) {
+  if (!isInactive(user) && isLoginLocked(user)) {
+    // No admin lockout row to fetch: the lock came from failed sign-ins.
+    lockoutInfo.value = {
+      reason_label: 'Too many failed sign-ins',
+      notes: `Signs in again on its own at ${formatDateTime(user.locked_until)}, or Unlock now.`,
+      locked_at: null,
+    };
+    lockoutInfoLoading.value = false;
+    showLockoutInfoDialog.value = true;
+    return;
+  }
   lockoutInfo.value = null;
   lockoutInfoLoading.value = true;
   showLockoutInfoDialog.value = true;
