@@ -44,7 +44,7 @@ async function mountDialog(job) {
           emits: ["update:modelValue"],
           template: '<textarea v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
         },
-        Calendar: true, InputText: true,
+        DatePicker: true, InputText: true,
       },
     },
   });
