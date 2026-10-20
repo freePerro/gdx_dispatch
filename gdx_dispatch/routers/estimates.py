@@ -1754,10 +1754,13 @@ def _estimate_pdf_bytes(
     estimate: Estimate,
     customer: Customer | None,
     tenant_id: str,
+    *,
+    valid_until_override: datetime | None = None,
 ) -> bytes:
     """Render the customer-facing estimate PDF — the same bytes /pdf serves
     and the composer attaches. Shared by email-compose and /send so every
-    outbound email carries the identical document."""
+    outbound email carries the identical document. ``valid_until_override``
+    is the staff preview's as-texted expiry; nothing is written."""
     from gdx_dispatch.core.pdf_generator import generate_estimate_pdf
     from gdx_dispatch.routers.pdf import (
         _branding_payload,
@@ -1786,6 +1789,7 @@ def _estimate_pdf_bytes(
             estimate, customer, default_terms=default_terms,
             attachment_images=images, attachment_files=files,
             deposit_pct=deposit_pct, hide_line_prices_default=hide_line_prices_default, db=db,
+            valid_until_override=valid_until_override,
         ),
         tenant_branding=_branding_payload(db),
         template_config=_template_config(db, "estimate"),
@@ -1815,7 +1819,9 @@ def estimate_email_compose(
     recipient = prep["recipient"]
     subject = prep["subject"]
     body_text = prep["body_text"]
-    pdf_bytes = _estimate_pdf_bytes(db, estimate, customer, tenant_id)
+    pdf_bytes = _estimate_pdf_bytes(
+        db, estimate, customer, tenant_id, valid_until_override=prep["pdf_valid_until"]
+    )
     pdf_b64 = _b64.b64encode(pdf_bytes).decode("ascii")
     pdf_name = f"estimate-{estimate.estimate_number or str(estimate.id)[:8]}.pdf"
 
@@ -2121,6 +2127,7 @@ def _prepare_estimate_email(
             for ln in lines
         ]
 
+    expected_valid_until = _expected_valid_until(estimate)
     html = build_estimate_email_html(
         company_name=company_name,
         estimate_number=estimate.estimate_number or str(estimate.id)[:8],
@@ -2133,7 +2140,7 @@ def _prepare_estimate_email(
         branding=branding,
         intro_html=intro_html,
         tiers=tiers,
-        valid_until_text=_human_date(_expected_valid_until(estimate)),
+        valid_until_text=_human_date(expected_valid_until),
         hide_prices=_effective_hide_line_prices(estimate, tenant_id),
     )
     return {
@@ -2144,6 +2151,12 @@ def _prepare_estimate_email(
         "html": html,
         "branding": branding,
         "proposal_url": proposal_url,
+        # The date the attached PDF prints: the PDF is rendered before the
+        # send stamps valid_until, so the stored one is stale or None. A
+        # finalized estimate keeps its own (the send does not touch it).
+        "pdf_valid_until": (
+            None if estimate.status in {"accepted", "declined"} else expected_valid_until
+        ),
     }
 
 
@@ -2465,7 +2478,9 @@ def send_estimate(
                 try:
                     import base64 as _b64
 
-                    pdf_bytes = _estimate_pdf_bytes(db, estimate, cust, tid)
+                    pdf_bytes = _estimate_pdf_bytes(
+                        db, estimate, cust, tid, valid_until_override=prep["pdf_valid_until"]
+                    )
                     if len(pdf_bytes) > budget:
                         log.warning(
                             "estimate_send_pdf_too_large_to_attach estimate=%s bytes=%s",

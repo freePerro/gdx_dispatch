@@ -1708,6 +1708,42 @@ def test_a_staff_preview_gets_the_pdf_of_a_draft_and_changes_nothing(client: Tes
     assert _estimate_views(client) == 0
 
 
+def test_a_staff_preview_pdf_prints_the_expiry_the_text_will_set(client: TestClient, monkeypatch):
+    """The preview page shows the as-texted valid_until (`_as_texted`); its
+    PDF button must print the same date, never the stored one (a draft's is
+    None, so the PDF had no Valid-until line). The customer's PDF still
+    prints what is stored, and the preview writes nothing."""
+    from gdx_dispatch.core.customer_page_preview import mint
+
+    _fake_features(monkeypatch)
+    draft = _create_estimate(client)
+    row = _row(client, draft["id"])
+    assert row.valid_until is None
+    sig = {"preview": mint("estimate", row.id)}
+    page = client.get(f"/api/proposals/{row.public_token}", params=sig).json()
+    shown = datetime.fromisoformat(page["estimate"]["valid_until"]).date().isoformat()
+    r = client.get(f"/api/proposals/{row.public_token}/pdf", params=sig, headers=_BROWSER_UA)
+    assert r.status_code == 200, r.text
+    assert f"Valid until: {shown}" in _pdf_text(r.content)
+    after = _row(client, draft["id"])
+    assert (after.status, after.sent_at, after.valid_until, after.updated_at) == ("draft", None, None, row.updated_at)
+
+    # Expired with a stale date: the preview prints the fresh window, the
+    # customer link prints what is stored.
+    stale = datetime(2026, 1, 1, tzinfo=UTC)
+    expired = _create_estimate(client)
+    token = _publish(client, expired["id"], status="expired", sent_at=datetime(2025, 11, 1, tzinfo=UTC), valid_until=stale)
+    sig = {"preview": mint("estimate", UUID(expired["id"]))}
+    page = client.get(f"/api/proposals/{token}", params=sig).json()
+    shown = datetime.fromisoformat(page["estimate"]["valid_until"]).date().isoformat()
+    assert shown != "2026-01-01"
+    preview_text = _pdf_text(client.get(f"/api/proposals/{token}/pdf", params=sig, headers=_BROWSER_UA).content)
+    assert f"Valid until: {shown}" in preview_text
+    customer_text = _pdf_text(client.get(f"/api/proposals/{token}/pdf", headers=_BROWSER_UA).content)
+    assert "Valid until: 2026-01-01" in customer_text
+    assert _row(client, expired["id"]).valid_until.replace(tzinfo=UTC) == stale
+
+
 def test_downloading_the_pdf_writes_nothing(client: TestClient):
     """The page load that carries the button already records the view; the
     PDF fetch adds no audit row and touches no estimate column."""

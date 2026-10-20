@@ -107,6 +107,7 @@ def estimate(db, monkeypatch):
     db.commit()
     monkeypatch.setattr(est_router, "_prepare_estimate_email", lambda *a, **k: {
         "customer": cust, "subject": "Your estimate", "html": "<p>h</p>", "recipient": _recipient(),
+        "pdf_valid_until": None,
     })
     monkeypatch.setattr(est_router, "_estimate_pdf_bytes", lambda *a, **k: b"%PDF" + b"e" * 96)
     return est
