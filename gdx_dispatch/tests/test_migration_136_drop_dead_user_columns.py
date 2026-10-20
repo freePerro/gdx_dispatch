@@ -1,4 +1,4 @@
-"""Migration 135 and the model: seven dead ``users`` columns dropped (GDXA-1994).
+"""Migration 136 and the model: seven dead ``users`` columns dropped (GDXA-1994).
 
 On both engines: the seven are gone and every other column and row is kept, a
 rerun is a no-op, and the downgrade puts the seven back empty. The guard
@@ -17,7 +17,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, inspect
 
-MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/135_drop_dead_user_columns.py"
+MIGRATION = pathlib.Path(__file__).resolve().parents[1] / "migrations/versions/136_drop_dead_user_columns.py"
 
 DEAD = {
     "auth_email", "google_email", "availability_status", "mfa_enabled",
@@ -30,7 +30,7 @@ KEPT = {
 
 
 def _load(conn):
-    spec = importlib.util.spec_from_file_location("m135", MIGRATION)
+    spec = importlib.util.spec_from_file_location("m136", MIGRATION)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.op = Operations(MigrationContext.configure(conn))
@@ -71,16 +71,16 @@ def _rows(conn) -> list[tuple]:
 _ROWS = [("u1", "a@example.test", True), ("u2", "b@example.test", None)]
 
 
-def test_it_chains_onto_134_and_is_the_only_reviser() -> None:
+def test_it_chains_onto_135_and_is_the_only_reviser() -> None:
     source = MIGRATION.read_text()
-    assert 'revision = "135_drop_dead_user_columns"' in source
-    assert 'down_revision = "134_drop_tech_unavailability"' in source
-    assert len("135_drop_dead_user_columns") <= 32  # alembic_version.version_num is VARCHAR(32)
+    assert 'revision = "136_drop_dead_user_columns"' in source
+    assert 'down_revision = "135_job_return_visit_source"' in source
+    assert len("136_drop_dead_user_columns") <= 32  # alembic_version.version_num is VARCHAR(32)
     revising = [
         p.name for p in MIGRATION.parent.glob("*.py")
-        if re.search(r'^down_revision = "134_drop_tech_unavailability"', p.read_text(), re.M)
+        if re.search(r'^down_revision = "135_job_return_visit_source"', p.read_text(), re.M)
     ]
-    assert revising == ["135_drop_dead_user_columns.py"], revising
+    assert revising == ["136_drop_dead_user_columns.py"], revising
 
 
 def test_no_unescaped_percent_signs() -> None:
@@ -88,7 +88,7 @@ def test_no_unescaped_percent_signs() -> None:
 
 
 def test_sqlite_drop_rerun_and_downgrade(tmp_path) -> None:
-    eng = create_engine(f"sqlite:///{tmp_path / 'm135.db'}", future=True)
+    eng = create_engine(f"sqlite:///{tmp_path / 'm136.db'}", future=True)
     with eng.begin() as c:
         c.exec_driver_sql("PRAGMA foreign_keys = ON")
         _legacy_schema(c)
@@ -118,12 +118,12 @@ def test_sqlite_drop_rerun_and_downgrade(tmp_path) -> None:
     [("mfa_secret", "'JBSWY3DPEHPK3PXP'"), ("mcp_enabled", "FALSE"), ("availability_status", "'busy'")],
 )
 def test_sqlite_a_held_value_refuses_and_drops_nothing(tmp_path, column, value) -> None:
-    eng = create_engine(f"sqlite:///{tmp_path / 'm135_refuse.db'}", future=True)
+    eng = create_engine(f"sqlite:///{tmp_path / 'm136_refuse.db'}", future=True)
     with eng.connect() as c:
         _legacy_schema(c)
         c.exec_driver_sql(f"UPDATE users SET {column} = {value} WHERE id = 'u2'")  # noqa: S608 — test constants
         c.commit()
-        with pytest.raises(RuntimeError, match=rf"135: users\.{column} is set on 1 row\(s\)"):
+        with pytest.raises(RuntimeError, match=rf"136: users\.{column} is set on 1 row\(s\)"):
             _load(c).upgrade()
         c.rollback()
         assert _cols(c) == KEPT | DEAD
@@ -131,7 +131,7 @@ def test_sqlite_a_held_value_refuses_and_drops_nothing(tmp_path, column, value) 
 
 
 def test_sqlite_missing_table_or_columns_is_skipped(tmp_path) -> None:
-    eng = create_engine(f"sqlite:///{tmp_path / 'm135_skip.db'}", future=True)
+    eng = create_engine(f"sqlite:///{tmp_path / 'm136_skip.db'}", future=True)
     with eng.begin() as c:
         _load(c).upgrade()  # no table
         _load(c).downgrade()  # no table either way
@@ -155,7 +155,7 @@ def test_the_orm_no_longer_maps_the_dead_columns() -> None:
 
 def test_postgres_drop_refuse_rerun_and_downgrade(pg_test_db) -> None:
     eng = create_engine(pg_test_db, future=True)
-    schema = "m135_test"
+    schema = "m136_test"
     try:
         with eng.connect() as c:
             c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
@@ -166,7 +166,7 @@ def test_postgres_drop_refuse_rerun_and_downgrade(pg_test_db) -> None:
             _legacy_schema(c)
             c.exec_driver_sql("UPDATE users SET mfa_enabled = FALSE WHERE id = 'u1'")
             c.commit()
-            with pytest.raises(RuntimeError, match=r"135: users\.mfa_enabled is set on 1 row\(s\)"):
+            with pytest.raises(RuntimeError, match=r"136: users\.mfa_enabled is set on 1 row\(s\)"):
                 m.upgrade()
             c.rollback()
             c.exec_driver_sql(f"SET search_path TO {schema}")

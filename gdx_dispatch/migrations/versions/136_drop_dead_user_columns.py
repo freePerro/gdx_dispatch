@@ -28,7 +28,7 @@ is what SQLite's native drop requires.
 
 Rollback: ``downgrade()`` re-adds the missing columns, nullable and empty, in
 the types the model declared. Nothing is restored, because nothing was held.
-Order matters once 135 has run. An image from before this change still maps
+Order matters once 136 has run. An image from before this change still maps
 the seven on ``User``, so every user query fails against the dropped schema,
 and its entrypoint's ``alembic upgrade head`` fails on any revision it does
 not ship. A downgrade past other revisions breaks THIS image in turn (131's
@@ -41,7 +41,7 @@ not been rehearsed:
    ``celery-high``, ``celery-low``, ``celery-beat``).
 2. Find the head revision of the image being pinned (``alembic heads`` in
    that image, run without its entrypoint, which touches the database). It
-   is not necessarily 134: a release can predate several migrations.
+   is not necessarily 135: a release can predate several migrations.
 3. From THIS image, in a one-off container on the same compose project,
    env file and compose files as ``docker/update.sh`` (``COMPOSE=``), run
    ``alembic downgrade`` to that revision. Every downgrade it passes runs;
@@ -53,8 +53,8 @@ Demo is a separate stack on the same host: project ``gdx-demo``, env file
 no celery services. Step 3 with ``update.sh``'s project would downgrade
 prod's database instead, so substitute demo's for every step there.
 
-Revision ID: 135_drop_dead_user_columns
-Revises: 134_drop_tech_unavailability
+Revision ID: 136_drop_dead_user_columns
+Revises: 135_job_return_visit_source
 Create Date: 2026-10-19
 """
 from __future__ import annotations
@@ -63,8 +63,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "135_drop_dead_user_columns"
-down_revision = "134_drop_tech_unavailability"
+revision = "136_drop_dead_user_columns"
+down_revision = "135_job_return_visit_source"
 branch_labels = None
 depends_on = None
 
@@ -106,7 +106,7 @@ def upgrade() -> None:
     if occupied:
         listing = ", ".join(f"{_TABLE}.{name} is set on {n} row(s)" for name, n in occupied.items())
         raise RuntimeError(
-            f"135: {listing} — refusing to drop them. Nothing was dropped. "
+            f"136: {listing} — refusing to drop them. Nothing was dropped. "
             "Nothing in the app reads or writes these columns. Export each named "
             "column's non-NULL values with their user id, set the column to NULL "
             "on every row, then restart the container so the migration reruns."
