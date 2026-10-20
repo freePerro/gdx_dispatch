@@ -17,7 +17,7 @@ This directory contains the native **Android Studio project** that wraps the GDX
    - Foreground service background GPS tracking while clocked in (for dispatch board accuracy).
    - Google Play compliant prominent location disclosure dialog.
    - Android hardware back button and lifecycle integration.
-   - Native push notifications (Firebase Cloud Messaging).
+   - Office phone alerts as Android notifications, from a native foreground service (`OfficeAlertsService`); no Firebase.
 
 ---
 

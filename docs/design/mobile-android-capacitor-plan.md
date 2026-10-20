@@ -32,7 +32,7 @@ Packaging the frontend with **Capacitor** creates an installable Android APK / G
 - `gdx_dispatch/frontend/src/lib/nativeBridge.js` — Android hardware back button and lifecycle bridge.
 - `gdx_dispatch/frontend/src/lib/nativeCamera.js` — Native camera and gallery picker with seamless web `<input type="file">` fallback.
 - `gdx_dispatch/frontend/src/lib/nativeGps.js` — Android Foreground Service bridge, disclosure state, and high-accuracy geolocation helper.
-- `gdx_dispatch/frontend/src/lib/nativePush.js` — Native push notification channels, permissions, and FCM token capture.
+- `gdx_dispatch/frontend/src/lib/nativePush.js` — Native push notification channels, permissions, and FCM token capture. Deleted 2026-10-19 (GDXA-1977): it never had a caller. <!-- link-ok: names a file that is absent by design -->
 - `gdx_dispatch/frontend/src/lib/nativeBarcode.js` — Google ML Kit barcode and QR code scanner.
 - `gdx_dispatch/frontend/src/lib/nativeAuth.js` — Salted SHA-256 4-digit quick PIN authentication.
 - `gdx_dispatch/frontend/android/app/src/main/java/com/gdx/dispatch/location/GpsForegroundService.java` — Native Android Foreground Service with ongoing notification and wake lock.
@@ -88,7 +88,7 @@ JAVA_HOME=/home/doug/android-studio/jbr ANDROID_HOME=/home/doug/Android/Sdk ./gr
 
 - [x] **Phase 4: Google Play Release Packaging & FCM Push Notifications** — *partly: release packaging is built; FCM push is NOT (correction 2026-10-04)*
   - Installed `@capacitor/push-notifications` with Android notification channel setup (`dispatch_alerts`) and deep-link routing. **Correction 2026-10-04:** `src/lib/nativePush.js` has no caller, there is no `google-services.json`, and no server sender exists — FCM never worked. Superseded by `office-phone-alerts-plan.md` (native foreground service, no Firebase). <!-- link-ok: names a file that is absent by design -->
-  - Created `google-services.json.example` template and conditional Gradle compilation.
+  - Created `google-services.json.example` template and conditional Gradle compilation. Both deleted 2026-10-19 (GDXA-1977), unused.
   - Implemented Google Play Prominent Location Disclosure & Consent dialog (`MobileLocationDisclosureDialog.vue`) and gated `useGpsBreadcrumb.js` tracking on affirmative consent.
   - Configured environment-driven signing in `android/app/build.gradle` and interactive keystore generator (`scripts/generate-keystore.sh`).
   - Compiled and verified production App Bundle (`app-release.aab`, 8.4 MB).
