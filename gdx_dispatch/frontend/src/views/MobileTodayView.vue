@@ -279,9 +279,9 @@ async function saveReorder() {
 // Closeout is not on this screen any more. PR B moved every job action to the
 // job detail screen; this view is the ROUTE — which stops, in what order, and
 // how far apart. The closeout history that used to be recorded here now lives
-// with the code that owns it, in MobileJobDetailView, and the guard that the
-// legacy /api/mobile/jobs/{id}/complete endpoint stays unreachable moved with
-// it (see MobileCloseoutOwnership.spec.js).
+// with the code that owns it, in MobileJobDetailView, and the guard that no
+// view calls the legacy /api/mobile/jobs/{id}/complete (deleted 2026-10-19,
+// GDXA-1937) moved with it (see MobileCloseoutOwnership.spec.js).
 // One closeout path, one rule: capture-or-default at submit time.
 const closeoutOpen = ref(false)
 const closeoutJob = ref(null)

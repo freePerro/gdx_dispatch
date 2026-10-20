@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -184,21 +183,6 @@ def test_arrived_auto_clocks_in(session_factory):
         db.close()
 
 
-def test_complete_requires_signature(session_factory):
-    db = session_factory()
-    try:
-        r = mobile_router.mobile_job_complete(
-            job_id=_JOB_ID,
-            payload=mobile_router.CompleteBody(completion_notes="done"),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 400
-    finally:
-        db.close()
-
-
 def test_parts_used_deducts_inventory(session_factory):
     db = session_factory()
     _part_id = uuid4().hex
@@ -257,37 +241,6 @@ def test_audit_logged(session_factory):
             {"jid": _JOB_ID},
         )
         assert row.scalar_one() == 1
-    finally:
-        db.close()
-
-
-def test_complete_with_signature_marks_complete(session_factory):
-    db = session_factory()
-    try:
-        # /complete finishes only attested work (GDXA-1942): close it out first.
-        db.add(tenant_models.JobCloseout(
-            id=uuid4(), job_id=_JOB_UUID, hours_worked=1, techs_on_site=1,
-            closed_by_user_id="user-1", closed_at=datetime.now(UTC),
-        ))
-        db.commit()
-        signature_data = "data:image/png;base64," + base64.b64encode(b"signed").decode()
-        r = mobile_router.mobile_job_complete(
-            job_id=_JOB_ID,
-            payload=mobile_router.CompleteBody(
-                completion_notes="fixed",
-                signature_data=signature_data,
-                signed_by="Jane Customer",
-            ),
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 200
-        # Job.dispatch_status enum is (unassigned, assigned, en_route,
-        # on_site, done) — earlier code wrote the invalid "completed"
-        # which would raise on PG. S1-B2 (sprint_tech_mobile) corrected
-        # it to "done"; completed_at carries the timestamp axis.
-        assert _as_json(r)["dispatch_status"] == "done"
     finally:
         db.close()
 

@@ -1845,24 +1845,6 @@ def _completed_refusal(job: Job, *, starting: bool) -> Any:
     )
 
 
-def _closeout_required_refusal(db: Session, job: Job) -> Any:
-    """409 for a first finish through a door that attests nothing (GDXA-599):
-    /complete and the phone's legacy /api/mobile/jobs/{id}/complete
-    (GDXA-1942) may only re-finish a job whose closeout already attested the
-    work. A first finish goes through /closeout, or /close-without-work."""
-    from gdx_dispatch.core.closeouts import get_current_closeout
-
-    if get_current_closeout(db, job.id) is not None:
-        return None
-    return jsonable_response({
-        "detail": "Finish a job with Close out (or Close without work "
-                  "when there is nothing to attest). This job has no "
-                  "closeout to complete it on.",
-        "code": "closeout_required",
-        "use": "closeout",
-    }, 409)
-
-
 def _stage_move(stage: Any, status: Any, job: Job) -> dict:
     """The from/to pair a stage-changing audit row carries (GDXA-599)."""
     return {
@@ -1940,51 +1922,6 @@ class JobCompletePayload(BaseModel):
     no_parts_used: bool = False
 
 
-def _completion_requirements_missing(
-    db: Session, job: Job, flags: dict[str, bool], *,
-    parts_count: int | None, no_parts_used: bool,
-    hours: float | None, signature_present: bool | None,
-) -> list[str]:
-    """The tenant's /complete gates, shared with the mobile /complete door
-    (GDXA-1942) so neither can finish a job the other would refuse."""
-    missing: list[str] = []
-    if flags["require_parts_on_complete"]:
-        parts = parts_count
-        if parts is None:
-            # Fall back to live count.
-            parts = db.execute(
-                _text("SELECT COUNT(*) FROM job_parts_needed WHERE job_id = :jid"),
-                {"jid": str(job.id)},
-            ).scalar() or 0
-        # PR5 audit catch: the attestation is a STATEMENT, not a bypass —
-        # it only satisfies the gate when the checklist agrees (zero
-        # rows). Attesting "no parts" over known parts rows is a
-        # contradiction and still 422s.
-        if int(parts or 0) <= 0 and not no_parts_used:
-            missing.append("parts")
-    if flags["require_hours_on_complete"]:
-        if hours is None or float(hours) <= 0:
-            missing.append("hours")
-    if flags["require_signature_on_complete"]:
-        sig = signature_present
-        if sig is None:
-            sig = bool(job.signature_data)
-        if not sig:
-            missing.append("signature")
-    # PR5 — optional hard gate: no completion without a billing-real
-    # invoice (voids and the fabricated $0 draft don't count — the
-    # canonical predicate from PR2). Default OFF: invoice-after-
-    # completion is the normal flow; the follow-up loop chases those.
-    if flags["require_invoice_on_complete"]:
-        from gdx_dispatch.core.billing_predicates import job_billed_exists
-        billed = db.execute(
-            select(Job.id).where(Job.id == job.id, job_billed_exists())
-        ).scalar_one_or_none() is not None
-        if not billed:
-            missing.append("invoice")
-    return missing
-
-
 @router.post("/{job_id}/complete", response_model=None)
 def complete_job(
     payload: JobCompletePayload,
@@ -2022,18 +1959,55 @@ def complete_job(
         # attested the work (one re-opened with /uncomplete). A first finish
         # goes through /closeout, or /close-without-work when there is
         # nothing to attest. No shipped UI calls this route.
-        refusal = _closeout_required_refusal(db, job)
-        if refusal is not None:
-            return refusal
+        from gdx_dispatch.core.closeouts import get_current_closeout
+
+        if get_current_closeout(db, job.id) is None:
+            return jsonable_response({
+                "detail": "Finish a job with Close out (or Close without work "
+                          "when there is nothing to attest). This job has no "
+                          "closeout to complete it on.",
+                "code": "closeout_required",
+                "use": "closeout",
+            }, 409)
         refusal = _earlier_day_open_refusal(db, job, None, None, now=now)
         if refusal is not None:
             return refusal
 
-        missing = _completion_requirements_missing(
-            db, job, flags,
-            parts_count=payload.parts_count, no_parts_used=bool(payload.no_parts_used),
-            hours=payload.hours, signature_present=payload.signature_present,
-        )
+        missing: list[str] = []
+        if flags["require_parts_on_complete"]:
+            parts = payload.parts_count
+            if parts is None:
+                # Fall back to live count.
+                parts = db.execute(
+                    _text("SELECT COUNT(*) FROM job_parts_needed WHERE job_id = :jid"),
+                    {"jid": str(job.id)},
+                ).scalar() or 0
+            # PR5 audit catch: the attestation is a STATEMENT, not a bypass —
+            # it only satisfies the gate when the checklist agrees (zero
+            # rows). Attesting "no parts" over known parts rows is a
+            # contradiction and still 422s.
+            if int(parts or 0) <= 0 and not payload.no_parts_used:
+                missing.append("parts")
+        if flags["require_hours_on_complete"]:
+            if payload.hours is None or float(payload.hours) <= 0:
+                missing.append("hours")
+        if flags["require_signature_on_complete"]:
+            sig = payload.signature_present
+            if sig is None:
+                sig = bool(job.signature_data)
+            if not sig:
+                missing.append("signature")
+        # PR5 — optional hard gate: no completion without a billing-real
+        # invoice (voids and the fabricated $0 draft don't count — the
+        # canonical predicate from PR2). Default OFF: invoice-after-
+        # completion is the normal flow; the follow-up loop chases those.
+        if flags["require_invoice_on_complete"]:
+            from gdx_dispatch.core.billing_predicates import job_billed_exists
+            billed = db.execute(
+                select(Job.id).where(Job.id == job.id, job_billed_exists())
+            ).scalar_one_or_none() is not None
+            if not billed:
+                missing.append("invoice")
         if missing:
             return jsonable_response(
                 {"detail": "completion requirements unmet", "missing": missing},

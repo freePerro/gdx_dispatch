@@ -87,8 +87,9 @@ def test_uncomplete_naming_a_tech_reads_assigned(ctx):  # noqa: F811
 
 def test_reactivated_job_that_carried_done_reads_assigned_without_naming_a_tech(ctx):  # noqa: F811
     client, db, _ = ctx
-    # "done" on a job that never completed: the phone's own complete tap
-    # writes it (mobile_job_complete) without moving the stage.
+    # "done" on a job that never completed: the phone's old complete tap
+    # (mobile_job_complete, deleted 2026-10-19, GDXA-1937) wrote it without
+    # moving the stage, and rows it wrote still carry it.
     job = _job(db, crew=(TECH,), stage="in_progress", dispatch_status="done")
     r = client.post(f"/api/jobs/{job.id}/cancel", json={"reason": "customer went elsewhere"})
     assert r.status_code == 200, r.text

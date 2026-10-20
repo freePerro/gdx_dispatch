@@ -364,7 +364,6 @@ POST /api/mobile/jobs/{job_id}/chat
 POST /api/mobile/jobs/{job_id}/claim
 POST /api/mobile/jobs/{job_id}/clock-in
 POST /api/mobile/jobs/{job_id}/clock-out
-POST /api/mobile/jobs/{job_id}/complete
 POST /api/mobile/jobs/{job_id}/en-route
 POST /api/mobile/jobs/{job_id}/invoice
 POST /api/mobile/jobs/{job_id}/notes

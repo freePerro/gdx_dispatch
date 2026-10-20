@@ -34,7 +34,8 @@ BASELINE_CEILING = {
     # 92 -> 91: GDXA-1560 deletes payroll.py's `_fetch_active_rate` (log + None).
     # 91 -> 90: GDXA-1793 moves timeclock.py's label swallow into
     # core/time_off.user_labels, marked in source.
-    "silent_failure_scanner": 90,
+    # 90 -> 89: GDXA-1937 deletes mobile.py's `_validate_signature_data` (log + empty).
+    "silent_failure_scanner": 89,
     # 71 -> 70: GDXA-1730 drops appointments.py's pointer to deleted routers/booking.py.
     # 70 -> 69: GDXA-1793 rewrites timeclock.py's roster user-label read.
     "comment_drift_scan": 69,

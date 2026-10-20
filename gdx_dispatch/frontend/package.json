@@ -35,7 +35,6 @@
     "@capacitor/geolocation": "^8.2.3",
     "@capacitor/network": "^8.0.1",
     "@capacitor/preferences": "^8.0.1",
-    "@capacitor/push-notifications": "^8.1.3",
     "@capgo/capacitor-native-biometric": "^8.7.0",
     "@primeuix/themes": "^2.0.3",
     "chart.js": "^4.5.1",

@@ -55,23 +55,10 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         "label": "Drag-reorder authority",
         "help": "live = tech reorders apply immediately; dispatch_approval = pending until dispatch confirms.",
     },
-    # --- Phase 1.2 — Arrival & On-Site -----------------------------------
-    "tech_mobile.signature_required_completion": {
-        "type": "enum",
-        "default": "required",
-        "bounds": ("required", "optional", "off"),
-        "phase": "1.2",
-        "label": "Customer signature required for completion",
-        "help": "Whether a customer signature is required to mark a job complete.",
-    },
-    "tech_mobile.signature_surface": {
-        "type": "enum",
-        "default": "phone_handoff",
-        "bounds": ("phone_handoff", "customer_link"),
-        "phase": "1.2",
-        "label": "Signature capture surface",
-        "help": "phone_handoff = customer signs on tech's phone; customer_link = SMS/email link to sign on their own device.",
-    },
+    # Phase 1.2's signature_required_completion and signature_surface were
+    # read only by the deprecated POST /api/mobile/jobs/{id}/complete and went
+    # with it (GDXA-1937). The closeout's signature gate is the workflow flag
+    # require_signature_on_complete (Settings → Workflow).
     # --- Phase 1.3 — Parts ------------------------------------------------
     "tech_mobile.critical_part_audible": {
         "type": "bool",

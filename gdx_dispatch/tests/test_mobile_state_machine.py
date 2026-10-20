@@ -20,13 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import (
-    Appointment,
-    Customer,
-    Job,
-    JobCloseout,
-    Technician,
-)
+from gdx_dispatch.models.tenant_models import Appointment, Customer, Job, Technician
 from gdx_dispatch.routers import mobile as mobile_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.tests.conftest import make_fresh_db
@@ -204,29 +198,35 @@ class TestArrivalGeo:
 
 
 class TestStateMachineEndToEnd:
-    def test_assigned_to_en_route_then_arrived_then_done(self, app_and_db):
+    def test_assigned_to_en_route_then_arrived(self, app_and_db):
         client, db = app_and_db
         job, _ = _seed_job(db, dispatch_status="assigned")
-        # Forward-only path that a tech walks every job.
+        # Forward-only path that a tech walks every job. 'done' is the
+        # closeout's to set (/api/jobs/{id}/closeout), not this router's.
         r1 = client.post(f"/api/mobile/jobs/{job.id.hex}/en-route", json={"eta_minutes": 20})
         assert r1.status_code == 200
         r2 = client.post(f"/api/mobile/jobs/{job.id.hex}/arrived")
         assert r2.status_code == 200
-        # /complete finishes only attested work (GDXA-1942): close it out first.
-        db.add(JobCloseout(
-            id=uuid4(), job_id=job.id, hours_worked=1, techs_on_site=1,
-            closed_by_user_id=USER, closed_at=_now(),
-        ))
-        db.commit()
+        db.expire_all()
+        assert db.query(Job).filter(Job.id == job.id).one().dispatch_status == "on_site"
+
+    def test_legacy_complete_route_is_gone(self, app_and_db):
+        # GDXA-1937: POST /complete set dispatch_status='done' without moving
+        # lifecycle_stage, so the job left the tech's list while the office
+        # saw it open. A stale PWA replaying it must get a refusal, and the
+        # job must not move.
+        client, db = app_and_db
+        job, _ = _seed_job(db, dispatch_status="on_site")
         sig = "data:image/png;base64,c2lnbmF0dXJl"  # base64('signature')
-        r3 = client.post(
+        r = client.post(
             f"/api/mobile/jobs/{job.id.hex}/complete",
             json={"signature_data": sig, "signed_by": "Cust"},
         )
-        assert r3.status_code == 200, r3.text
-        assert r3.json()["dispatch_status"] == "done"
+        assert r.status_code in (404, 405), r.text
         db.expire_all()
-        assert db.query(Job).filter(Job.id == job.id).one().dispatch_status == "done"
+        row = db.query(Job).filter(Job.id == job.id).one()
+        assert row.dispatch_status == "on_site"
+        assert row.completed_at is None
 
     def test_en_route_after_done_400s(self, app_and_db):
         client, db = app_and_db
