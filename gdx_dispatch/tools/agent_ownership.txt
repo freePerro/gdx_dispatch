@@ -753,6 +753,7 @@ gdx_dispatch/frontend/src/composables/useMobileTour.js       mobile-tech
 gdx_dispatch/frontend/src/composables/useOfficeAlertsKeeper.js mobile-tech
 gdx_dispatch/frontend/src/lib/offlineDb.js                   mobile-tech
 gdx_dispatch/frontend/src/lib/keyboardInset.js               mobile-tech
+gdx_dispatch/frontend/src/lib/jobStage.js                    mobile-tech
 gdx_dispatch/frontend/src/lib/serverConfig.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeBridge.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeCamera.js                mobile-tech

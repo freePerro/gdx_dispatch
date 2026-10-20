@@ -20,6 +20,7 @@ import { useApi } from '../composables/useApi'
 import { toShopWallClock, useTenantTimezone } from '../composables/useTenantTimezone'
 import { useToast } from 'primevue/usetoast'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm'
+import { JOB_STAGE_LABELS, isClosedStage, jobStatusKey, normalizeJobStage } from '../lib/jobStage'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
 import CrewChangeDialog from '../components/CrewChangeDialog.vue'
 import DayOverflowDialog from '../components/DayOverflowDialog.vue'
@@ -134,54 +135,59 @@ function goToday() {
   selectedDate.value = new Date()
 }
 
-// MH-6 (audit P1 #6): canonical job-status enum the badge is allowed
-// to render. Pre-fix `job.status` sometimes carried non-status values
-// like "Service Call" (job type) or "QB Import" (import source) which
-// the badge rendered as-if-they-were-status, so a dispatcher couldn't
-// trust the badge. Whitelist gate: only canonical values pass through;
-// anything else triggers the neutral "pending" rendering.
-const CANONICAL_JOB_STATUSES = new Set([
-  'new', 'pending', 'scheduled',
-  'en_route', 'en route', 'on site', 'on_site',
-  'in_progress', 'on_hold', 'hold',
-  'done', 'complete', 'completed', 'paid',
-  'cancelled', 'canceled', 'failed',
-])
+// MH-6 (audit P1 #6): the badge renders only a known status. `job.status`
+// once carried non-status values like "QB Import" (import source), which
+// the badge showed as if it were one. Anything unknown reads "Pending".
+//
+// GDXA-1942: /api/jobs sends the stage as its display label ("In Progress",
+// "Complete", "Cancelled"), which this table, keyed on the enum, did not
+// match: an under-way job read "pending" in amber. Every value now goes
+// through the one key (lib/jobStage); the table is the lifecycle enum plus
+// the older dispatch-side words some rows still carry.
+const OTHER_STATUS_LABELS = {
+  new: 'New', pending: 'Pending', en_route: 'En route', on_site: 'On site',
+  on_hold: 'On hold', hold: 'On hold', done: 'Done', paid: 'Paid', failed: 'Failed',
+}
+
+const STATUS_SEVERITY = {
+  lead: 'warn', service_call: 'warn', estimate: 'warn', scheduled: 'warn',
+  new: 'warn', pending: 'warn',
+  in_progress: 'info', en_route: 'info', on_site: 'info',
+  completed: 'success', done: 'success', paid: 'success',
+  cancelled: 'danger', failed: 'danger',
+  on_hold: 'secondary', hold: 'secondary',
+}
 
 function canonicalStatus(status) {
-  const s = String(status || '').toLowerCase().trim()
-  return CANONICAL_JOB_STATUSES.has(s) ? s : ''
+  const stage = normalizeJobStage(status)
+  if (stage) return stage
+  const s = jobStatusKey(status)
+  return Object.hasOwn(OTHER_STATUS_LABELS, s) ? s : ''
+}
+
+function statusLabel(status, fallback) {
+  const c = canonicalStatus(status)
+  return c ? (JOB_STAGE_LABELS[c] || OTHER_STATUS_LABELS[c]) : fallback
 }
 
 function statusBadgeValue(status) {
-  // MH-6: only render the raw status string if it's a known enum value;
-  // otherwise show "Pending" (the neutral default). Falls through to
-  // the existing severity logic.
-  const c = canonicalStatus(status)
-  return c ? status : 'pending'
+  return statusLabel(status, 'Pending')
 }
 
 function statusSeverity(status) {
-  const s = canonicalStatus(status) || 'pending'
-  if (['done', 'complete', 'completed', 'paid'].includes(s)) return 'success'
-  if (['en_route', 'en route', 'on site', 'on_site', 'in_progress'].includes(s)) return 'info'
-  if (['pending', 'scheduled', 'new'].includes(s)) return 'warn'
-  if (['canceled', 'cancelled', 'failed'].includes(s)) return 'danger'
-  if (['on_hold', 'hold'].includes(s)) return 'secondary'
-  return 'secondary'
+  return STATUS_SEVERITY[canonicalStatus(status) || 'pending']
 }
 
 // MH-6 (audit P1 #7): the Unassigned bucket on /mobile/dispatch was 33-
 // of-38 Completed/QB-imported historical jobs. A dispatcher's actionable
 // queue must exclude terminal-state jobs by default — they're nothing
-// to assign. Status enum values that count as terminal:
-const TERMINAL_STATUSES = new Set(['done', 'complete', 'completed', 'paid', 'canceled', 'cancelled', 'failed'])
+// to assign.
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'done', 'paid', 'failed'])
 
 function isTerminal(job) {
   if (!job) return false
-  const stage = String(job.lifecycle_stage || '').toLowerCase()
-  if (stage === 'completed' || stage === 'cancelled') return true
-  return TERMINAL_STATUSES.has(String(job.status || '').toLowerCase().trim())
+  if (isClosedStage(job.lifecycle_stage)) return true
+  return TERMINAL_STATUSES.has(canonicalStatus(job.status))
 }
 
 function displayCustomer(job) {
@@ -381,8 +387,8 @@ async function confirmAssign() {
   // unmeasured. A dated job keeps its time and is not measured, on either
   // board; a job under way keeps its crew and lane (GDXA-1370/1377).
   let booking = { choice: null }
-  // The list sends the label ("In Progress"); normalized as the desktop's jobStage.
-  const underWay = String(job.lifecycle_stage || '').trim().toLowerCase().replace(/[\s-]+/g, '_') === 'in_progress'
+  // The list sends the label ("In Progress").
+  const underWay = normalizeJobStage(job.lifecycle_stage) === 'in_progress'
   if (!job.scheduled_at) {
     const d = new Date(selectedDate.value)
     d.setHours(9, 0, 0, 0)
@@ -806,7 +812,7 @@ onUnmounted(() => {
               <li v-for="job in tech.jobs" :key="job.id" class="job-card tech-job-card">
                 <div class="job-row">
                   <span class="job-customer"><i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" /> {{ displayCustomer(job) }}</span>
-                  <Tag :value="canonicalStatus(job.status) ? job.status : 'assigned'" :severity="statusSeverity(job.status)" />
+                  <Tag :value="statusLabel(job.status, 'Assigned')" :severity="statusSeverity(job.status)" />
                 </div>
                 <p v-if="displayTitle(job)" class="job-title-line">{{ displayTitle(job) }}</p>
                 <div class="job-meta">

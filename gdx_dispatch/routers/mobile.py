@@ -300,7 +300,7 @@ def _get_job(db: Session, tenant_id: str, job_id: str) -> dict[str, Any] | None:
         _text(
             """
             SELECT id, customer_id, location_id, title, description, dispatch_status,
-                   scheduled_at, arrived_at, completed_at, signature_data,
+                   lifecycle_stage, scheduled_at, arrived_at, completed_at, signature_data,
                    signed_by, signed_at, created_at,
                    job_type, priority, is_return_visit
             FROM jobs
