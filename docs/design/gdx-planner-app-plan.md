@@ -52,7 +52,7 @@ Verified against code on 2026-10-14 (`origin/main` 992f73f3):
     `OfficeAlertsToggle.vue`.
   - `office-phone-alerts-plan.md` records the decision: a native foreground
     service, not Firebase. **GDX Planner reuses all of this and adds no FCM.**
-    The unwired `nativePush.js` FCM helper stays unwired.
+    The dead FCM helper was deleted on 2026-10-19 (GDXA-1977).
 - **A once-a-minute beat cadence.** `core/scheduler.py` already runs
   per-minute `crontab` entries, for example the scheduled-SMS drain on
   `priority:high`. Prod runs `gdx-celery-beat-1`, checked 2026-10-14.

@@ -82,8 +82,8 @@
       </div>
       <div v-if="needsSchedule" class="form-field">
         <label for="state-override-when">When (optional)</label>
-        <Calendar id="state-override-when" v-model="scheduledAt" showTime hourFormat="12"
-                  data-testid="state-override-when" />
+        <DatePicker id="state-override-when" v-model="scheduledAt" showTime hourFormat="12"
+                    data-testid="state-override-when" />
       </div>
       <div v-if="path === 'warranty'" class="form-field">
         <label>Title</label>
@@ -104,7 +104,7 @@ import { computed, ref, watch } from "vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { isNeedsAnswer, pointsAtAppointments, rebookQuestion, refusalOf } from "../utils/visitRefusals";
 import Button from "primevue/button";
-import Calendar from "primevue/calendar";
+import DatePicker from "primevue/datepicker";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Textarea from "primevue/textarea";

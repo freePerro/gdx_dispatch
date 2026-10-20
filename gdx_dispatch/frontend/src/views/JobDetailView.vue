@@ -406,10 +406,16 @@
           <div class="receipt-input">
             <Select
               v-model="newDependencyJobId"
-              :options="dependencyJobOptions"
+              :options="dependencyPicker.options.value"
               optionLabel="label"
               optionValue="value"
               filter
+              :filterFields="['searchText']"
+              filterPlaceholder="Job #, title or customer"
+              resetFilterOnHide
+              :loading="dependencyPicker.loading.value"
+              @filter="dependencyPicker.onFilter"
+              @hide="dependencyPicker.onHide"
               placeholder="This job can't start until..."
               class="dependency-select"
               data-testid="dependency-select"
@@ -1593,6 +1599,7 @@ import MobileJobCloseoutDialog from "../components/MobileJobCloseoutDialog.vue";
 import JobDailyLogCard from "../components/JobDailyLogCard.vue";
 import { formatHours as formatDayHours, formatDayLong, refusalOf } from "../utils/dayClose";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { useServerSearchSelect } from "../composables/useServerSearchSelect";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent, formatPhone } from "../composables/useFormatters";
 import { useToast } from "primevue/usetoast";
@@ -1678,7 +1685,6 @@ const newHazardSticky = ref(false);
 const receipts = ref([]);
 const promotingReceiptId = ref(null);
 const dependencies = ref([]);
-const dependencyJobOptions = ref([]);
 const newDependencyJobId = ref(null);
 const newReceiptVendor = ref("");
 const newReceiptAmount = ref("");
@@ -2056,7 +2062,7 @@ async function refreshRelated() {
     fetchHazards(),
     fetchReceipts(),
     fetchDependencies(),
-    fetchDependencyJobOptions(),
+    dependencyPicker.load(),
     fetchFinancials(),
   ]);
 }
@@ -2491,20 +2497,30 @@ async function fetchDependencies() {
   }
 }
 
-async function fetchDependencyJobOptions() {
-  try {
-    const data = await api.get("/api/jobs?per_page=200", { suppressErrorToast: true });
-    const rows = Array.isArray(data) ? data : data?.items || [];
-    const terminal = new Set(["complete", "completed", "cancelled", "paid", "invoiced", "failed"]);
-    dependencyJobOptions.value = rows
-      .filter((j) => String(j.id) !== String(route.params.id))
-      // A finished job can't block anything — offering it just invites noise.
-      .filter((j) => !terminal.has(String(j.lifecycle_stage || j.status || "").toLowerCase()))
-      .map((j) => ({ label: j.title || j.job_number || String(j.id).slice(0, 8), value: String(j.id) }));
-  } catch {
-    dependencyJobOptions.value = [];
-  }
-}
+// "Blocked by" searches the server as the user types: a 200-row list filtered
+// in the browser left every job past it unpickable (GDXA-1965). /api/jobs
+// `search` matches title, customer name and job number. The untyped list keeps
+// 200 rows because terminal jobs are dropped from it after the fetch.
+const DEPENDENCY_TERMINAL = new Set(["complete", "completed", "cancelled", "paid", "invoiced", "failed"]);
+const dependencyPicker = useServerSearchSelect({
+  search: async (query) => {
+    const params = new URLSearchParams({ page_size: "200" });
+    if (query) params.set("search", query);
+    const data = await api.get(`/api/jobs?${params}`, { suppressErrorToast: true });
+    return Array.isArray(data) ? data : data?.items || [];
+  },
+  toOption: (j) => {
+    if (String(j.id) === String(route.params.id)) return null;
+    // A finished job can't block anything — offering it just invites noise.
+    if (DEPENDENCY_TERMINAL.has(String(j.lifecycle_stage || j.status || "").toLowerCase())) return null;
+    return {
+      label: j.title || j.job_number || String(j.id).slice(0, 8),
+      value: String(j.id),
+      searchText: [j.job_number, j.title, j.customer_name].filter(Boolean).join(" "),
+    };
+  },
+});
+watch(newDependencyJobId, (id) => dependencyPicker.ensure(id));
 
 async function addDependency() {
   if (!newDependencyJobId.value) return;

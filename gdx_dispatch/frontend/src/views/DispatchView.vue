@@ -1179,6 +1179,11 @@ watch(permissionsLoaded, (loaded) => { if (loaded) loadLateOpen({ keepOnError: t
 // server keeps the two lists disjoint (one predicate, partial_clause).
 const partialJobs = ref([]);
 const partialJobIds = computed(() => new Set(partialJobs.value.map((j) => String(j.id))));
+// Normalized like the day list, for the holding-area lanes and the drawer.
+const normalizedPartialJobs = computed(() => partialJobs.value.map(normalizeJob));
+// Reads in flight of the lists the drawer opens from (see repointDrawer).
+let drawerListReads = 0;
+let drawerCloseDeferred = false;
 
 // Returns whether the list was read: a kept list is not evidence of anything.
 async function loadPartialJobs({ keepOnError = false } = {}) {
@@ -1186,14 +1191,19 @@ async function loadPartialJobs({ keepOnError = false } = {}) {
     partialJobs.value = [];
     return false;
   }
+  let ok = false;
+  drawerListReads += 1;
   try {
     const res = await api.get('/api/dispatch/partial-jobs');
     partialJobs.value = Array.isArray(res?.items) ? res.items : [];
+    ok = true;
     return true;
   } catch (e) {
     console.warn('partial_jobs_failed', e);
     if (!keepOnError) partialJobs.value = [];
     return false;
+  } finally {
+    settleDrawerRead(ok);
   }
 }
 
@@ -3191,7 +3201,18 @@ function visitsReadable(query) {
   return span >= 0 && span < VISIT_WINDOW_MAX_DAYS;
 }
 
-async function fetchJobs({ keepOnError = false } = {}) {
+async function fetchJobs(opts) {
+  let ok = false;
+  drawerListReads += 1;
+  try {
+    ok = await readJobs(opts);
+  } finally {
+    settleDrawerRead(ok);
+  }
+}
+
+// Returns whether the jobs list was replaced.
+async function readJobs({ keepOnError = false } = {}) {
   const seq = ++fetchSeq;
   const query = jobsDateQuery();
   const settle = (p) => p.then((d) => ({ ok: true, d }), (e) => ({ ok: false, e }));
@@ -3201,7 +3222,7 @@ async function fetchJobs({ keepOnError = false } = {}) {
     boardReadable ? settle(api.get(`/api/dispatch/visits?${query}`)) : Promise.resolve(null),
     boardReadable ? settle(api.get(`/api/dispatch/time-off?${query}`)) : Promise.resolve(null),
   ]);
-  if (seq !== fetchSeq) return;
+  if (seq !== fetchSeq) return false;
   if (timeOffRes === null) {
     boardTimeOff.value = [];
     timeOffUnread = false;
@@ -3233,30 +3254,43 @@ async function fetchJobs({ keepOnError = false } = {}) {
   }
   if (!jobsRes.ok) {
     if (!keepOnError) jobs.value = [];
-    return;
+    return false;
   }
-  {
-    const data = jobsRes.d;
-    const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
-    jobs.value = rows.map(normalizeJob);
-    // The drawer must describe the job as it IS, not as it was when opened.
-    // The board polls every 45 s and replaces jobs.value, but drawerJob
-    // pointed at the old object — so after the tech closed out from the
-    // truck, the drawer still said "In Progress" and still offered Close
-    // out, and a second closeout would supersede the tech's attestation
-    // (audit 2026-08-28, #526). Re-point it; if the job left the board,
-    // close the drawer rather than keep describing a ghost.
-    // A visit card is found by its card key first, so the drawer keeps
-    // describing the same day.
-    if (drawerJob.value) {
-      const cards = boardJobs.value;
-      const key = drawerJob.value.card_key;
-      const fresh = (key && cards.find((j) => j.card_key === key))
-        || cards.find((j) => String(j.id) === String(drawerJob.value.id));
-      if (fresh) drawerJob.value = fresh;
-      else closeJobDrawer();
-    }
-  }
+  const data = jobsRes.d;
+  const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
+  jobs.value = rows.map(normalizeJob);
+  return true;
+}
+
+// The drawer must describe the job as it IS, not as it was when opened.
+// The board polls every 45 s and replaces its lists, but drawerJob pointed at
+// the old object — so after the tech closed out from the truck, the drawer
+// still said "In Progress" and still offered Close out, and a second closeout
+// would supersede the tech's attestation (audit 2026-08-28, #526). Re-point
+// it; if the job left every list the drawer opens from, close the drawer
+// rather than keep describing a ghost. A visit card is found by its card key
+// first, so the drawer keeps describing the same day.
+// It runs after every read of any of those lists, not the jobs read alone
+// (GDXA-1989). A poll reads them all at once and they answer in any order, so
+// a job moving between lists (booked from the partial list onto the board) is
+// briefly on none: re-pointing is safe on partial evidence, closing is not, so
+// the close waits until no read is in flight. A failed read keeps the drawer
+// as it was, unless a close is waiting on it.
+function repointDrawer() {
+  if (!drawerJob.value) { drawerCloseDeferred = false; return; }
+  const cards = drawerSourceJobs();
+  const key = drawerJob.value.card_key;
+  const fresh = (key && cards.find((j) => j.card_key === key))
+    || cards.find((j) => String(j.id) === String(drawerJob.value.id));
+  drawerCloseDeferred = false;
+  if (fresh) drawerJob.value = fresh;
+  else if (drawerListReads > 0) drawerCloseDeferred = true;
+  else closeJobDrawer();
+}
+
+function settleDrawerRead(ok) {
+  drawerListReads -= 1;
+  if (ok || drawerCloseDeferred) repointDrawer();
 }
 
 // The visits read is gated on jobs.read_all, which may resolve after the
@@ -3282,10 +3316,17 @@ async function fetchScheduledUnassigned({ keepOnError = false } = {}) {
     scheduledUnassigned.value = [];
     return;
   }
+  let ok = false;
+  drawerListReads += 1;
   try {
     const res = await api.get("/api/dispatch/scheduled-unassigned");
     scheduledUnassigned.value = Array.isArray(res?.items) ? res.items : [];
-  } catch { if (!keepOnError) scheduledUnassigned.value = []; }
+    ok = true;
+  } catch {
+    if (!keepOnError) scheduledUnassigned.value = [];
+  } finally {
+    settleDrawerRead(ok);
+  }
 }
 
 function isOverdue(job) {
@@ -3351,10 +3392,19 @@ function getHoldingAreaJobs(areaId) {
   // Normalized like the day list, so the lane total and the drawer read
   // the same fields.
   const seen = new Set(here.map((j) => String(j.id)));
-  const parked = partialJobs.value.filter(
+  const parked = normalizedPartialJobs.value.filter(
     (j) => j.holding_area_id && String(j.holding_area_id) === String(areaId) && !seen.has(String(j.id)),
-  ).map(normalizeJob);
+  );
   return [...here, ...parked];
+}
+
+// Every list the drawer is opened from, board cards first, each normalized
+// like the day list. repointDrawer reads this; re-pointing from the board
+// alone closed a drawer opened on a parked partial job or a Scheduled — Not
+// Assigned card dated outside the board's window, neither of which the jobs
+// read loads (GDXA-1989).
+function drawerSourceJobs() {
+  return [...boardJobs.value, ...normalizedPartialJobs.value, ...scheduledUnassigned.value.map(normalizeJob)];
 }
 
 // Park or release a partial job: only the holding area changes (no crew or

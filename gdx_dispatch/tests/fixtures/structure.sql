@@ -4639,23 +4639,6 @@ CREATE TABLE public.tech_locations (
 
 
 --
--- Name: tech_unavailability; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.tech_unavailability (
-    id uuid NOT NULL,
-    company_id character varying(64) NOT NULL,
-    tech_id character varying(64) NOT NULL,
-    start_at timestamp with time zone NOT NULL,
-    end_at timestamp with time zone NOT NULL,
-    reason character varying(200),
-    created_by character varying(200),
-    created_at timestamp with time zone NOT NULL,
-    deleted_at timestamp with time zone
-);
-
-
---
 -- Name: technician_locations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -7309,14 +7292,6 @@ ALTER TABLE ONLY public.tech_commission_rates
 
 ALTER TABLE ONLY public.tech_locations
     ADD CONSTRAINT tech_locations_pkey PRIMARY KEY (id);
-
-
---
--- Name: tech_unavailability tech_unavailability_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.tech_unavailability
-    ADD CONSTRAINT tech_unavailability_pkey PRIMARY KEY (id);
 
 
 --
@@ -10209,20 +10184,6 @@ CREATE INDEX ix_tech_locations_technician_id ON public.tech_locations USING btre
 --
 
 CREATE INDEX ix_tech_locations_user_id ON public.tech_locations USING btree (user_id);
-
-
---
--- Name: ix_tech_unavailability_company_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_tech_unavailability_company_id ON public.tech_unavailability USING btree (company_id);
-
-
---
--- Name: ix_tech_unavailability_tech_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX ix_tech_unavailability_tech_id ON public.tech_unavailability USING btree (tech_id);
 
 
 --

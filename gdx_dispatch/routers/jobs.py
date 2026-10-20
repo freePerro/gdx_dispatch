@@ -1899,11 +1899,15 @@ def _earlier_day_open_refusal(
     }, 409)
 
 
-def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, user: Any) -> None:
-    """The completion write shared by /complete and /close-without-work: the
-    stage, the "Completed" spelling, completed_at, dispatch done, the job's
-    visits (F1), and the job.completed webhook staged before the caller's
-    commit."""
+def _mark_job_completed(
+    db: Session, job: Job, now: datetime, tenant_id: str, user: Any, *, emit: bool = True
+) -> None:
+    """The completion write shared by /complete, /close-without-work and
+    /closeout: the stage, the "Completed" spelling, completed_at, dispatch
+    done, the job's visits (F1), and the job.completed webhook staged before
+    the caller's commit. ``emit=False`` is for a closeout restatement: the job
+    was already completed, so a second job.completed would announce a
+    completion that did not happen (GDXA-1954)."""
     _finish_visits(db, job, now, user)
     job.lifecycle_stage = "completed"
     job.status = "Completed"
@@ -1911,7 +1915,8 @@ def _mark_job_completed(db: Session, job: Job, now: datetime, tenant_id: str, us
     job.dispatch_status = "done"
     job.updated_at = now
     db.flush()
-    _emit_job_event(db, job, "job.completed", tenant_id)
+    if emit:
+        _emit_job_event(db, job, "job.completed", tenant_id)
 
 
 class JobCompletePayload(BaseModel):
@@ -3118,18 +3123,18 @@ def closeout_job(
 
         # 4) Flip the job to completed. Stamp signature for back-compat
         #    with the Phase 1 /complete reader path that checks job.signature_data.
-        #    Its visits first (F1).
+        #    The completion write is the shared one, so a first closeout stages
+        #    job.completed like /complete does; a restatement of an already
+        #    completed job stages none (GDXA-1954).
         stage_before = (job.lifecycle_stage, job.status)
-        _finish_visits(db, job, now, current_user)
-        job.lifecycle_stage = "completed"
-        job.status = "Completed"
-        job.completed_at = now
-        job.dispatch_status = "done"
         if payload.signature_data:
             job.signature_data = payload.signature_data
         if payload.notes:
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
-        job.updated_at = now
+        _mark_job_completed(
+            db, job, now, tenant_id, current_user,
+            emit=stage_before[0] != "completed",
+        )
 
         # 5) Parts the job still NEEDS (Doug 2026-08-04) — filed as the same
         #    row the job-screen Parts card creates (status='needed',
