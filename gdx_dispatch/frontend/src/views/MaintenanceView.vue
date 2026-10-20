@@ -215,7 +215,22 @@
         <div class="form-grid">
           <div class="form-field">
             <label>Customer *</label>
-            <Select v-model="enrollmentForm.customer_id" :options="customerOptions" optionLabel="label" optionValue="value" class="w-full" showClear />
+            <Select
+              v-model="enrollmentForm.customer_id"
+              :options="customerPicker.options.value"
+              optionLabel="label"
+              optionValue="value"
+              filter
+              :filterFields="['searchText']"
+              filterPlaceholder="Name, email or phone"
+              resetFilterOnHide
+              :loading="customerPicker.loading.value"
+              class="w-full"
+              showClear
+              data-testid="enrollment-customer-select"
+              @filter="customerPicker.onFilter"
+              @hide="customerPicker.onHide"
+            />
           </div>
           <div class="form-field">
             <label>Plan *</label>
@@ -243,8 +258,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useServerSearchSelect } from '../composables/useServerSearchSelect';
 import { formatMoney as formatCurrency } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
@@ -286,7 +302,6 @@ const booleanOptions = [
 const plans = ref([]);
 const enrollments = ref([]);
 const dueThisMonth = ref([]);
-const customers = ref([]);
 
 const activeTab = ref('plans');
 const loadingPlans = ref(true);
@@ -307,9 +322,32 @@ const planOptions = computed(() =>
   plans.value.map((plan) => ({ label: plan.name || 'Plan', value: plan.id }))
 );
 
-const customerOptions = computed(() =>
-  customers.value.map((customer) => ({ label: customer.label, value: customer.value }))
-);
+// Searches the server as the user types: a 500-row list with no filter left
+// every customer past it unenrollable (GDXA-1965). `q` matches name, email
+// and phone.
+function customerLabel(customer) {
+  return customer.name || customer.company_name || `Customer ${customer.id?.slice?.(0, 6) || customer.id}`;
+}
+
+const customerPicker = useServerSearchSelect({
+  search: async (query) => {
+    const params = new URLSearchParams({ per_page: '50' });
+    if (query) params.set('q', query);
+    return sanitizeList(await api.get(`/api/customers?${params}`));
+  },
+  toOption: (customer) => ({
+    value: customer.id,
+    label: customerLabel(customer),
+    searchText: [
+      customerLabel(customer),
+      customer.email,
+      customer.phone,
+      String(customer.phone || '').replace(/\D/g, ''),
+    ].filter(Boolean).join(' '),
+  }),
+});
+
+watch(() => enrollmentForm.value.customer_id, (id) => customerPicker.ensure(id));
 
 function sanitizeList(data) {
   if (Array.isArray(data)) return data;
@@ -388,18 +426,6 @@ async function loadDueThisMonth() {
     }));
   } finally {
     dueLoading.value = false;
-  }
-}
-
-async function loadCustomers() {
-  try {
-    const data = await api.get('/api/customers?per_page=500');
-    customers.value = sanitizeList(data).map((customer) => ({
-      label: customer.name || customer.company_name || `Customer ${customer.id?.slice?.(0, 6) || customer.id}`,
-      value: customer.id,
-    }));
-  } catch {
-    customers.value = [];
   }
 }
 
@@ -482,7 +508,7 @@ async function changeStatus(enrollment, status) {
 }
 
 onMounted(() => {
-  Promise.all([loadPlans(), loadEnrollments(), loadDueThisMonth(), loadCustomers()]);
+  Promise.all([loadPlans(), loadEnrollments(), loadDueThisMonth(), customerPicker.load()]);
 });
 </script>
 
