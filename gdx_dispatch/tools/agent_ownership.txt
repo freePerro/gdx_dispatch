@@ -757,7 +757,6 @@ gdx_dispatch/frontend/src/lib/serverConfig.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeBridge.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeCamera.js                mobile-tech
 gdx_dispatch/frontend/src/lib/nativeGps.js                   mobile-tech
-gdx_dispatch/frontend/src/lib/nativePush.js                  mobile-tech
 gdx_dispatch/frontend/src/lib/officeAlerts.js                mobile-tech
 gdx_dispatch/frontend/src/components/OfficeAlertsToggle.vue  mobile-tech
 gdx_dispatch/frontend/src/lib/nativeBarcode.js               mobile-tech
