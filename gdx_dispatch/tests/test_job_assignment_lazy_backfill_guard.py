@@ -26,6 +26,7 @@ from gdx_dispatch.models.tenant_models import (
     Customer,
     Job,
     JobAssignment,
+    JobCloseout,
     Technician,
 )
 from gdx_dispatch.routers import job_assignments as ja
@@ -98,6 +99,11 @@ def test_manager_technician_tap_on_another_techs_job_writes_no_crew(db, path, bo
     on a job assigned_to another tech. The tap is allowed (manager gate), but
     the caller must not become the job's crew."""
     job = _seed(db, assigned_to=OTHER_TECH)
+    if path == "complete":
+        # /complete finishes only work a closeout already attested (GDXA-1942).
+        db.add(JobCloseout(id=uuid4(), job_id=job.id, hours_worked=1, techs_on_site=1,
+                           closed_by_user_id=OTHER_USER, closed_at=datetime.now(UTC)))
+        db.commit()
     r = _client(db, "dispatcher").post(f"/api/mobile/jobs/{job.id.hex}/{path}", json=body)
     assert r.status_code == 200, r.text
     db.expire_all()

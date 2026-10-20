@@ -3018,6 +3018,7 @@ def mobile_job_complete(
     try:
         _jid = _UUID(job_id)
     except (ValueError, AttributeError):
+        log.warning("mobile_job_complete_bad_job_id", extra={"job_id": job_id})
         return jsonable_response({"detail": "job not found"}, 404)
     flags = _load_workflow_flags(tenant_id)
     # Before anything is staged: its first run per engine may commit.
