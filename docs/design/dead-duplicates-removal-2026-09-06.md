@@ -170,8 +170,10 @@ Left in place, with the reason:
 
 - `POST /api/mobile/jobs/{id}/complete` has no SPA caller, but that is a
   recorded decision — `MobileCloseoutOwnership.spec.js` guards it as
-  deliberately unreachable, and `test_mobile_signature_gate.py` /
-  `test_mobile_state_machine.py` still cover it.
+  deliberately unreachable, and `test_mobile_signature_gate.py` / <!-- deleted with the route, GDXA-1937; link-ok -->
+  `test_mobile_state_machine.py` still cover it. (2026-10-19: deleted after
+  all, GDXA-1937 — it set `dispatch_status='done'` without moving
+  `lifecycle_stage`; its signature-gate test went with it.)
 - `DELETE /api/mobile/jobs/{id}/customer/contacts/{contact_id}` has no SPA
   caller either (found by the audit; its decorator spans lines, which the
   first sweep's regex missed). It is not a duplicate: it was built to a stated
