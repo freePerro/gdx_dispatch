@@ -165,13 +165,20 @@
             <label>Linked Job</label>
             <Select
               v-model="form.job_id"
-              :options="jobOptions"
+              :options="jobPicker.options.value"
               optionLabel="label"
               optionValue="value"
               placeholder="Select job"
               filter
+              :filterFields="['searchText']"
+              filterPlaceholder="Job #, title or customer"
+              resetFilterOnHide
+              :loading="jobPicker.loading.value"
               showClear
               class="w-full"
+              data-testid="appointment-job-select"
+              @filter="jobPicker.onFilter"
+              @hide="jobPicker.onHide"
               @change="onJobSelect"
             />
           </div>
@@ -179,13 +186,20 @@
             <label>Customer</label>
             <Select
               v-model="form.customer_id"
-              :options="customerOptions"
+              :options="customerPicker.options.value"
               optionLabel="label"
               optionValue="value"
               placeholder="Select customer"
               filter
+              :filterFields="['searchText']"
+              filterPlaceholder="Name, email or phone"
+              resetFilterOnHide
+              :loading="customerPicker.loading.value"
               showClear
               class="w-full"
+              data-testid="appointment-customer-select"
+              @filter="customerPicker.onFilter"
+              @hide="customerPicker.onHide"
             />
           </div>
           <div class="form-field">
@@ -330,6 +344,7 @@ import { formatDateTime as fmtDateTime } from '../composables/useFormatters';
 import { useAuthStore } from '../stores/auth';
 import { useToast } from 'primevue/usetoast';
 import { formatClock, isDispatchManagerRole, isNeedsAnswer, refusalOf } from '../utils/visitRefusals';
+import { useServerSearchSelect } from '../composables/useServerSearchSelect';
 import UndoArrivalDialog from '../components/UndoArrivalDialog.vue';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
@@ -365,9 +380,58 @@ const editingAppointment = ref(null);
 const statusFilter = ref('all');
 const dateRange = ref([]);
 
-const customers = ref([]);
-const jobs = ref([]);
 const technicians = ref([]);
+
+// The Linked Job and Customer pickers search the server as the user types: a
+// capped list filtered in the browser left every job past the first 200 rows
+// unlinkable (GDXA-1965). /api/jobs `search` matches title, customer name and
+// job number; /api/customers `q` matches name, email and phone.
+const PICKER_PAGE = 50;
+
+function listOf(payload) {
+  return Array.isArray(payload) ? payload : payload?.items || payload?.data || [];
+}
+
+function jobLabel(job) {
+  return job.job_number ? `${job.job_number} — ${job.title || 'Job'}` : job.title || `Job ${job.id}`;
+}
+
+function customerLabel(customer) {
+  return customer.name || `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'Customer';
+}
+
+const jobPicker = useServerSearchSelect({
+  search: async (query) => {
+    const params = new URLSearchParams({ page_size: String(PICKER_PAGE) });
+    if (query) params.set('search', query);
+    return listOf(await api.get(`/api/jobs?${params}`));
+  },
+  fetchOne: (id) => api.get(`/api/jobs/${encodeURIComponent(id)}`, { suppressErrorToast: true }),
+  toOption: (job) => ({
+    value: job.id,
+    label: jobLabel(job),
+    searchText: [job.job_number, job.title, job.customer_name].filter(Boolean).join(' '),
+  }),
+});
+
+const customerPicker = useServerSearchSelect({
+  search: async (query) => {
+    const params = new URLSearchParams({ per_page: String(PICKER_PAGE) });
+    if (query) params.set('q', query);
+    return listOf(await api.get(`/api/customers?${params}`));
+  },
+  fetchOne: (id) => api.get(`/api/customers/${encodeURIComponent(id)}`, { suppressErrorToast: true }),
+  toOption: (customer) => ({
+    value: customer.id,
+    label: customerLabel(customer),
+    searchText: [
+      customerLabel(customer),
+      customer.email,
+      customer.phone,
+      String(customer.phone || '').replace(/\D/g, ''),
+    ].filter(Boolean).join(' '),
+  }),
+});
 
 const form = ref({
   title: '',
@@ -382,19 +446,10 @@ const form = ref({
 
 const hasRange = computed(() => dateRange.value && dateRange.value.length > 0);
 
-const jobOptions = computed(() =>
-  jobs.value.map((job) => ({
-    value: job.id,
-    label: job.job_number ? `${job.job_number} — ${job.title || 'Job'}` : job.title || `Job ${job.id}`,
-  }))
-);
-
-const customerOptions = computed(() =>
-  customers.value.map((customer) => ({
-    value: customer.id,
-    label: customer.name || `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'Customer',
-  }))
-);
+// Pin each picker's current value into its options (an edited appointment's
+// job may sit in no result page) and keep it there as searches replace them.
+watch(() => form.value.job_id, (id) => jobPicker.ensure(id));
+watch(() => form.value.customer_id, (id) => customerPicker.ensure(id));
 
 const techOptions = computed(() =>
   technicians.value.map((tech) => ({
@@ -479,7 +534,7 @@ function techLabel(appointment) {
 }
 
 function onJobSelect() {
-  const job = jobs.value.find((item) => item.id === form.value.job_id);
+  const job = jobPicker.find(form.value.job_id);
   if (job) {
     if (job.customer_id) {
       form.value.customer_id = job.customer_id;
@@ -566,16 +621,12 @@ async function fetchAppointments() {
 
 async function fetchSupportingData() {
   try {
-    const [jobsResult, customersResult, techniciansResult] = await Promise.all([
-      api.get('/api/jobs?page_size=200').catch(() => []),
-      api.get('/api/customers?per_page=500').catch(() => []),
+    const [techniciansResult] = await Promise.all([
       api.get('/api/technicians').catch(() => []),
+      jobPicker.load(),
+      customerPicker.load(),
     ]);
 
-    jobs.value = Array.isArray(jobsResult) ? jobsResult : jobsResult?.items || jobsResult?.data || [];
-    customers.value = Array.isArray(customersResult)
-      ? customersResult
-      : customersResult?.items || customersResult?.data || [];
     technicians.value = Array.isArray(techniciansResult)
       ? techniciansResult
       : techniciansResult?.items || techniciansResult?.data || [];

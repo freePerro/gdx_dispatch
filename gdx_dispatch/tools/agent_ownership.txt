@@ -454,6 +454,7 @@ gdx_dispatch/frontend/src/components/CrewChangeDialog.vue     jobs-dispatch
 gdx_dispatch/frontend/src/composables/useCrewChange.js       jobs-dispatch
 gdx_dispatch/frontend/src/components/ScheduleDropDialog.vue   jobs-dispatch
 gdx_dispatch/frontend/src/composables/useScheduleDrop.js      jobs-dispatch
+gdx_dispatch/frontend/src/composables/useServerSearchSelect.js jobs-dispatch
 gdx_dispatch/frontend/src/components/DayOverflowDialog.vue    jobs-dispatch
 gdx_dispatch/frontend/src/utils/dayClose.js                  jobs-dispatch
 # The e2e suite's dispatch/jobs checks, so a fix to them routes here
