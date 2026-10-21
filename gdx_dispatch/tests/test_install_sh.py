@@ -145,7 +145,8 @@ def test_a_fresh_install_pins_the_release_and_starts_the_stack(tmp_path):
     # pull_policy: always would pull again on `up` without --pull never.
     assert _index(calls, f"{staged} pull") < _index(calls, f"{compose} up -d --remove-orphans --pull never")
     assert not any("pg_dump" in c for c in calls), "a fresh install has nothing to snapshot"
-    assert "https://dispatch.example.com" in proc.stdout
+    # A whole line, not a substring: the URL must be what the script prints.
+    assert "[gdx] GDX Dispatch 1.4.2 is running at https://dispatch.example.com" in proc.stdout.splitlines()
     assert "password: Gen3rated-Secret" in proc.stdout
 
 
