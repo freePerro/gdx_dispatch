@@ -42,7 +42,7 @@
     "dompurify": "^3.4.16",
     "driver.js": "^1.4.0",
     "fake-indexeddb": "^6.2.5",
-    "markdown-it": "^14.3.1",
+    "markdown-it": "^14.3.3",
     "minisearch": "^7.2.0",
     "pinia": "^2.1.7",
     "primeicons": "^7.0.0",
