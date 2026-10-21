@@ -67,7 +67,7 @@
     "shell-quote": "^1.11.0",
     "js-cookie": "^3.0.7",
     "esbuild": "^0.28.1",
-    "launch-editor": "^2.14.1",
+    "launch-editor": "^2.14.2",
     "linkify-it": "^5.0.2"
   }
 }
