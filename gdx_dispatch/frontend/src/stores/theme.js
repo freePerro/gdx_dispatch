@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
+import { useAuthStore } from './auth';
 
 const defaultBranding = {
   company_name: 'GDX Platform',
@@ -61,6 +62,10 @@ export const useThemeStore = defineStore('theme', () => {
   }
 
   async function loadBranding() {
+    // A session held for a password change is refused branding (2026-10-19
+    // install walk: login and ThemeProvider both asked). ThemeProvider loads
+    // it once the hold clears; until then the defaults stand.
+    if (useAuthStore().mustChangePassword) return branding.value;
     try {
       const token = sessionStorage.getItem('gdx_access_token');
       const _hdrs = {};

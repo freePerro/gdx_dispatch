@@ -1,68 +1,123 @@
-# ── Shared environment ───────────────────────────────────────────────────────
-# Defined once, merged into every service via `<<: *app-env`. A service may add
-# or override keys after the merge (explicit keys win). This is the source of
-# truth for config every container must agree on — adding a var here forwards it
-# to app + all 3 celery services at once, so they can never drift apart.
-# Merge requires map syntax (KEY: value); the `- KEY=value` list form does NOT
-# merge. See https://docs.docker.com/reference/compose-file/fragments/
+# ═══════════════════════════════════════════════════════════════════════════
+# GDX Dispatch — the one compose layout
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Every install runs THIS file. Since 2026-10-19 there is no second layout to
+# drift from it; the old base, customer, self-host and lab files were merged
+# here because production and customers had been running different stacks:
+#
+#   customers   this file alone. release.yml publishes it as the release asset
+#               docker-compose.customer.yml, so the README's curl URL and the
+#               Hostinger "Compose from URL" link keep working.
+#   production  this file + docker-compose.prod.yml (prod's existing volumes,
+#               its gdx-nginx container instead of Caddy, ports). Prod's .env sets
+#               COMPOSE_FILE so a bare `docker compose` there picks up both.
+#   local dev   this file + docker-compose.dev.yml (build from source, dev
+#               ports, the dev database volume); dev-up.sh wraps it.
+#
+# Zero configuration required — a bare `up` boots a working app on
+# http://<server-ip>:
+#
+#   docker compose -p gdx -f docker-compose.yml up -d
+#
+# What happens on first boot, in order:
+#   1. secrets-init mints strong secrets (session/JWT/encryption keys, DB and
+#      redis passwords) and persists them to the `gdx_secrets` volume —
+#      restarts and updates reuse them, so logins and encrypted data survive.
+#   2. postgres + redis start; the app container runs migrations and seeds
+#      YOUR admin account — the generated password is printed ONCE in the app
+#      logs (Docker Manager → app container → Logs, look for the banner) —
+#      then starts the web server, both Celery workers and the scheduler,
+#      all inside that one container.
+#   3. Caddy serves the app with automatic HTTPS on your domain once
+#      GDX_DOMAIN is set (point the domain's DNS A record at this server
+#      first); before that, on the server's public IP when GDX_PUBLIC_IP is
+#      set (install.sh sets it), else plain HTTP on port 80.
+#   4. A backup sidecar dumps the database daily to the `gdx_backups` volume
+#      (30-day retention).
+#
+# Optional settings (environment variables — all have working defaults):
+#   GDX_TENANT_NAME   Your company name, shown throughout the app.
+#   GDX_ADMIN_EMAIL   Login email for the first admin account.
+#   GDX_DOMAIN        e.g. dispatch.yourcompany.com → enables automatic HTTPS.
+#   GDX_PUBLIC_IP     The server's public IPv4, for HTTPS with no domain (a
+#                     6-day Let's Encrypt IP certificate, renewed by Caddy).
+#   APP_VERSION       Release tag to run (default: latest). Redeploying this
+#                     project pulls the newest image = the update path.
+#   GDX_ADMIN_PASSWORD  Set to choose the admin password (otherwise generated
+#                     and printed once to the app logs).
+#   STRIPE_SECRET_KEY / GOOGLE_MAPS_API_KEY / QB_CLIENT_ID … integration
+#                     credentials; all optional, features disable when blank.
+#
+# Data lives in named volumes (gdx_db_data, gdx_uploads, gdx_recordings,
+# gdx_backups, gdx_secrets, …) — `docker compose down` without `-v` never
+# touches them.
+# License: AGPL-3.0 with plugin exception. https://github.com/freePerro/gdx_dispatch
+# ═══════════════════════════════════════════════════════════════════════════
+
 # Platform mailbox + ops-alert recipient (GDXA-271). Its own anchor, merged
-# into app and the two celery workers only — NOT into *app-env, which
+# into app only (its Celery workers run there) — NOT into *app-env, which
 # plugin-host also merges, and plugin-host runs third-party code that has no
 # business holding the mailbox password. The workers need it: the alarm checks
 # that email OPS_ALERT_EMAIL run there (modules/error_sink/ops_alert.py).
-# Unset OPS_ALERT_EMAIL = the channel off.
+# Blank host = outbound platform mail off. Unset OPS_ALERT_EMAIL = the alert
+# channel off.
 x-platform-mail: &platform-mail
-  # Env-driven with the old literals as defaults: the user was a hardcoded
-  # placeholder that .env could not override, so the login could never match
-  # a real mailbox.
-  PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-smtp.titan.email}
+  PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-}
   PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-465}
-  PLATFORM_SMTP_USER: ${PLATFORM_SMTP_USER:-info@example.com}
+  PLATFORM_SMTP_USER: ${PLATFORM_SMTP_USER:-}
   PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
   OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
 
+# Shared by every app-image container so they can never drift apart. Secrets
+# are deliberately NOT here — secrets-init mints + persists them, and
+# entrypoint.sh loads them via GDX_RUNTIME_ENV_FILE. Setting any of them as
+# an env var here still wins: mint_runtime_env folds non-empty env values
+# into the persisted file.
 x-app-env: &app-env
-  DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
+  GDX_ENV: ${GDX_ENV:-production}
+  ENVIRONMENT: ${ENVIRONMENT:-production}
   REDIS_URL: redis://redis:6379/0
-  SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
-  # JWT signing — RS256 with asymmetric keys. App falls back to HS256
-  # with JWT_SECRET if RS_PRIVATE_KEY is empty. Set all three in production .env.
-  RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
-  RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
-  JWT_SECRET: ${JWT_SECRET:-}
-  # PII encryption. App refuses to boot in production when unset.
-  # Set GDX_ENV=dev to skip the gate during development.
-  FERNET_KEY: ${FERNET_KEY:-}
-  GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
-  MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
-  GDX_ENV: ${GDX_ENV:-dev}
-  # Plugin browser-stream session recording. Set to 0 to disable.
-  # The directory is NOT under /app/uploads on purpose: that tree is what the DB
-  # backup routine takes off-box, and these recordings are unscrubbed.
-  GDX_SESSION_RECORDING: ${GDX_SESSION_RECORDING:-1}
-  GDX_SESSION_RECORDING_DIR: ${GDX_SESSION_RECORDING_DIR:-/app/recordings}
-  # Shared, not app-only: the celery workers call Stripe too.
-  # `payments.sweep_stale_intents` (money-audit M12) cancels a customer's
-  # stale PaymentIntent when an invoice is settled another way, and it runs
-  # ON A WORKER. With this key app-only, every such call failed with
-  # `AuthenticationError: You did not provide an API key` — the task logged,
-  # degraded and reported success, so the sweep was silently inert in
-  # production. Caught by walking it on prod, not by any test.
-  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
-  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-  VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
-  # Tenant identity. core/tenant.py:48-50 reads these; unset → the app falls
-  # back to the 0000…0001 placeholder tenant and serves an empty DB.
+  GDX_RUNTIME_ENV_FILE: /secrets/runtime.env
+  # Let a webhook subscription target the bundled n8n at http://n8n:5678 (a
+  # Docker-internal RFC1918 address the SSRF guard would otherwise block). Exact
+  # host only. This is how business events reach n8n: the app (tri-homed) posts
+  # to it — plugin-host is isolated from n8n by design and cannot.
+  GDX_WEBHOOK_PRIVATE_ALLOW: ${GDX_WEBHOOK_PRIVATE_ALLOW:-n8n}
+  # ── customer-facing settings (see header) ──
+  GDX_DOMAIN: ${GDX_DOMAIN:-}
+  GDX_PUBLIC_IP: ${GDX_PUBLIC_IP:-}
+  GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-gdx}
+  GDX_TENANT_NAME: ${GDX_TENANT_NAME:-My Door Company}
+  # Tenant identity. core/tenant.py reads these; unset → the 0000…0001
+  # default tenant, which is right for a fresh install. An install created
+  # under a different id (production) MUST keep passing its own, or the app
+  # serves an empty tenant.
   GDX_TENANT_ID: ${GDX_TENANT_ID:-}
   GDX_DEFAULT_TENANT_ID: ${GDX_DEFAULT_TENANT_ID:-}
-  GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-}
-  GDX_TENANT_NAME: ${GDX_TENANT_NAME:-}
-  # Public origin for server-built absolute URLs: Graph webhook
-  # subscriptions (outlook/subscriptions.py), auth + payments links,
-  # well-known metadata fallback. Unset → those callers fall back to
-  # gdx.example.com defaults and Outlook subscription creation fails
-  # loudly (2026-07-07 audit).
+  # 1 = bootstrap_app refuses (exit 1) instead of seeding when the tenant row
+  # is missing. Production sets it in .env: the base file alone on that box
+  # would mount a new, empty database and answer 200 on /health. With this
+  # set, that run crash-loops loudly instead (one-layout plan, audit finding 1).
+  GDX_REQUIRE_EXISTING_DATA: ${GDX_REQUIRE_EXISTING_DATA:-}
+  # ── optional secret overrides (blank = minted on first boot) ──
+  SECRET_KEY: ${SECRET_KEY:-}
+  JWT_SECRET: ${JWT_SECRET:-}
+  MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+  GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+  FERNET_KEY: ${FERNET_KEY:-}
+  DB_PASSWORD: ${DB_PASSWORD:-}
+  # Gates plugin-host's /internal/* routes (#596). secrets-init mints this
+  # into /secrets/runtime.env, which entrypoint.sh sources over the container
+  # env — so blank here means "use the minted one", same as the keys above.
+  GDX_INTERNAL_TOKEN: ${GDX_INTERNAL_TOKEN:-}
+  # Hosts the plugin browser-stream may navigate to. Documented as an operator
+  # override in plugin_host/browser_stream.py and, until now, in no compose
+  # environment block at all — the same #598 shape as GDX_INTERNAL_TOKEN: an
+  # operator sets it, nothing happens, and there is no error saying why. Only
+  # plugin-host reads it, but it rides the shared block so the two stacks that
+  # merge this file cannot drift.
+  PLUGIN_BROWSER_ALLOWED_HOSTS: ${PLUGIN_BROWSER_ALLOWED_HOSTS:-}
   GDX_PUBLIC_BASE_URL: ${GDX_PUBLIC_BASE_URL:-}
   # Finding the client address behind the proxy (core/client_ip.py, GDXA-1597).
   # GDX_TRUSTED_PROXIES: which socket peers may speak for the client; blank =
@@ -72,159 +127,190 @@ x-app-env: &app-env
   # is its Cloudflare edge address. Never "*" in either.
   GDX_TRUSTED_PROXIES: ${GDX_TRUSTED_PROXIES:-}
   GDX_TRUSTED_UPSTREAM_PROXIES: ${GDX_TRUSTED_UPSTREAM_PROXIES:-}
-  # Inbound-webhook caller secrets. These are an ALLOWLIST, not an env_file:
-  # a var absent from this block never reaches the container no matter what
-  # .env says, and the gate that reads it then behaves as "not configured".
-  INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-}
-  # Personal-cell webhook (android-nomad-gateway → routers/cell_gateway.py →
-  # cellcomms plugin). Blank = the gate fails closed and the feed is off.
+  GDX_BASE_URL: ${GDX_BASE_URL:-}
+  RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+  RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+  VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+  # Plugin browser-stream session recording. Set to 0 to disable.
+  # The directory is NOT under /app/uploads on purpose: that tree is what the DB
+  # backup routine takes off-box, and these recordings are unscrubbed. It has
+  # its own volume (gdx_recordings) on app.
+  GDX_SESSION_RECORDING: ${GDX_SESSION_RECORDING:-1}
+  GDX_SESSION_RECORDING_DIR: ${GDX_SESSION_RECORDING_DIR:-/app/recordings}
+  # ── optional integrations (features disable when blank) ──
+  # Personal-cell webhook (cellcomms plugin's live feed) — blank = gate
+  # fails closed, feed off. Only useful with the plugin installed.
   CELL_GATEWAY_WEBHOOK_SECRET: ${CELL_GATEWAY_WEBHOOK_SECRET:-}
-  # Shared secret gating plugin-host's /internal/* routes — including the
-  # WebSocket that streams a headless browser and autofills the operator's
-  # stored login (ADR-014). plugin-host FAILS CLOSED on this outside dev
-  # (core/internal_auth.py, #596), so it must be delivered or the plugin
-  # surface stops working.
-  #
-  # It lives in the SHARED block, not app-only, on purpose (#598): celery-high
-  # runs deliver_plugin_event_task, which POSTs /internal/events itself. A
-  # token given only to app + plugin-host would 401 every plugin event
-  # delivery — the same shape that made STRIPE_SECRET_KEY app-only and left
-  # the stale-intent sweep silently inert.
-  GDX_INTERNAL_TOKEN: ${GDX_INTERNAL_TOKEN:-}
-  # Hosts the plugin browser-stream may navigate to. Documented as an operator
-  # override in plugin_host/browser_stream.py and, until now, in no compose
-  # environment block at all — the same #598 shape as GDX_INTERNAL_TOKEN: an
-  # operator sets it, nothing happens, and there is no error saying why. Only
-  # plugin-host reads it, but it rides the shared block so the two stacks that
-  # merge this file cannot drift.
-  PLUGIN_BROWSER_ALLOWED_HOSTS: ${PLUGIN_BROWSER_ALLOWED_HOSTS:-}
+  # Inbound-email webhook caller secret. This block is an ALLOWLIST, not an
+  # env_file: a var absent here never reaches the container whatever .env
+  # says, and the gate that reads it then behaves as "not configured".
+  INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-}
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+  STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+  QB_CLIENT_ID: ${QB_CLIENT_ID:-}
+  QB_CLIENT_SECRET: ${QB_CLIENT_SECRET:-}
+  QB_REDIRECT_URI: ${QB_REDIRECT_URI:-}
+  QB_ENVIRONMENT: ${QB_ENVIRONMENT:-production}
 
 services:
-  # ── Database ─────────────────────────────────────────────────────────────────
+  # Mints + persists runtime secrets before anything else starts. Runs on
+  # every `up`; a no-op once the values exist.
+  secrets-init:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    pull_policy: always
+    entrypoint: ["python", "-m", "gdx_dispatch.tools.mint_runtime_env"]
+    # Root on purpose: a fresh named volume is root-owned. The tool chowns
+    # everything to the app user (uid 1000) before exiting.
+    user: "0:0"
+    environment:
+      <<: *app-env
+      # Mints n8n's encryption key + db password into their OWN volume
+      # (gdx_n8n_secrets). n8n mounts ONLY that volume — never gdx_secrets — so
+      # its Code node can't read the GDX secret set. Runs even when the
+      # automation profile is off, so enabling n8n later reuses the persisted key
+      # instead of orphaning stored credentials.
+      GDX_N8N_SECRETS_DIR: /n8n-secrets
+    volumes:
+      - gdx_secrets:/secrets
+      - gdx_n8n_secrets:/n8n-secrets
+    networks: [backend]
+    restart: "no"
+
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: gdx
       POSTGRES_USER: gdx
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev_password}
+      POSTGRES_PASSWORD_FILE: /secrets/db_password
     volumes:
-      - db_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
+      - gdx_db_data:/var/lib/postgresql/data
+      - gdx_secrets:/secrets:ro
+    depends_on:
+      secrets-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gdx -d gdx"]
       interval: 5s
       timeout: 5s
       retries: 10
+    networks: [backend]
     restart: unless-stopped
 
-  # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
+    # --requirepass from the minted secret so an untrusted container that reaches
+    # redis (the Celery broker) can't inject tasks into DB-credentialed workers.
+    # `$(cat …)` strips the trailing newline, matching REDIS_URL's copy.
     # Also the auth store: used_refresh_jtis and refresh_family:{sub} are the
-    # refresh-token replay and family-revoke state (invariant 7). They carry a
-    # TTL, so volatile-* policies could evict them too; noeviction refuses the
-    # write at the cap instead of silently dropping replay history. AOF on a
-    # named volume keeps that state to the second, and across `down` (GDXA-1117).
-    # Nothing empties used_refresh_jtis now: its TTL is reset on every add, so
-    # it only grows (~80 B a jti, ~14k jtis in 41 days on prod).
-    # Moving to this volume starts empty, and a dump.rdb copied in is ignored
-    # once AOF is on. To carry the state over: `config set appendonly yes` in
-    # the old container, wait for aof_rewrite_in_progress:0 in `info
-    # persistence`, copy its /data/appendonlydir into the new volume, `up`.
-    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction --appendonly yes
+    # refresh-token replay and family-revoke state (invariant 7). noeviction
+    # refuses the write at the cap instead of silently dropping replay history;
+    # AOF on a named volume keeps that state across `down` (GDXA-1117).
+    command: >
+      sh -c 'exec redis-server --requirepass "$$(cat /secrets/redis_password)"
+      --maxmemory 256mb --maxmemory-policy noeviction --appendonly yes'
     volumes:
-      - redis_data:/data
-    ports:
-      - "127.0.0.1:6379:6379"
+      - gdx_secrets:/secrets:ro
+      - gdx_redis_data:/data
+    depends_on:
+      secrets-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /secrets/redis_password)\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
+    networks: [backend]
     restart: unless-stopped
 
-  # ── FastAPI Application ───────────────────────────────────────────────────────
+  # The all-in-one app container: web plus both Celery workers and beat, under
+  # s6-overlay (gdx_dispatch/docker/s6-overlay/). /init starts as root only to
+  # supervise; every process runs as appuser. Boot runs migrations and
+  # bootstrap (tenant, company, admin account) once, then starts the four
+  # processes; plugin-host skips both, so only this container touches the
+  # schema. One that keeps dying stops
+  # the container (restart policy takes over), and the healthcheck fails while
+  # any of the four is down, not only web.
   app:
-    build:
-      context: ../..
-      dockerfile: gdx_dispatch/docker/Dockerfile
-      args:
-        GIT_SHA_SHORT: ${GIT_SHA_SHORT:-unknown}
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    pull_policy: always
+    user: "0:0"
+    entrypoint: ["/init"]
+    # Celery's warm shutdown finishes the running tasks; s6 gives each worker
+    # 45 s (timeout-kill) before SIGKILL, inside this.
+    stop_grace_period: 60s
     environment:
       <<: [*app-env, *platform-mail]
-      # ── app-only ──
-      # Scrape secret for GET /metrics. app-only: the celery services do not
-      # serve HTTP. This block is an ALLOWLIST and there is no env_file, so a
-      # var missing here never reaches the container whatever .env says — and
-      # the endpoint would then read it as "not configured" and refuse.
-      METRICS_TOKEN: ${METRICS_TOKEN:-}
-      APP_VERSION: ${APP_VERSION:-dev}
+      # Worker processes per queue. 2/1 suits a 2-vCPU box that also runs
+      # postgres and the plugin-host; prod.yml raises them.
+      GDX_CELERY_HIGH_CONCURRENCY: ${GDX_CELERY_HIGH_CONCURRENCY:-2}
+      GDX_CELERY_LOW_CONCURRENCY: ${GDX_CELERY_LOW_CONCURRENCY:-1}
+      APP_VERSION: ${APP_VERSION:-latest}
       BUILD_TIME: ${BUILD_TIME:-unknown}
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      GDX_E2E_BYPASS: ${GDX_E2E_BYPASS:-0}
+      GDX_ADMIN_EMAIL: ${GDX_ADMIN_EMAIL:-admin@example.com}
       # Where the in-app plugin storefront reads its curated catalog. Empty
       # falls back to the built-in default, so an operator only sets this to
       # point at a different catalog host.
       GDX_PLUGIN_CATALOG_URL: ${GDX_PLUGIN_CATALOG_URL:-}
-      GDX_BASE_URL: ${GDX_BASE_URL:-http://localhost:8001}
-      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
-      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
-      QB_CLIENT_ID: ${QB_CLIENT_ID:-}
-      QB_CLIENT_SECRET: ${QB_CLIENT_SECRET:-}
-      QB_REDIRECT_URI: ${QB_REDIRECT_URI:-http://localhost:8001/api/qb/oauth/callback}
-      QB_ENVIRONMENT: ${QB_ENVIRONMENT:-sandbox}
+      GDX_ADMIN_PASSWORD: ${GDX_ADMIN_PASSWORD:-}
+      # ── app-only: read by HTTP routes, which only this service serves ──
+      # Scrape secret for GET /metrics; blank = the endpoint refuses.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       QB_WEBHOOK_VERIFIER_TOKEN: ${QB_WEBHOOK_VERIFIER_TOKEN:-}
       POWER_APPS_TENANT_ID: ${POWER_APPS_TENANT_ID:-}
       POWER_APPS_CLIENT_ID: ${POWER_APPS_CLIENT_ID:-}
       GDX_MICROSOFT_SECRET_KEY: ${GDX_MICROSOFT_SECRET_KEY:-}
       OUTLOOK_BOOTSTRAP_TENANT_SLUG: ${OUTLOOK_BOOTSTRAP_TENANT_SLUG:-gdx}
-    ports:
-      - "127.0.0.1:8001:8000"
     volumes:
       - gdx_uploads:/app/uploads
       # Session recordings. Their OWN volume, not a subdirectory of
       # uploads: admin_db.py writes DB backups into /app/uploads/_db_backups, and
       # these recordings are unredacted session captures that must not ride along
-      # in every backup artifact that leaves the machine.
+      # in every backup artifact that leaves the machine. (Missing from this
+      # layout until 2026-10-19, so recordings lived in the container layer and
+      # died with every update — ledger 1280.)
       - gdx_recordings:/app/recordings
+      - gdx_secrets:/secrets:ro
     depends_on:
+      secrets-init:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      # /health answers AND web, both workers and beat are up.
+      test: ["CMD", "/etc/s6-overlay/scripts/healthcheck"]
       interval: 10s
       # 5s was not enough for a COLD probe: /health does a DB round-trip, and the
       # first one after a recreate measured 5.28s on the demo stack.
       timeout: 10s
       retries: 5
-      # THE load-bearing line. entrypoint.sh runs create_all + `alembic upgrade
-      # head` (every revision in migrations/versions/) and only THEN execs
-      # uvicorn, so /health cannot answer until migrations finish. With no start_period the probe starts immediately
+      # THE load-bearing line. The boot step (entrypoint.sh) runs create_all +
+      # `alembic upgrade head` (every revision in migrations/versions/) and
+      # only THEN do the processes start, so /health cannot answer until migrations finish. With no start_period the probe starts immediately
       # and burns all 5 retries in ~50s, marking the app unhealthy while it is
       # merely still migrating -- and every service gated on `app:
       # service_healthy` then refuses to start.
       start_period: 180s
+    # Tri-homed: backend (db/redis/plugin-host), edge (caddy→app), automation
+    # (n8n→app for the gdx_live_ API, and the workers' webhook and plugin
+    # deliveries to a subscription on the bundled n8n). n8n reaching app is the
+    # intended inbound path — app routes are all auth-gated; the /internal/*
+    # routes live on plugin-host (backend), which n8n cannot reach.
+    networks: [backend, edge, automation]
     restart: unless-stopped
 
-  # ── Plugin Host ──────────────────────────────────────────────────────────────
-  # Runs all installed third-party plugins in one container, isolated from the
-  # core app (ADR-013 Model B). Core proxies /api/plugins/* here over the compose
-  # network — NO host port, it's internal-only. Reuses the app image; only the
-  # command differs. Skips migrations/bootstrap (app owns the schema); its own
-  # boot runs PluginBase.metadata.create_all for plugin tables + reconcile().
+  # All installed third-party plugins run here, isolated from the core app
+  # (ADR-013). Internal-only; core proxies /api/plugins/* over the network.
   plugin-host:
-    build:
-      context: ../..
-      # Browser-capable image (Playwright base) so plugins can drive a headless
-      # Chromium (ADR-014). Only plugin-host carries the browser; app/celery stay
-      # on the slim image.
-      dockerfile: gdx_dispatch/docker/Dockerfile.plugin-host
+    image: ghcr.io/freeperro/gdx_dispatch-plugin-host:${APP_VERSION:-latest}
+    pull_policy: always
     command: uvicorn gdx_dispatch.plugin_host.main:app --host 0.0.0.0 --port 8000
-    # Chromium exhausts Docker's default 64MB /dev/shm and crashes without this.
+    # Chromium exhausts Docker's default 64MB /dev/shm without this (ADR-014).
     ipc: host
     environment:
       <<: *app-env
@@ -235,26 +321,14 @@ services:
       # version-pinned plugin with a log line (found 2026-09-20: prod's had
       # none). Same source as app's. An unpinned host ("latest"/"dev") also
       # reads as 0 — pin APP_VERSION to load a pinned plugin.
-      APP_VERSION: ${APP_VERSION:-dev}
+      APP_VERSION: ${APP_VERSION:-latest}
     volumes:
-      # In-app-installed plugins are pip-installed here on boot (reconcile.py).
-      # plugin_registry (the DB table) is the source of truth; this volume is a
-      # rebuildable cache, so it is NOT external — losing it costs one reconcile.
       - gdx_plugins:/plugins
+      - gdx_secrets:/secrets:ro
     depends_on:
-      db:
-        condition: service_healthy
-      # Wait for app: it runs alembic + bootstrap, so the schema exists before
-      # plugin-host's create_all / registry reconcile touch the DB.
       app:
         condition: service_healthy
     healthcheck:
-      # Probe /ready (readiness), not /health (liveness): /ready 503s when a
-      # desired plugin failed to install or loaded STALE and was withheld, so the
-      # container flips "unhealthy" and the degradation is visible in `docker ps`.
-      # (restart: unless-stopped reacts to container EXIT, not healthcheck status,
-      # so an unhealthy-but-serving host is surfaced, never crash-looped — correct
-      # for a deterministic missing-dependency on a no-egress host.)
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/ready || exit 1"]
       interval: 10s
       timeout: 10s
@@ -263,90 +337,206 @@ services:
       # failure mode is a boot HANG in reconcile on a no-egress host -- which
       # should surface promptly, not be masked by a long grace period.
       start_period: 60s
+    networks: [backend]
     restart: unless-stopped
 
-  # ── Celery Worker — priority:high ────────────────────────────────────────────
-  celery-high:
-    build:
-      context: ../..
-      dockerfile: gdx_dispatch/docker/Dockerfile
-    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:high -c 4 --loglevel=info
+  # Public entrypoint. No GDX_DOMAIN → HTTPS on the server's public IP
+  # (GDX_PUBLIC_IP), else plain HTTP on port 80. With GDX_DOMAIN set and its DNS A record pointing
+  # here, Caddy obtains + renews Let's Encrypt certificates automatically;
+  # the cert store lives on gdx_caddy_data so reissue limits are never hit.
+  caddy:
+    image: caddy:2-alpine
     environment:
-      <<: [*app-env, *platform-mail]
-      # Only the `app` service runs Alembic. Without this, all 4 containers race
-      # `alembic upgrade head` on boot — which Alembic explicitly does not
-      # support. Celery waits for app (healthy = migrations+bootstrap done).
-      GDX_SKIP_MIGRATIONS: "1"
+      GDX_DOMAIN: ${GDX_DOMAIN:-}
+      GDX_PUBLIC_IP: ${GDX_PUBLIC_IP:-}
+      GDX_N8N_ENABLED: ${GDX_N8N_ENABLED:-}
+    # Generate a Caddyfile then run it (the old `caddy reverse-proxy` one-liner
+    # can express only ONE route, so it can't add the n8n subdomain). Four
+    # branches: domain → auto-HTTPS; domain AND GDX_N8N_ENABLED=1 → also serve
+    # n8n.<domain>; no domain but GDX_PUBLIC_IP (install.sh sets it) → a Let's
+    # Encrypt certificate for the IP itself, which LE issues only under the
+    # 6-day `shortlived` profile (Caddy renews it); neither → plain :80. A
+    # browser sends no SNI for an IP address, so default_sni picks that
+    # certificate. The IP branch keeps an `http://` catch-all: only the IP
+    # itself is redirected to https, so a LAN, Tailscale or host name still
+    # gets plain HTTP instead of a redirect to https with no certificate
+    # behind it (Build D audit, 2026-10-19). Without HTTPS the browser drops the app's Secure refresh
+    # cookie and logins end at access-token expiry. The n8n block is
+    # gated on an EXPLICIT env, not on the domain being set — so it exists only
+    # after the operator has pointed the 2nd A record, and Caddy never burns
+    # Let's Encrypt failed-validation limits retrying a missing n8n host. Never
+    # `depends_on: n8n` (a hard error when the automation profile is off);
+    # reverse_proxy resolves n8n at request time and 502s harmlessly if absent.
+    command: >
+      sh -c 'CF=/etc/caddy/Caddyfile;
+      if [ -z "$$GDX_DOMAIN" ] && [ -n "$$GDX_PUBLIC_IP" ]; then
+      printf "{\n  default_sni %s\n}\n%s {\n  tls {\n    issuer acme {\n      profile shortlived\n    }\n  }\n  reverse_proxy app:8000\n}\nhttp:// {\n  reverse_proxy app:8000\n}\n" "$$GDX_PUBLIC_IP" "$$GDX_PUBLIC_IP" > $$CF;
+      elif [ -z "$$GDX_DOMAIN" ]; then
+      printf ":80 {\n  reverse_proxy app:8000\n}\n" > $$CF;
+      else
+      printf "%s {\n  reverse_proxy app:8000\n}\n" "$$GDX_DOMAIN" > $$CF;
+      if [ "$$GDX_N8N_ENABLED" = "1" ]; then
+      printf "n8n.%s {\n  reverse_proxy n8n:5678\n}\n" "$$GDX_DOMAIN" >> $$CF;
+      fi;
+      fi;
+      echo "--- generated Caddyfile ---"; cat $$CF;
+      exec caddy run --config $$CF --adapter caddyfile'
+    ports:
+      - "${GDX_HTTP_PORT:-80}:80"
+      - "${GDX_HTTPS_PORT:-443}:443"
+    volumes:
+      - gdx_caddy_data:/data
+      - gdx_caddy_config:/config
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       app:
         condition: service_healthy
+    # edge (→app) + automation (→n8n). NOT backend — caddy needs neither db,
+    # redis, nor plugin-host.
+    networks: [edge, automation]
     restart: unless-stopped
 
-  # ── Celery Worker — priority:low ─────────────────────────────────────────────
-  celery-low:
-    build:
-      context: ../..
-      dockerfile: gdx_dispatch/docker/Dockerfile
-    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:low -c 2 --loglevel=info
-    environment:
-      <<: [*app-env, *platform-mail]
-      GDX_SKIP_MIGRATIONS: "1"
+  # Daily logical dump, independent of (and complementing) host snapshots.
+  # pipefail + write-to-partial-then-rename so a failing pg_dump can never
+  # masquerade as a good backup (gzip alone exits 0 on an empty pipe).
+  # Restore: gunzip -c <file> | docker compose exec -T db psql -U gdx gdx
+  #
+  # ALSO copies runtime.env into the backup set: without the encryption keys a
+  # pg_dump is UNREADABLE after a restore to a fresh box (every EncryptedString
+  # column). This closed a pre-existing DR hole. And dumps the n8n database when
+  # the automation profile added it (n8n-db is reachable on the automation net).
+  # ⚠ gdx_backups now holds runtime.env (ALL secrets in plaintext) — treat that
+  # volume as secret-bearing wherever it's copied off-box.
+  backup:
+    image: postgres:16-alpine
+    entrypoint: >
+      sh -c 'set -o pipefail; export PGPASSWORD="$$(cat /secrets/db_password)";
+      while true; do
+      ts="$$(date +%Y%m%d_%H%M%S)";
+      if pg_dump -h db -U gdx gdx | gzip > /backups/.partial.gz;
+      then mv /backups/.partial.gz "/backups/gdx_$${ts}.sql.gz"
+      && echo "[backup] wrote gdx_$${ts}.sql.gz";
+      else rm -f /backups/.partial.gz;
+      echo "[backup] FAILED — pg_dump error, no backup written" >&2; fi;
+      cp /secrets/runtime.env "/backups/runtime.env.bak" 2>/dev/null
+      && echo "[backup] saved runtime.env (needed to decrypt a restore)";
+      if PGPASSWORD="$$(cat /n8n-secrets/db_password)" pg_dump -h n8n-db -U n8n n8n | gzip > /backups/.n8n.partial.gz 2>/dev/null;
+      then mv /backups/.n8n.partial.gz "/backups/n8n_$${ts}.sql.gz"
+      && echo "[backup] wrote n8n_$${ts}.sql.gz";
+      else rm -f /backups/.n8n.partial.gz; fi;
+      find /backups -name "gdx_*.sql.gz" -mtime +${GDX_BACKUP_RETAIN_DAYS:-30} -delete;
+      find /backups -name "n8n_*.sql.gz" -mtime +${GDX_BACKUP_RETAIN_DAYS:-30} -delete;
+      sleep 86400; done'
+    volumes:
+      - gdx_secrets:/secrets:ro
+      - gdx_n8n_secrets:/n8n-secrets:ro
+      - gdx_backups:/backups
+    # The postgres image declares VOLUME /var/lib/postgresql/data and this
+    # service runs no server, so without a mount there Docker adds a stray
+    # anonymous volume to every install (vps2 rehearsal, 2026-10-20).
+    tmpfs:
+      - /var/lib/postgresql/data
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      # app healthy (not just db) so the first dump captures a migrated
+      # schema instead of an empty pre-bootstrap database.
       app:
         condition: service_healthy
+    # backend (dump db) + automation (dump n8n-db when present).
+    networks: [backend, automation]
     restart: unless-stopped
 
-  # ── Celery Beat ───────────────────────────────────────────────────────────────
-  celery-beat:
-    build:
-      context: ../..
-      dockerfile: gdx_dispatch/docker/Dockerfile
-    command: celery -A gdx_dispatch.core.celery_app beat --loglevel=info
+  # ── Optional automation (n8n) — enabled with COMPOSE_PROFILES=automation ──
+  # Runs UNTRUSTED tenant workflows, so it lives ONLY on the `automation`
+  # network: it can reach app (the gdx_live_ API) and its own database, but NOT
+  # db, redis, or plugin-host (the money/broker/internal surfaces). Its
+  # encryption key + DB password come from the dedicated gdx_n8n_secrets volume;
+  # n8n never mounts gdx_secrets, so its Code node can't read the GDX secret set.
+  # ⚠ Pair COMPOSE_PROFILES=automation WITH GDX_N8N_ENABLED=1: the profile runs
+  # n8n, the flag adds its Caddy route. Profile without flag = n8n unreachable;
+  # flag without profile = Caddy provisions a cert for a host that isn't there.
+  n8n-db:
+    image: postgres:16-alpine
+    profiles: ["automation"]
     environment:
-      <<: *app-env
-      GDX_SKIP_MIGRATIONS: "1"
+      POSTGRES_DB: n8n
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD_FILE: /n8n-secrets/db_password
+    volumes:
+      - gdx_n8n_db_data:/var/lib/postgresql/data
+      - gdx_n8n_secrets:/n8n-secrets:ro
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      app:
-        condition: service_healthy
+      secrets-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [automation]
     restart: unless-stopped
 
+  n8n:
+    # Pinned — n8n releases weekly; bump this with our releases like APP_VERSION.
+    image: n8nio/n8n:1.108.2
+    profiles: ["automation"]
+    mem_limit: 512m
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n-db
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD_FILE: /n8n-secrets/db_password
+      # Managed key (one-way door: decided day one, so a later switch can't hit
+      # n8n's "Mismatching encryption keys" crash). Read from the file untrimmed.
+      N8N_ENCRYPTION_KEY_FILE: /n8n-secrets/encryption_key
+      # Behind Caddy at n8n.<domain> — otherwise the editor renders localhost
+      # webhook URLs and inbound webhooks/OAuth callbacks break.
+      N8N_HOST: n8n.${GDX_DOMAIN:-}
+      N8N_PROTOCOL: https
+      N8N_PORT: "5678"
+      N8N_EDITOR_BASE_URL: https://n8n.${GDX_DOMAIN:-}/
+      WEBHOOK_URL: https://n8n.${GDX_DOMAIN:-}/
+      # Isolate Code-node execution in a task runner (else it runs in-process —
+      # unacceptable for a container running untrusted workflows).
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      - gdx_n8n_secrets:/n8n-secrets:ro
+      - gdx_n8n_data:/home/node/.n8n
+    depends_on:
+      secrets-init:
+        condition: service_completed_successfully
+      n8n-db:
+        condition: service_healthy
+    networks: [automation]
+    restart: unless-stopped
+
+# Three isolated networks enforce the trust boundary. n8n sits ONLY on
+# `automation`, so it can never open a socket to db/redis/plugin-host — the
+# single highest-leverage control once an untrusted-workflow container shares
+# the box. app is tri-homed (it legitimately talks to everything); caddy bridges
+# edge+automation for ingress; backup bridges backend+automation to dump both
+# databases.
+networks:
+  backend:
+  edge:
+  automation:
+
+# All managed (auto-created on first deploy — required for one-click), and
+# reused as long as the compose project name stays the same. Redeploying the
+# project updates containers but keeps these. docker-compose.prod.yml maps the
+# data volumes onto production's existing ones instead.
 volumes:
-  # external:true so `docker compose down -v` (or a prune) can NEVER delete the
-  # database or uploads — Compose will neither create nor destroy these. The
-  # `name:` pins them to the volumes the running stack already uses, so this is
-  # a zero-data-movement adoption. Create once (idempotent):
-  #   docker volume create docker_db_data
-  #   docker volume create docker_gdx_uploads
-  db_data:
-    external: true
-    name: docker_db_data
+  gdx_db_data:
+  gdx_redis_data:
   gdx_uploads:
-    external: true
-    name: docker_gdx_uploads
-  # Plugin browser-stream session recordings.
-  # Deliberately a MANAGED volume, not external:true like db_data/gdx_uploads.
-  # external:true would abort `compose up` on any host where the volume had not
-  # been hand-created first — which is every host, including the next prod
-  # deploy. This spool is not the archive: tools/pull_browser_sessions.sh copies
-  # sessions to the operator's machine, and that copy is the durable one.
-  # Still: do not `docker compose down -v` between pulls.
+  # Plugin browser-stream session recordings (see the app service). The spool,
+  # not the archive: tools/pull_browser_sessions.sh copies sessions off the box,
+  # and that copy is the durable one.
   gdx_recordings:
-  # Plugin install cache (pip --target). Rebuildable from plugin_registry on
-  # reconcile, so a plain managed volume — not external like db/uploads.
   gdx_plugins:
-  # Redis AOF (refresh-token replay state, Celery queues). Managed, like
-  # gdx_recordings: external:true would abort `up` on a host that never created
-  # it. Losing it logs nobody out but forgets replay history, so keep it.
-  redis_data:
+  gdx_secrets:
+  gdx_backups:
+  gdx_caddy_data:
+  gdx_caddy_config:
+  gdx_n8n_secrets:
+  gdx_n8n_data:
+  gdx_n8n_db_data:

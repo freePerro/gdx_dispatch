@@ -457,7 +457,7 @@ depending on a profile-inactive one is a hard compose error (ops-6);
 
 ### Sprint 3 build status (2026-08-17) — customer compose built + locally validated
 
-Scoped to `docker-compose.customer.yml` (the funnel target); base-compose n8n for
+Scoped to `docker-compose.customer.yml` (the funnel target); base-compose n8n for <!-- file removed 2026-10-19; link-ok -->
 our-VPS dogfood is a documented follow-up.
 - ✅ **Network isolation** (`networks: backend / edge / automation`): n8n + n8n-db
   on `automation` only; db/redis/plugin-host/celery on `backend`; app tri-homed;

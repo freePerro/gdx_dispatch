@@ -26,7 +26,7 @@ from urllib.request import HTTPRedirectHandler, build_opener
 def webhook_allow_hosts() -> frozenset[str]:
     """Exact hostnames the operator allows webhook deliveries to reach despite
     resolving to a private address — GDX_WEBHOOK_PRIVATE_ALLOW (comma-separated).
-    The customer compose sets this to ``n8n`` so a subscription can target the
+    The compose layout defaults this to ``n8n`` so a subscription can target the
     bundled, network-isolated n8n at http://n8n:5678. Empty by default."""
     raw = os.getenv("GDX_WEBHOOK_PRIVATE_ALLOW", "")
     return frozenset(h.strip() for h in raw.split(",") if h.strip())

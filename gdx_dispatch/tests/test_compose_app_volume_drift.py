@@ -1,11 +1,15 @@
 """Every compose layout that runs `app` mounts what the base `app` mounts.
 
-`docker-compose.yml` mounts `gdx_recordings:/app/recordings` on app. The
+`docker-compose.yml` mounts `gdx_recordings:/app/recordings` on app. The old
 customer stack (`docker-compose.customer.yml`, a standalone file, not an
 overlay) never did, so every self-host's session recordings were written to the
 container's writable layer and thrown away by the next `pull_policy: always`
 recreate (GDXA-1682). Nothing errored. The class is a standalone compose file
 drifting from the base app's volume list, and this guard covers it.
+
+Since the one layout, customers run the base file itself (the release attaches
+it under the old asset name), so the only standalone file left is the demo's;
+prod is an overlay (`docker-compose.prod.yml`).
 
 Two kinds of file need two checks. A standalone file has its own `app` and must
 list every base mount target, or carry an exemption below whose condition is
@@ -32,14 +36,13 @@ BASE = DOCKER + "docker-compose.yml"
 
 #: Files with their own `app` service, run without the base file.
 STANDALONE = [
-    DOCKER + "docker-compose.customer.yml",
     DOCKER + "demo/docker-compose.demo.yml",
 ]
 #: Files layered on the base with `-f` (see each file's header).
 OVERLAYS = [
     DOCKER + "docker-compose.dev.yml",
-    DOCKER + "docker-compose.lab.yml",
-    DOCKER + "docker-compose.selfhost.yml",
+    DOCKER + "docker-compose.prod.yml",
+    DOCKER + "docker-compose.reload.yml",
 ]
 #: Files that run no `app` at all.
 NO_APP = [
@@ -52,12 +55,20 @@ def _recording_disabled(app: dict) -> bool:
     return value.lower() in ("0", "false", "no")  # routers/browser_proxy.py's test
 
 
+def _no_runtime_env(app: dict) -> bool:
+    return not (app.get("environment") or {}).get("GDX_RUNTIME_ENV_FILE")  # entrypoint.sh's test
+
+
 #: (file, base mount target) -> (why the drift is deliberate, the condition that
 #: keeps it safe). The condition is re-checked; when it stops holding, red.
 EXEMPT = {
     (DOCKER + "demo/docker-compose.demo.yml", "/app/recordings"): (
         "public demo: visitors' sessions are unscrubbed captures, so recording is off and there is no volume",
         _recording_disabled,
+    ),
+    (DOCKER + "demo/docker-compose.demo.yml", "/secrets"): (
+        "demo sets its keys in compose env, not a minted runtime env, so entrypoint.sh never reads /secrets",
+        _no_runtime_env,
     ),
 }
 
@@ -171,8 +182,8 @@ def test_a_no_app_file_really_runs_no_app(rel):
 
 def test_the_guard_catches_the_customer_drift_it_was_written_for():
     """Falsifier: the pre-GDXA-1682 customer app mounts must fail the standalone check."""
-    rel = DOCKER + "docker-compose.customer.yml"
-    app = dict(_app(rel), volumes=["gdx_uploads:/app/uploads", "gdx_secrets:/secrets:ro"])
+    rel = "docker-compose.customer.yml"  # the deleted standalone file, rebuilt from the base app
+    app = dict(_app(BASE), volumes=["gdx_uploads:/app/uploads", "gdx_secrets:/secrets:ro"])
     with pytest.raises(AssertionError, match="never mounts /app/recordings"):
         _check_standalone(rel, app, "/app/recordings")
 
@@ -183,6 +194,15 @@ def test_the_guard_catches_an_overlay_that_overrides_the_mounts():
         app = yaml.load(text, Loader=_TagLoader)  # noqa: S506 - SafeLoader subclass
         with pytest.raises(AssertionError, match="drops base mount"):
             _check_overlay("overlay.yml", app)
+
+
+def test_the_demo_secrets_exemption_fails_once_it_reads_a_runtime_env():
+    """A demo app pointed at a runtime env file it never mounts is red."""
+    rel = DOCKER + "demo/docker-compose.demo.yml"
+    app = _app(rel)
+    on = dict(app, environment=dict(app["environment"], GDX_RUNTIME_ENV_FILE="/secrets/runtime.env"))
+    with pytest.raises(AssertionError, match="no longer holds"):
+        _check_standalone(rel, on, "/secrets")
 
 
 def test_the_demo_exemption_fails_once_recording_is_on():

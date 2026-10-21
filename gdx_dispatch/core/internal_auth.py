@@ -53,10 +53,11 @@ the moment the image rolled.
 Delivery note (issue #598, item 1): the compose files enumerate ``environment:``
 explicitly and there is **no** ``env_file:``, so setting this in the operator's
 environment file alone delivers nothing. ``GDX_INTERNAL_TOKEN`` is therefore
-declared in the shared ``x-app-env`` anchor, which reaches app, plugin-host
-**and the celery services** — ``celery-high`` runs ``deliver_plugin_event_task``
-and calls ``/internal/events`` itself, so a token delivered only to app +
-plugin-host would fail closed on every plugin event delivery. That passthrough
+declared in the shared ``x-app-env`` anchor, which reaches app and plugin-host.
+The Celery workers run inside the app container (since 2026-10-19; before that
+they were services of their own that also had to receive it), and the high
+worker runs ``deliver_plugin_event_task``, which calls ``/internal/events``
+itself. That passthrough
 is what makes an explicit override possible; the derivation is what makes the
 default work.
 """
@@ -110,9 +111,10 @@ def token() -> str:
     """The shared secret: the explicit one if set, else derived from SECRET_KEY.
 
     The derivation is what makes fail-closed deployable. Without it this change
-    is a coordinated-deploy-or-outage: production runs
+    is a coordinated-deploy-or-outage: production ran
     ``docker-compose.yml + selfhost.yml + serverports.yml`` with no
-    ``secrets-init`` to mint anything, and the public demo runs an **untracked**
+    ``secrets-init`` to mint anything (until the one compose layout of
+    2026-10-19, whose secrets-init mints a token), and the public demo runs an **untracked**
     compose file that no pull request can edit. Requiring a new variable would
     have taken down the browser stream, plugin events and the restart hook on
     both stacks the moment the image rolled — and left demo unfixable from git.

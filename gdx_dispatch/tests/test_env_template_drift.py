@@ -51,7 +51,7 @@ _SKIP_PARTS = frozenset({"tests", "frontend", "node_modules", "__pycache__"})
 # entry must still be read (see test_the_allowlists_are_not_stale).
 _RUNTIME = "set by the runtime, the image or compose wiring, not by the operator"
 _TOOLING = "read by a developer/CI tool under gdx_dispatch/tools/, not by the app"
-_MINTING = "self-host secret minting; docker-compose.customer.yml sets it"
+_MINTING = "secret minting (tools/mint_runtime_env.py), set by the secrets-init wiring"
 # A real operator knob with a working default, never written into the template.
 # Each one is a candidate for a documented template entry, not a decision that
 # it should stay out.

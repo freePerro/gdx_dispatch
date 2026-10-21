@@ -1,0 +1,11 @@
+#!/bin/sh
+# The all-in-one app container's healthcheck: the web process answers /health,
+# and all four processes are up. A dead worker or beat makes the container
+# unhealthy instead of hiding behind a healthy web process.
+curl -sf http://localhost:8000/health >/dev/null || exit 1
+for svc in svc-web svc-worker-high svc-worker-low svc-beat; do
+  [ "$(/command/s6-svstat -u "/run/service/$svc")" = "true" ] || {
+    echo "$svc is down" >&2
+    exit 1
+  }
+done

@@ -37,21 +37,29 @@ can serve mid-rollback, and any restart of this image re-runs ``upgrade head``.
 The order for prod, which names constraints rather than commands and has
 not been rehearsed:
 
-1. Stop every service of this release (``app``, ``plugin-host``,
-   ``celery-high``, ``celery-low``, ``celery-beat``).
+1. Stop every service of this release that connects (``app``, which runs
+   the celery workers and beat under s6, ``plugin-host``, ``backup``).
 2. Find the head revision of the image being pinned (``alembic heads`` in
    that image, run without its entrypoint, which touches the database). It
    is not necessarily 135: a release can predate several migrations.
 3. From THIS image, in a one-off container on the same compose project,
    env file and compose files as ``docker/update.sh`` (``COMPOSE=``), run
    ``alembic downgrade`` to that revision. Every downgrade it passes runs;
-   read them first.
+   read them first. Start it with ``run --no-deps --entrypoint sh app -c
+   'set -a; . "$GDX_RUNTIME_ENV_FILE"; set +a; cd /app/gdx_dispatch &&
+   exec python -m alembic -c alembic.ini downgrade <rev>'`` (as entrypoint.sh
+   runs it):
+   the image's own entrypoint would boot the app (and its ``upgrade head``)
+   first, and a bare ``--entrypoint alembic`` skips the runtime env that holds
+   ``DATABASE_URL``, so alembic falls back to alembic.ini's dev URL.
 4. Pin that ``APP_VERSION`` and start.
 
 Demo is a separate stack on the same host: project ``gdx-demo``, env file
 ``docker/demo/.env.demo``, compose file ``docker/demo/docker-compose.demo.yml``,
 no celery services. Step 3 with ``update.sh``'s project would downgrade
 prod's database instead, so substitute demo's for every step there.
+Demo sets no ``GDX_RUNTIME_ENV_FILE`` (its keys are compose env), so drop
+the ``set -a ... set +a;`` part of step 3 there.
 
 Revision ID: 136_drop_dead_user_columns
 Revises: 135_job_return_visit_source

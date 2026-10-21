@@ -1,34 +1,74 @@
-# Dev hot-reload override — OPT-IN, not auto-loaded.
-# Renamed from docker-compose.override.yml on 2026-04-16 because the auto-load
-# was active on production VPS and replacing the prod CMD (2 workers, no
-# --reload, gdx_dispatch.main:app) with dev config (1 worker, --reload, --factory).
+# Local dev overlay on the one layout (docker-compose.yml). dev-up.sh wraps it:
 #
-# Binds the gdx/ source tree into the app container and runs uvicorn with
-# --reload so backend edits reflect in ~1 second instead of a full rebuild.
+#   gdx_dispatch/docker/dev-up.sh [--build] [service…]
 #
-# Usage (dev only, explicit opt-in; on a fresh clone create the base file's
-# external volumes once first, or start the stack with dev-up.sh, which does):
-#   docker volume create docker_db_data
-#   docker volume create docker_gdx_uploads
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d app
-#   # edit gdx_dispatch/routers/*.py locally → container picks up on next request
+# What it changes, and only this:
+#   - Builds the app and plugin-host images from this checkout instead of
+#     pulling releases. The app image is tagged `docker-app`, the name the test
+#     matrix (tools/run_tests_split.sh) runs pytest in, so `dev-up.sh --build
+#     app` refreshes both. pull_policy keeps compose from ever pulling them.
+#   - Dev ports on loopback: app 8001, postgres 5432, redis 6379 (redis needs
+#     the password in the gdx_secrets volume's redis_password file).
+#   - GDX_ENV=dev and the local URLs the integrations' callbacks use.
+#   - The dev database and uploads stay on the volumes they always had
+#     (docker_db_data, docker_gdx_uploads; dev-up.sh creates them if missing).
+#   - No Caddy: nothing in dev listens on 80/443.
 #
-# Production (gdx_dispatch/docker/docker-compose.yml alone) uses the Dockerfile CMD.
+# Hot reload is a separate opt-in: add -f docker-compose.reload.yml
+# (dev-up.sh --reload).
+
+# GDX_ENV=dev turns off the production boot gates; every app-image service
+# gets it so they agree (internal_auth, payments and friends read it).
+x-dev-env: &dev-env
+  GDX_ENV: ${GDX_ENV:-dev}
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  # The dev database was initialised with the old dev default. secrets-init
+  # takes an env DB_PASSWORD over minting one, so the existing volume keeps
+  # working; once stored, the stored value wins (mint_runtime_env).
+  DB_PASSWORD: ${DB_PASSWORD:-dev_password}
+
+x-dev-image: &dev-image
+  image: docker-app
+  pull_policy: never
+  environment: *dev-env
+
 services:
   app:
-    volumes:
-      - ../../gdx_dispatch:/app/gdx_dispatch:ro
-    command:
-      - uvicorn
-      - gdx_dispatch.app:create_app
-      - --factory
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8000"
-      - --reload
-      - --reload-dir
-      - /app/gdx_dispatch
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile
+      args:
+        GIT_SHA_SHORT: ${GIT_SHA_SHORT:-unknown}
+    image: docker-app
+    pull_policy: build
+    ports:
+      - "127.0.0.1:8001:8000"
     environment:
-      ENVIRONMENT: development
-      PYTHONDONTWRITEBYTECODE: "1"
+      <<: *dev-env
+      GDX_BASE_URL: ${GDX_BASE_URL:-http://localhost:8001}
+      QB_REDIRECT_URI: ${QB_REDIRECT_URI:-http://localhost:8001/api/qb/oauth/callback}
+      QB_ENVIRONMENT: ${QB_ENVIRONMENT:-sandbox}
+  secrets-init: *dev-image
+  plugin-host:
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile.plugin-host
+    image: docker-plugin-host
+    pull_policy: build
+    environment: *dev-env
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+  caddy:
+    profiles: ["dev-never"]
+
+volumes:
+  gdx_db_data:
+    external: true
+    name: docker_db_data
+  gdx_uploads:
+    external: true
+    name: docker_gdx_uploads

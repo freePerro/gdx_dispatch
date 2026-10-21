@@ -340,7 +340,7 @@ def test_retired_env_and_state_names_appear_nowhere() -> None:
             continue
         if any(rel.startswith(prefix) for prefix in _SKIP_PREFIXES):
             continue
-        if path.suffix not in _SCAN_SUFFIXES and path.name not in (".env.template", ".env.lab.example"):
+        if path.suffix not in _SCAN_SUFFIXES and path.name != ".env.template":
             continue
         try:
             text = path.read_text(errors="ignore")
@@ -443,7 +443,7 @@ def test_nothing_outside_the_records_names_a_design_doc() -> None:
             continue
         if any(rel.startswith(prefix) for prefix in _SKIP_PREFIXES if prefix not in ("docs/design/", "gdx_dispatch/migrations/")):
             continue
-        if path.suffix not in _SCAN_SUFFIXES | {".html", ".ts", ".toml", ".cfg", ".ini", ".css"} and path.name not in (".env.template", ".env.lab.example"):
+        if path.suffix not in _SCAN_SUFFIXES | {".html", ".ts", ".toml", ".cfg", ".ini", ".css"} and path.name != ".env.template":
             continue
         try:
             text = path.read_text(errors="ignore")

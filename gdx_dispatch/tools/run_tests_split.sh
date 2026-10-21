@@ -340,7 +340,7 @@ elif [ -n "${PYBIN:-}" ] && [ -f "$REQ_FILE" ]; then
     grep -E "^ERROR:|No matching distribution|ResolutionImpossible" "$dep_log" | head -5 | sed 's/^/    /'
     echo
     echo "  The image bakes requirements at build time. Rebuild it:"
-    echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml build app"
+    echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml -f gdx_dispatch/docker/docker-compose.dev.yml build app"
     echo "  Full log: $dep_log   Bypass (not advised): SKIP_DEP_CHECK=1 $0"
     exit 3
   fi
@@ -384,7 +384,7 @@ if [ "${IMAGE_AGE_CHECK:-1}" = "1" ] && [ -n "$IMAGE" ]; then
     if [ -n "$req_ts" ] && [ "$img_ts" -lt "$req_ts" ]; then
       echo "⚠ image is OLDER than the last requirements.txt/.lock/Dockerfile change on this branch"
       echo "  ($(date -d "@$req_ts" '+%Y-%m-%d %H:%M')). Failures may be the image, not your code. Rebuild:"
-      echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml build app"
+      echo "    docker compose -f gdx_dispatch/docker/docker-compose.yml -f gdx_dispatch/docker/docker-compose.dev.yml build app"
     elif [ "$age_d" -ge "${IMAGE_MAX_AGE_DAYS:-7}" ]; then
       echo "⚠ image is ${age_d} days old; it may still carry packages requirements.lock has"
       echo "  since dropped, which CI no longer installs."

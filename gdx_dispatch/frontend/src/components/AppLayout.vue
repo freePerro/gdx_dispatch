@@ -13,6 +13,7 @@
     <a href="#main-content" class="skip-link">Skip to main content</a>
     <AppSidebar
       v-if="!isMobile"
+      :key="shellKey"
       :collapsed="sidebarCollapsed"
       @toggle-collapse="toggleSidebarCollapse"
       @item-selected="closeMobileSidebar"
@@ -26,6 +27,7 @@
       :show-close-icon="false"
     >
       <AppSidebar
+        :key="shellKey"
         mobile
         :mobile-open="mobileSidebarOpen"
         :collapsed="false"
@@ -37,6 +39,7 @@
     <div class="layout-main">
       <div class="layout-header">
         <AppTopbar
+          :key="shellKey"
           @toggle-navigation="handleNavigationToggle"
           @open-search="openCommandPalette"
           @show-notifications="notificationsOpen = true"
@@ -47,7 +50,7 @@
         <!-- Inside the header, not between it and <main>: .layout-main is a
              two-row grid, and a third child takes the 1fr row at 0px while
              <main> paints over it. -->
-        <WhatsNewBanner />
+        <WhatsNewBanner :key="shellKey" />
         <!-- GDXA-1004: the router holds a must_change_password session on
              /profile; say why, or the bounce off every nav item reads as a
              broken sidebar. -->
@@ -68,7 +71,7 @@
       </main>
     </div>
 
-    <AppBottomNav v-if="isMobile" />
+    <AppBottomNav v-if="isMobile" :key="shellKey" />
     <HelpDrawer />
     <!-- MH-1 (mobile hardening, audit P1 #11): the 🐛 bug-report FAB
          shipped to production for every role, overlapping content/nav
@@ -100,6 +103,7 @@ import WhatsNewBanner from './WhatsNewBanner.vue';
 import { useAuthStore } from '../stores/auth';
 import { isTechnician } from '../constants/roles';
 import { useTour } from '../composables/useTour';
+import { useApi } from '../composables/useApi';
 import { useOfficeAlertsKeeper } from '../composables/useOfficeAlertsKeeper';
 
 const route = useRoute();
@@ -110,6 +114,11 @@ const isMobile = ref(false);
 const notificationsOpen = ref(false);
 
 const auth = useAuthStore();
+// While a password change is held, the shell's loads and polls are refused
+// (useApi short-circuits them). Remounting the shell when the hold clears
+// runs those loads again, so the sidebar, counts and banner come back without
+// a page reload.
+const shellKey = computed(() => (auth.mustChangePassword ? 'held' : 'open'));
 // Android app: someone else's phone alerts go off; an office user's keep running.
 useOfficeAlertsKeeper();
 // Same predicate AppBottomNav uses to render the quick-capture FAB: the
@@ -123,6 +132,7 @@ watchEffect(() => {
 });
 onUnmounted(() => document.body.classList.remove('has-capture-fab'));
 const tour = useTour();
+const api = useApi();
 
 // MH-1: bug-report FAB visibility. Default OFF in prod build (env unset).
 // Enabled when:
@@ -138,11 +148,20 @@ onMounted(() => {
   // Auto-launch the role-matched tour on dashboard if the user hasn't
   // seen it yet. Delayed so the help button + sidebar anchors are
   // rendered. Tours degrade gracefully if no anchors resolve.
-  setTimeout(() => {
+  setTimeout(async () => {
     const path = route?.path ?? '';
     if (path !== '/dashboard' && path !== '/') return;
     const role = String(auth.user?.role || '').toLowerCase();
     if (!role) return;
+    // An owner or admin of a company that still needs setup gets the wizard,
+    // not a tour of an empty app on top of it (2026-10-19 install walk). The
+    // server decides (setup_needed): a company running from before the wizard
+    // has no completed_at and still gets its tour. Other roles' tours do not
+    // wait on the owner's setup.
+    if (role === 'owner' || role === 'admin') {
+      const state = await api.get('/api/onboarding/state').catch(() => null);
+      if (!state || state.setup_needed !== false) return;
+    }
     tour.autoLaunchForUser({ role });
   }, 1200);
 });

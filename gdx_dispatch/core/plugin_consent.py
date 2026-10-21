@@ -40,9 +40,10 @@ from gdx_dispatch.core import internal_auth
 #     plus one websocket, which OpenAPI does not list.
 #   - the WORKER half does not degrade at all, it crash-loops.
 #     `core/celery_app.py` imports `core.plugin_events` at module scope with no
-#     guard, and that imports this module, so celery-high, celery-low and
-#     celery-beat all fail to start — under `restart: unless-stopped` that is a
-#     restart loop, which is the loud half and the reason this is bearable.
+#     guard, and that imports this module, so both workers and beat fail to
+#     start; s6 restarts them, then stops the app container (s6-overlay
+#     svc-finish), and `restart: unless-stopped` loops it. That is the loud
+#     half and the reason this is bearable.
 #
 # A function-local import would be worse, not better: `any_event_consent`'s own
 # `except Exception: return False` would swallow it and silently turn off plugin
@@ -79,7 +80,8 @@ def internal_auth_headers() -> dict[str, str]:
                 "No internal token available in this container (neither "
                 "GDX_INTERNAL_TOKEN nor SECRET_KEY is set) but plugin-host "
                 "enforces it (GDX_ENV=%s) — every /internal/* call will 401. "
-                "app, plugin-host and celery-high must all hold the SAME value; "
+                "app (whose container runs the Celery workers) and plugin-host "
+                "must hold the SAME value; "
                 "the compose files have no env_file, so an explicit override "
                 "belongs in the shared x-app-env block.",
                 os.getenv("GDX_ENV", ""),

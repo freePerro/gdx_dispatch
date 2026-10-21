@@ -29,6 +29,10 @@ Env vars:
   GDX_ADMIN_PASSWORD  — admin password (default: randomly generated and
       logged once; when set, the value is never written to the logs)
   GDX_SKIP_BOOTSTRAP=1 — skip entirely (e.g. when managing the DB yourself).
+  GDX_REQUIRE_EXISTING_DATA=1 — refuse (exit 1) instead of seeding when the
+      tenant row is missing. Set on a host whose database must already exist
+      (production), so a compose run that mounted an empty volume crash-loops
+      loudly instead of serving a fresh, empty install.
 
 Run: python -m gdx_dispatch.tools.bootstrap_app
 """
@@ -103,6 +107,30 @@ def _revive_owner(db, tenant_id: str, user, password_hash: str) -> None:
     _sync_user_role_assignment(db, tenant_id, str(user.id), "owner")
 
 
+def require_existing_tenant(db, tenant_model, tenant_uuid) -> bool:
+    """False when GDX_REQUIRE_EXISTING_DATA=1 and the tenant row is absent.
+
+    The one layout's second lock. The first is prod's COMPOSE_FILE line, which
+    an explicit `-f docker-compose.yml` overrides: the base alone on the prod
+    box would mount a new, empty database, seed an admin and answer 200 on
+    /health. Prod sets this flag in the repo-root .env, so that run stops here
+    before anything is seeded, but only when compose reads that .env. An
+    explicit ``-f`` needs ``--env-file ./.env`` (every runbook passes it);
+    without it the flag never arrives, from the repo root or anywhere else.
+    """
+    if os.getenv("GDX_REQUIRE_EXISTING_DATA", "").strip() != "1":
+        return True
+    if db.get(tenant_model, tenant_uuid) is not None:
+        return True
+    log.error(
+        "GDX_REQUIRE_EXISTING_DATA=1 but tenant row %s is missing: this database "
+        "is empty or not the one this host should run on. Refusing to seed. "
+        "Check which volume the db service mounted (docker compose config).",
+        tenant_uuid,
+    )
+    return False
+
+
 def create_orm_tables() -> None:
     """Create the ORM-managed (TenantBase) tables (idempotent; checkfirst).
 
@@ -146,6 +174,8 @@ def main() -> int:
     tenant_uuid = UUID(tenant_id)
 
     with SessionLocal() as db:
+        if not require_existing_tenant(db, Tenant, tenant_uuid):
+            return 1
         # ── 2. The one tenant row (FK target for audit_logs) ──
         if db.get(Tenant, tenant_uuid) is None:
             db.add(Tenant(id=tenant_uuid, slug=str(tenant["slug"]), name=str(tenant["name"])))

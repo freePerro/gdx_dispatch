@@ -1449,7 +1449,7 @@ def _upsert_sync_health_action(tdb: Session, tenant_id: str, problems: list[str]
     description = (
         "Email is NOT syncing correctly: " + "; ".join(problems)
         + ". New mail is missing from /inbox until this is fixed — "
-        "check the celery-low logs / Sentry for the failing folder."
+        "check the app container's worker logs / Sentry for the failing folder."
     )
     _, outcome = upsert_system_action(
         tdb,

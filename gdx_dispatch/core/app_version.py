@@ -3,8 +3,8 @@
 Two sources, in order:
 
 1. ``APP_VERSION`` — what the operator pinned in compose (``1.145.0``). The
-   one-click and selfhost compose files default it to ``latest`` and the dev
-   compose to ``dev``; neither names a release.
+   compose layout defaults it to ``latest`` and ``dev-up.sh`` to the git SHA;
+   neither names a release.
 2. ``GDX_IMAGE_VERSION`` — baked into the image by the Release workflow
    (``Dockerfile`` ARG → ENV), so an install that tracks ``:latest`` still
    knows which release it pulled.

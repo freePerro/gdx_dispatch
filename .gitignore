@@ -1,7 +1,6 @@
 # Secrets — never commit
 .env
 *.env
-.env.lab
 .env.bak.*
 # Playwright storageState / captured login sessions (live credentials)
 chi_session.json

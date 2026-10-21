@@ -61,7 +61,8 @@ from gdx_dispatch.models.tenant_models import AppSettings, Customer, WinbackCamp
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 25
-# The priority:low worker is one slot in docker-compose.customer.yml (-c 1)
+# The priority:low worker is one slot on a customer install (docker-compose.yml's
+# GDX_CELERY_LOW_CONCURRENCY default of 1)
 # and the every-minute inbound SMS poll queues behind this drain there (it
 # expires after 50s), so a pass must hand the slot back in time. A row is
 # claimed only while the budget left still covers one whole text

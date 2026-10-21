@@ -13,7 +13,10 @@ them just as readily; only `noeviction` keeps them. A guard on the word "lru"
 would therefore pass a wrong fix, which is why the policy is pinned by value.
 
 The guard reads every tracked `docker-compose*.yml` that defines a `redis`
-service, so a fourth compose file that grows a redis is covered without an edit.
+service, so a new compose file that grows a redis is covered without an edit.
+An overlay whose redis only adds ports (docker-compose.dev.yml) inherits the
+base's command and volume, so it is skipped; one that sets a command, image or
+volumes is checked on what it sets.
 """
 
 from __future__ import annotations
@@ -34,8 +37,10 @@ _APPENDONLY = re.compile(r"--appendonly\s+(\w+)")
 EXPECTED = {
     "gdx_dispatch/docker/docker-compose.yml",
     "gdx_dispatch/docker/demo/docker-compose.demo.yml",
-    "gdx_dispatch/docker/docker-compose.customer.yml",
 }
+
+# Keys that make a redis entry define the server rather than decorate the base's.
+_DEFINING = {"image", "command", "volumes"}
 
 
 class _ComposeLoader(yaml.SafeLoader):
@@ -64,7 +69,7 @@ def _redis_services() -> dict[str, tuple[dict, dict]]:
     for rel in sorted(p for p in read_tracked_files() if _COMPOSE_NAME.search(p)):
         spec = yaml.load((REPO_ROOT / rel).read_text(), Loader=_ComposeLoader) or {}  # noqa: S506 — SafeLoader subclass
         redis = (spec.get("services") or {}).get("redis")
-        if redis is not None:
+        if redis is not None and _DEFINING & set(redis):
             found[rel] = (redis, spec.get("volumes") or {})
     return found
 

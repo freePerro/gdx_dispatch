@@ -2,7 +2,7 @@
 
 **Status:** PARTIALLY BUILT (verified on main 2026-08-21; staging E2E run
 2026-09-20). Build-order items 1 and 2 shipped:
-`gdx_dispatch/docker/docker-compose.customer.yml` and
+`gdx_dispatch/docker/docker-compose.customer.yml` and <!-- historical file names; link-ok -->
 `gdx_dispatch/tools/mint_runtime_env.py` (+ `tests/test_mint_runtime_env.py`).
 Item 3 done 2026-09-20: fresh-VPS E2E on the idle staging box (Hostinger
 Docker template, Ubuntu 24.04) — release-asset URL fetch, zero-env
@@ -15,6 +15,13 @@ surviving. README self-host section now leads with this path (same PR).
 → preloaded Docker Manager deploy) and items 5-8 — the handover-guide
 template, the landing page with the Deploy button, the first paying customer,
 and the Partner Program application.
+**Continued by** `one-layout-all-in-one-plan.md` (PARTIALLY BUILT, 2026-10-19):
+the customer compose became the only compose (prod included):
+`docker-compose.customer.yml` and the selfhost overlay named below were merged <!-- historical file names; link-ok -->
+into `gdx_dispatch/docker/docker-compose.yml`, which the release still
+publishes under the asset name `docker-compose.customer.yml`. Still to come there: the app's four processes <!-- historical file names; link-ok -->
+move into one container, and a one-line `install.sh` replaces the README's <!-- historical file names; link-ok -->
+three commands. The funnel items 4-8 here are unaffected.
 **North star (Doug, 2026-08-17): ADOPTION, not revenue.** Monetization gets
 figured out later; every decision below optimizes for the lowest-friction path
 to a stranger running GDX Dispatch. Referral code stays on the button (it's a
@@ -97,7 +104,7 @@ Substantially more of this exists than expected (audited 2026-08-17):
 | Piece | Status |
 |---|---|
 | Published images | ✅ GHCR `gdx_dispatch` + `gdx_dispatch-plugin-host`, public, built by release.yml |
-| Compose for customer boxes | ✅ `gdx_dispatch/docker/docker-compose.yml` + **`docker-compose.selfhost.yml`** overlay (pulls pinned `APP_VERSION`, single-migrator pattern, never builds on the box) |
+| Compose for customer boxes | ✅ `gdx_dispatch/docker/docker-compose.yml` + **`docker-compose.selfhost.yml`** overlay (pulls pinned `APP_VERSION`, single-migrator pattern, never builds on the box) | <!-- historical file names; link-ok -->
 | Updates | ✅ Docker Manager redeploy: re-calling `createNewProject` with the same name **replaces the project in place** — that IS the update path (one API call, or the customer clicks redeploy in hPanel). `update.sh` remains for our own prod |
 | First-boot admin | ✅ entrypoint bootstrap seeds admin with `must_change_password=True` |
 | Env template | ✅ `.env.template` — but 300 lines; needs a **customer-minimal subset** (~15 required keys) that the setup script fills from the form + generated secrets |
@@ -131,13 +138,13 @@ surface (Docker Manager, plain `docker compose`, a future one-click template)
 gets it for free.
 
 Mechanical note: Docker Manager wants ONE compose file. **Built 2026-08-17 as
-a hand-authored standalone file** (`gdx_dispatch/docker/docker-compose.customer.yml`)
+a hand-authored standalone file** (`gdx_dispatch/docker/docker-compose.customer.yml`) <!-- historical file names; link-ok -->
 rather than CI-flattening base+overlay: the customer file differs structurally
 (managed volumes instead of `external:` ones, no host-bound dev ports, added
 caddy/backup/secrets-init services, curated env surface), so a flatten step
 would have needed a bigger transform script than the file itself. release.yml
 attaches it to every GitHub Release →
-`…/releases/latest/download/docker-compose.customer.yml` is the stable
+`…/releases/latest/download/docker-compose.customer.yml` is the stable <!-- historical file names; link-ok -->
 evergreen URL the button points at.
 
 ### First-boot self-configuration (required for the button flow)
@@ -199,7 +206,7 @@ access; this is the option for the security-conscious.
 
 ## Build order
 
-1. ✅ **`docker-compose.customer.yml`** (2026-08-17, branch
+1. ✅ **`docker-compose.customer.yml`** (2026-08-17, branch <!-- historical file names; link-ok -->
    feat/deploy-on-hostinger): Caddy TLS + honest backup sidecar + healthcheck
    ordering + release.yml stable-URL publish. Local zero-env boot test passed
    (9/9 healthy, login 200, secrets survive force-recreate, old JWT valid).

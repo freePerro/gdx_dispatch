@@ -125,13 +125,17 @@ if str(REPO_ROOT) not in sys.path:
 
 USAGE = """Usage (in a one-off app container, every other database client stopped).
 Use the compose invocation of the deployment that owns the database; for the
-self-hosted stack that is update.sh's, from the repo root:
-  C="docker compose -p gdx --env-file ./.env -f gdx_dispatch/docker/docker-compose.yml \\
-     -f gdx_dispatch/docker/docker-compose.selfhost.yml"
-  $C stop app plugin-host celery-high celery-low celery-beat   # every DB client it defines
-  $C run --no-deps --entrypoint python app \\
-      -m gdx_dispatch.tools.pave_tenant_db --yes        # no --rm: /tmp holds the backup
-  $C start app plugin-host celery-high celery-low celery-beat
+self-hosted stack that is update.sh's, from the directory holding its .env,
+with one -f per COMPOSE_FILE entry there, as update.sh resolves them (an
+explicit -f overrides COMPOSE_FILE, so list every file):
+  C="docker compose -p gdx --env-file ./.env -f gdx_dispatch/docker/docker-compose.yml"
+  # production: append -f gdx_dispatch/docker/docker-compose.prod.yml
+  $C stop app plugin-host backup   # every DB client it defines; celery runs inside app
+  $C run --no-deps --entrypoint sh app -c \\
+      'set -a; . "$GDX_RUNTIME_ENV_FILE"; set +a; exec python -m gdx_dispatch.tools.pave_tenant_db --yes'
+      # no --rm: /tmp holds the backup. The sh -c loads the runtime env that
+      # entrypoint.sh would have (DATABASE_URL lives only there).
+  $C start app plugin-host backup
 A `stop` aimed at the wrong project stops nothing and still exits 0; the
 preflight then refuses, naming the clients still connected.
 
@@ -1462,9 +1466,10 @@ def log_restore(db_info: dict, full_backup_path: str, level=logging.ERROR,
 # back before the DROP is refused like any other. Stop them first.
 # --------------------------------------------------------------------------
 
-# The database clients the compose files define; demo has only the first two,
-# and the customer file adds a read-only `backup` sidecar.
-DB_CLIENT_SERVICES = ("app", "plugin-host", "celery-high", "celery-low", "celery-beat", "backup")
+# The database clients the compose files define. The celery workers and beat run
+# under s6 inside app since the one layout; demo has only the first two, and the
+# base file adds a read-only `backup` sidecar.
+DB_CLIENT_SERVICES = ("app", "plugin-host", "backup")
 DROP_LOCK_TIMEOUT = "10s"
 TERMINATE_WAIT_SECONDS = 10
 

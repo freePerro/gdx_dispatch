@@ -7,11 +7,9 @@
 # its own image off the official Playwright base, which already ships Chromium and
 # every browser system dep. ADR-013 Model B.
 #
-# To use: point the plugin-host service at this file in docker-compose.yml:
-#   plugin-host:
-#     build:
-#       context: ../..
-#       dockerfile: gdx_dispatch/docker/Dockerfile.plugin-host
+# The Release workflow publishes it as ghcr.io/<repo>-plugin-host, which
+# docker-compose.yml's plugin-host runs; docker-compose.dev.yml builds it from
+# this file instead.
 #
 # Keep the base image's Playwright version in lockstep with the `playwright` pin
 # in gdx_dispatch/requirements-plugin-host.in (tests/test_requirements_lock.py

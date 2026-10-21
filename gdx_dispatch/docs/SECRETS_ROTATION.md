@@ -9,30 +9,42 @@ been reconciled — read both before rotating anything.
 ## DB Credential Rotation
 
 ```bash
-# 1. Generate new password
-NEW_PASS=$(openssl rand -base64 32)
+# The production stack is compose project `gdx`: docker-compose.yml plus
+# docker-compose.prod.yml, named by the COMPOSE_FILE line in .env (update.sh
+# reads the same line). Without `-p gdx` compose addresses a project that does
+# not exist: `stop` stops nothing and `up` creates a SECOND stack. Never add
+# `-f …docker-compose.yml` alone: it drops the prod overlay and its volumes,
+# and GDX_REQUIRE_EXISTING_DATA=1 then refuses to boot. Run from the checkout
+# root, where .env lives:
+COMPOSE=(docker compose -p gdx --env-file ./.env)
 
-# 2. Create new PG role with new password (dual-credential window)
-psql -U postgres -c "ALTER USER gdx WITH PASSWORD '$NEW_PASS';"
+# 1. Generate a new password. secrets-init accepts only letters, digits and
+#    _.:/@%+=,- ; base64 stays inside that set.
+NEW_PW=$(openssl rand -base64 32)
 
-# 3. Update DATABASE_URL (and DB_PASSWORD, which the db service reads) in .env,
-#    then recreate the app containers so every process picks up the new URL.
-#    (Until 2026-09-06 this step POSTed to /api/admin/rotate-db-credential —
-#    an endpoint of the multi-tenant control plane that does not exist here.)
-# The production stack is compose project `gdx`, built from THREE files by
-# gdx_dispatch/docker/update.sh. Plain `docker compose -f …docker-compose.yml`
-# addresses a project that does not exist: `stop` stops nothing and `up`
-# creates a SECOND stack on the same volumes. Always use the same array
-# update.sh uses (run from the checkout root, where .env lives):
-COMPOSE=(docker compose -p gdx --env-file ./.env
-  -f gdx_dispatch/docker/docker-compose.yml
-  -f gdx_dispatch/docker/docker-compose.selfhost.yml)
-"${COMPOSE[@]}" up -d --force-recreate app celery-high celery-low celery-beat
+# 2. Change it in PostgreSQL. The old password stops working here, so do
+#    steps 2-5 back to back.
+"${COMPOSE[@]}" exec -T db psql -U gdx -d gdx -c "ALTER USER gdx PASSWORD '$NEW_PW';"
 
-# 4. Health check
-curl http://localhost:8001/health
+# 3. Put it in .env as DB_PASSWORD=<new>. DATABASE_URL is not set in .env:
+#    secrets-init derives it from DB_PASSWORD.
 
-# 5. Verify old password is gone (it was already replaced in step 2)
+# 4. Re-mint the stored copy. secrets-init keeps the password it stored in the
+#    gdx_secrets volume (runtime.env) over any .env value, because postgres
+#    fixed it at first init. Editing .env alone therefore changes nothing and
+#    the app keeps the old, now-refused password. Delete the stored line, then
+#    run secrets-init: it takes the .env value and rewrites runtime.env
+#    (DB_PASSWORD, DATABASE_URL) and db_password (read by the backup service).
+"${COMPOSE[@]}" run --rm --no-deps --entrypoint sh secrets-init \
+  -c "sed -i '/^DB_PASSWORD=/d' /secrets/runtime.env"
+"${COMPOSE[@]}" run --rm --no-deps secrets-init
+
+# 5. Recreate everything that reads runtime.env or db_password at start (the
+#    app container carries the Celery workers and beat).
+"${COMPOSE[@]}" up -d --force-recreate app plugin-host backup
+
+# 6. Verify
+"${COMPOSE[@]}" exec -T app curl -sf http://localhost:8000/health
 ```
 
 ## JWT Signing Key Rotation (zero-downtime)

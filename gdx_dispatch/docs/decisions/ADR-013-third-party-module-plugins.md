@@ -395,8 +395,8 @@ are kept above as the design record; each carries a dated marker pointing here.
 effect**:
 
 - plugin-host's `environment` merges `<<: *app-env`, so it receives the core app's
-  `DATABASE_URL` (`gdx_dispatch/docker/docker-compose.yml`, and the same anchor in
-  `docker-compose.customer.yml`; the demo stack does the same through `*demo-env`).
+  `DATABASE_URL` (`gdx_dispatch/docker/docker-compose.yml`, which customers run as
+  is since the one layout; the demo stack does the same through `*demo-env`).
 - `plugin_api/context.py` `plugin_session()` and `get_plugin_db()` open the core
   `SessionLocal()`, with no role, no schema restriction and no table allow-list.
 - A search for `plugin_role`, `PLUGIN_DATABASE_URL` or "scoped role" finds no

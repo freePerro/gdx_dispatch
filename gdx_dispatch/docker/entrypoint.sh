@@ -11,10 +11,10 @@
 # Every step is idempotent, so this is safe to run on each container start.
 set -e
 
-# Self-host runtime env (docker-compose.customer.yml): the secrets-init
+# Runtime env (docker-compose.yml, the one layout): the secrets-init
 # service mints SECRET_KEY / JWT_SECRET / encryption keys / DATABASE_URL once
 # and persists them on a shared volume, so every container agrees on every key
-# across restarts. Opt-in via GDX_RUNTIME_ENV_FILE — unset (prod/dev compose)
+# across restarts. Opt-in via GDX_RUNTIME_ENV_FILE — unset (demo, bare docker run)
 # means this block is inert. The file wins over container env by construction:
 # mint_runtime_env already folded any operator-set env value into it.
 if [ -n "${GDX_RUNTIME_ENV_FILE:-}" ]; then

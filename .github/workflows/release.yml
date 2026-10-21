@@ -4,8 +4,8 @@ name: Release
 # This builds the image, smoke-tests it, pushes it to GHCR as <version> + latest,
 # and creates a GitHub Release. The tag needs gdx_dispatch/release_notes/<tag>.md
 # on main first; the "Release notes present" step refuses without it. The
-# image tag is what a self-hoster pins via APP_VERSION
-# (docker-compose.selfhost.yml), and the Release is what
+# image tag is what an install pins via APP_VERSION
+# (gdx_dispatch/docker/docker-compose.yml), and the Release is what
 # /api/admin/update-check compares against.
 #
 # Intentionally does NOT gate on the CI `test` job — releases point at an
@@ -36,6 +36,16 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # The s6 boot below runs the Celery workers and beat, which need a broker.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -118,6 +128,35 @@ jobs:
           docker rm -f rel-test
           [ "$ok" = "1" ] || { echo "image failed /health — not pushing"; exit 1; }
 
+      - name: Smoke test the s6 boot (web, workers, beat)
+        run: |
+          # The way compose runs the app container: /init as root, which runs
+          # entrypoint.sh once and then the four processes as appuser. The
+          # bare run above only starts web. Healthy = /health answers and all
+          # four are up; checked again 30 s later, so a worker that crashes
+          # on its first task poll does not pass on timing.
+          img="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          docker run -d --name rel-s6 --network host --user 0:0 --entrypoint /init \
+            -e DATABASE_URL=postgresql://test:test@localhost:5432/gdx_test \
+            -e REDIS_URL=redis://localhost:6379/0 \
+            -e JWT_SECRET=ci-verify-image-start-secret-at-least-32-bytes \
+            -e MASTER_ENCRYPTION_KEY=nsF1JvgxTAqhkYxLo4J8k-SB2JptrgzXbPVJDUOI8w4= \
+            -e SECRET_KEY=ci-test \
+            "$img"
+          check() { docker exec rel-s6 /etc/s6-overlay/scripts/healthcheck; }
+          ok=
+          for _ in $(seq 1 40); do
+            if check 2>/dev/null; then ok=1; break; fi
+            sleep 3
+          done
+          if [ "$ok" = "1" ]; then
+            sleep 30
+            check || ok=
+          fi
+          docker logs rel-s6
+          docker rm -f rel-s6
+          [ "$ok" = "1" ] || { echo "image failed the s6 boot — not pushing"; exit 1; }
+
       - name: Push image to GHCR
         uses: docker/build-push-action@v6
         with:
@@ -134,7 +173,7 @@ jobs:
       # ── Browser-capable plugin-host image (ADR-014) ─────────────────────────
       # plugin-host runs headless Chromium for browser-driving plugins, so it
       # needs its own Playwright-base image. Published as a SEPARATE GHCR repo
-      # (<repo>-plugin-host) at the same version tags; docker-compose.selfhost.yml
+      # (<repo>-plugin-host) at the same version tags; docker-compose.yml
       # pins plugin-host to it. app/celery stay on the slim image above.
       - name: Plugin-host image metadata
         id: meta_ph
@@ -182,6 +221,12 @@ jobs:
       # …/releases/latest/download/docker-compose.customer.yml is a stable,
       # evergreen URL — it's what the Deploy on Hostinger button points at
       # (compose_url=) and what self-hosters paste into Docker Manager.
+      # Since the one layout (2026-10-19) the asset is a copy of
+      # docker-compose.yml under its old name: the URL every installed
+      # customer and the README use must not change.
+      # install.sh ships beside it with GDX_RELEASE stamped to this tag, so
+      # …/releases/latest/download/install.sh installs (or updates to) exactly
+      # this release's compose file and images (test_install_sh).
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -189,8 +234,11 @@ jobs:
         # generated PR list follows. gh: "Additional release notes can be
         # prepended to automatically generated notes by using the --notes flag".
         run: |
+          mkdir -p dist && cp gdx_dispatch/docker/docker-compose.yml dist/docker-compose.customer.yml
+          sed 's/^GDX_RELEASE="__GDX_RELEASE__"$/GDX_RELEASE="${{ github.ref_name }}"/' gdx_dispatch/docker/install.sh > dist/install.sh
+          grep -qx 'GDX_RELEASE="${{ github.ref_name }}"' dist/install.sh
           body="$(python3 -m gdx_dispatch.tools.release_notes body "${{ github.ref_name }}")"
           title="$(python3 -m gdx_dispatch.tools.release_notes body --title "${{ github.ref_name }}")"
           gh release create "${{ github.ref_name }}" --generate-notes --verify-tag \
             --title "$title" --notes "$body" \
-            gdx_dispatch/docker/docker-compose.customer.yml
+            dist/docker-compose.customer.yml dist/install.sh
