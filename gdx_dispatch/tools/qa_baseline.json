@@ -344,16 +344,15 @@
       "check": "docker ps --format '{{.Names}}' | sort",
       "expect": [
         "gdx-app-1",
+        "gdx-backup-1",
         "gdx-db-1",
-        "gdx-redis-1",
-        "gdx-celery-high-1",
-        "gdx-celery-low-1",
-        "gdx-celery-beat-1",
+        "gdx-nginx",
         "gdx-plugin-host-1",
-        "gdx-nginx"
+        "gdx-redis-1"
       ],
       "status": "all healthy",
-      "last_checked": "2026-09-06"
+      "last_checked": "2026-09-06",
+      "note": "the list for the one layout, after prod switches to it; last checked on the old layout, whose list also had gdx-celery-high-1, gdx-celery-low-1 and gdx-celery-beat-1. Celery workers and beat now run under s6 inside gdx-app-1; gdx-secrets-init-1 exits 0 and docker ps does not list it. gdx-nginx is the TLS front, a container configured outside this repo"
     },
     "ssl": {
       "check": "curl -sv https://gdx.example.com 2>&1 | grep 'expire date'",

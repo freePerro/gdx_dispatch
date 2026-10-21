@@ -15,17 +15,34 @@
 # exist.
 #
 # What differs from a customer install, and why:
-#   - Host nginx + certbot terminate TLS and proxy to 127.0.0.1:8002, so Caddy
-#     never starts (its profile is never enabled) and app publishes a port.
+#   - The gdx-nginx container (config in /var/www/gdx/infra, outside this repo)
+#     terminates TLS with certbot's certificates and proxies to
+#     http://gdx-app-1:8000 through Docker's DNS, on the network gdx_default.
+#     So app joins that network as `proxy`. External, because the old layout
+#     created it and gdx-nginx was attached to it by hand (its own compose
+#     file names no networks): compose must neither create nor delete it.
+#     Without this network every domain answers 502 after the switch while
+#     update.sh reports success (/audit, 2026-10-20). Caddy never starts (its
+#     profile is never enabled); the port on 127.0.0.1:8002 is for checks
+#     from the host.
 #   - The five DATA volumes are prod's existing ones, by name. external: true
 #     means compose never creates or deletes them; a missing one aborts `up`
 #     instead of silently starting empty. Secrets, backups and the Caddy
 #     volumes have no prod predecessor, so the base creates them fresh.
 #   - More worker concurrency than a 2-vCPU customer box gets.
+# Prod's project name, so a bare `docker compose` from the repo root (which
+# COMPOSE_FILE points at both files) is the same stack update.sh runs with
+# `-p gdx`. Without it compose names the project after the first file's
+# directory, `docker`, and starts a second postgres on prod's external
+# database volume (/audit, 2026-10-20). gdx-nginx resolves gdx-app-1 by name.
+name: gdx
+
 services:
   app:
     ports:
       - "127.0.0.1:8002:8000"
+    networks:
+      proxy: {}
     environment:
       # The phone.com webhook rotation builds its URLs from this; without it
       # they point at example.com (v1.24.2 refuses that instead of breaking).
@@ -38,6 +55,11 @@ services:
       GDX_CELERY_LOW_CONCURRENCY: ${GDX_CELERY_LOW_CONCURRENCY:-2}
   caddy:
     profiles: ["prod-never"]
+
+networks:
+  proxy:
+    external: true
+    name: gdx_default
 
 volumes:
   gdx_db_data:

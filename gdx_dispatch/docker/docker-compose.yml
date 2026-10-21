@@ -10,7 +10,7 @@
 #               docker-compose.customer.yml, so the README's curl URL and the
 #               Hostinger "Compose from URL" link keep working.
 #   production  this file + docker-compose.prod.yml (prod's existing volumes,
-#               host nginx instead of Caddy, ports). Prod's .env sets
+#               its gdx-nginx container instead of Caddy, ports). Prod's .env sets
 #               COMPOSE_FILE so a bare `docker compose` there picks up both.
 #   local dev   this file + docker-compose.dev.yml (build from source, dev
 #               ports, the dev database volume); dev-up.sh wraps it.
@@ -430,6 +430,11 @@ services:
       - gdx_secrets:/secrets:ro
       - gdx_n8n_secrets:/n8n-secrets:ro
       - gdx_backups:/backups
+    # The postgres image declares VOLUME /var/lib/postgresql/data and this
+    # service runs no server, so without a mount there Docker adds a stray
+    # anonymous volume to every install (vps2 rehearsal, 2026-10-20).
+    tmpfs:
+      - /var/lib/postgresql/data
     depends_on:
       # app healthy (not just db) so the first dump captures a migrated
       # schema instead of an empty pre-bootstrap database.

@@ -65,6 +65,14 @@ DATA_MOUNTS = {
     "gdx_redis_data": ("redis", "/data"),
 }
 
+# Paths each third-party image declares as VOLUME (`docker image inspect`,
+# 2026-10-20). A service on one of these images that mounts nothing there gets
+# an anonymous volume, which then sits beside prod's named data volumes.
+IMAGE_VOLUMES = {
+    "postgres:16-alpine": {"/var/lib/postgresql/data"},
+    "redis:7-alpine": {"/data"},
+}
+
 _COMPOSE_NAME = re.compile(r"(?:^|/)docker-compose[\w.-]*\.ya?ml$")
 
 
@@ -141,8 +149,60 @@ def test_no_overlay_mounts_over_a_data_volume() -> None:
                 assert (service, target) not in targets, f"{rel}: {service} remounts {target}"
 
 
+def _unmounted_image_volumes(spec: dict, service: str) -> set[str]:
+    svc = spec["services"][service]
+    tmpfs = svc.get("tmpfs") or []
+    # tmpfs takes a string or a list, and an entry may carry options (`/x:size=1m`).
+    tmpfs = [tmpfs] if isinstance(tmpfs, str) else tmpfs
+    covered = {target for _, target in _mounts(spec, service)} | {str(t).split(":", 1)[0] for t in tmpfs}
+    return IMAGE_VOLUMES.get(svc.get("image", ""), set()) - covered
+
+
+def test_no_base_service_gets_an_anonymous_volume() -> None:
+    base = _load(BASE)
+    assert any(svc.get("image") in IMAGE_VOLUMES for svc in base["services"].values()), "table matches no service"
+    for service in base["services"]:
+        assert not _unmounted_image_volumes(base, service), (
+            f"base {service} mounts nothing on {sorted(_unmounted_image_volumes(base, service))}, which its image "
+            "declares as VOLUME: mount a named volume there, or a tmpfs if nothing is kept"
+        )
+
+
+def test_the_anonymous_volume_check_catches_the_old_backup_sidecar() -> None:
+    """Falsifier: the backup service as it stood before 2026-10-20, with no tmpfs."""
+    base = _load(BASE)
+    base["services"]["backup"].pop("tmpfs")
+    assert _unmounted_image_volumes(base, "backup") == {"/var/lib/postgresql/data"}
+
+
+def test_prod_app_stays_reachable_by_the_nginx_container() -> None:
+    # Prod's TLS front is the gdx-nginx container, configured outside this repo
+    # (/var/www/gdx/infra), and it proxies to http://gdx-app-1:8000 by Docker
+    # DNS on gdx_default, the old layout's default network. The base puts app on
+    # backend/edge/automation only, so without this the switch answers 502 on
+    # every domain (found by /audit, 2026-10-20). External: nginx is attached
+    # to it, so compose must not try to create, recreate or delete it.
+    prod = _load(PROD)
+    nets = (prod["services"]["app"].get("networks") or {})
+    attached = [key for key in nets if (prod.get("networks") or {}).get(key, {}).get("name") == "gdx_default"]
+    assert attached, "prod app is not on gdx_default, where the gdx-nginx container resolves gdx-app-1"
+    assert prod["networks"][attached[0]].get("external") is True
+    # nginx names the container, gdx-app-1: project `gdx` and no container_name
+    # on app. The overlay's `name:` covers a bare `docker compose` (which would
+    # otherwise be project `docker`), update.sh's -p covers the script. Any of
+    # these changing passes the check above and still 502s. The scan reads
+    # text only: a -p split across lines or built from variables slips past.
+    assert "container_name" not in _load(BASE)["services"]["app"]
+    assert "container_name" not in (prod["services"]["app"] or {})
+    assert prod.get("name") == "gdx", "prod overlay must name the project gdx"
+    code = [ln for ln in (REPO_ROOT / DOCKER / "update.sh").read_text().splitlines() if not ln.lstrip().startswith("#")]
+    projects = {m for ln in code for m in re.findall(r"(?i:\bcompose\b).*?(?:[\s(]-p|--project-name)[=\s]*([^\s)]+)", ln)}
+    assert projects == {"gdx"}, f"update.sh runs compose as project(s) {sorted(projects)}, not gdx"
+    assert not any("COMPOSE_PROJECT_NAME" in ln for ln in code), "update.sh sets the project name another way"
+
+
 def test_caddy_never_starts_in_prod_or_dev() -> None:
-    # Prod's host nginx and a dev box's own services hold 80/443; the profile
+    # Prod's gdx-nginx container and a dev box's own services hold 80/443; the profile
     # names are never enabled anywhere.
     for rel in (PROD, DEV):
         assert _load(rel)["services"]["caddy"].get("profiles"), f"{rel} does not disable caddy"
