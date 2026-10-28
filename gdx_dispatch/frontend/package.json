@@ -39,7 +39,7 @@
     "@primeuix/themes": "^2.0.3",
     "chart.js": "^4.5.1",
     "dexie": "^4.4.2",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "driver.js": "^1.4.0",
     "fake-indexeddb": "^6.2.5",
     "markdown-it": "^14.3.1",
